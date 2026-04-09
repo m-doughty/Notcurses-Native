@@ -70,10 +70,15 @@ jobs:
           touch resources/lib/libnotcurses.dll resources/lib/libnotcurses-core.dll resources/lib/libnotcurses-ffi.dll
 
       - name: Install Raku dependencies
+        run: zef install --/test --test-depends --deps-only .
+
+      - name: Run unit tests (prove6)
         run: |
-          zef install --/test --test-depends --deps-only .
-      - name: Run tests
-        run: prove -e 'raku -I lib -I t/lib' --verbose t/*.rakutest
+          zef install --/test App::Prove6
+          prove6 --verbose -I lib -I t/lib t
+
+      - name: Run extended tests (prove — terminal-dependent)
+        run: prove -e 'raku -I lib -I t/lib' --verbose xt/*.rakutest
 
   test-macos:
     name: macOS
@@ -127,10 +132,15 @@ jobs:
           touch resources/lib/libnotcurses.dll resources/lib/libnotcurses-core.dll resources/lib/libnotcurses-ffi.dll
 
       - name: Install Raku dependencies
+        run: zef install --/test --test-depends --deps-only .
+
+      - name: Run unit tests (prove6)
         run: |
-          zef install --/test --test-depends --deps-only .
-      - name: Run tests
-        run: prove -e 'raku -I lib -I t/lib' --verbose t/*.rakutest
+          zef install --/test App::Prove6
+          prove6 --verbose -I lib -I t/lib t
+
+      - name: Run extended tests (prove — terminal-dependent)
+        run: prove -e 'raku -I lib -I t/lib' --verbose xt/*.rakutest
 
   # Windows CI disabled — notcurses 3.0.16 has unguarded struct termios
   # references in termdesc.c that fail with current MSYS2 GCC (15.2).

@@ -2,6 +2,21 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.1.2  2026-04-09T18:06:28+01:00
+    - Move terminal-dependent tests to xt/ to avoid prove6 TAP harness
+      bug during zef install (t/ has pure-Raku tests only)
+    - CI runs prove6 on t/ and Perl 5 prove on xt/
+    - Fix NcBlitter enum values (NCBLIT_PIXEL was 6, should be 7)
+    - Fix visual functions: use $nc-lib (full) not $core-lib for FFmpeg
+    - Add 130 NCKEY_* key code constants, NcPixelImpl enum, NCBOX_*,
+      NCMICE_*, NCALPHA_*, NC_BG_* channel bitmasks
+    - Add NcvisualOptions.set-plane for correct plane compositing
+    - Add 8 example programs (hello, colors, boxes, input, clock,
+      image viewer with kitty pixel support, direct mode, progress bars)
+    - Build.rakumod: search /opt/homebrew/bin for cmake when PATH
+      is stripped by mi6/zef subprocess
+    - Windows CI disabled pending upstream notcurses termios fix
+
 0.1.1  2026-04-09T17:23:50+01:00
     - Fix TAP harness corruption: redirect stdout/stderr to /dev/null
       before notcurses init, reroute $*OUT via /dev/fd/N for TAP output

@@ -1,0 +1,485 @@
+use Test;
+use lib 'lib';
+use NativeCall;
+use Notcurses::Native::Types;
+use Notcurses::Native::Channel;
+
+plan 20;
+
+# === Single channel (uint32) tests ===
+
+subtest 'ncchannel_set and ncchannel_rgb roundtrip' => {
+    plan 9;
+
+    my uint32 $ch = 0;
+
+    # Set full RGB and read back
+    is ncchannel_set($ch, 0xFF8040), 0, 'ncchannel_set returns 0 on success';
+    is ncchannel_rgb($ch), 0xFF8040, 'ncchannel_rgb returns the value we set';
+
+    # Boundary: black
+    ncchannel_set($ch, 0x000000);
+    is ncchannel_rgb($ch), 0x000000, 'ncchannel_rgb roundtrips black (0x000000)';
+
+    # Boundary: white
+    ncchannel_set($ch, 0xFFFFFF);
+    is ncchannel_rgb($ch), 0xFFFFFF, 'ncchannel_rgb roundtrips white (0xFFFFFF)';
+
+    # Specific colors
+    ncchannel_set($ch, 0x123456);
+    is ncchannel_rgb($ch), 0x123456, 'ncchannel_rgb roundtrips 0x123456';
+
+    # Individual component extraction
+    ncchannel_set($ch, 0xAABBCC);
+    is ncchannel_r($ch), 0xAA, 'ncchannel_r extracts red component';
+    is ncchannel_g($ch), 0xBB, 'ncchannel_g extracts green component';
+    is ncchannel_b($ch), 0xCC, 'ncchannel_b extracts blue component';
+
+    # Reject out-of-range RGB (> 0xFFFFFF)
+    my uint32 $ch2 = 0;
+    my int32 $ret = ncchannel_set($ch2, 0x1000000);
+    is $ret, -1, 'ncchannel_set rejects RGB > 0xFFFFFF';
+}
+
+subtest 'ncchannel_rgb8 output params' => {
+    plan 4;
+
+    my uint32 $ch = 0;
+    ncchannel_set($ch, 0x102030);
+
+    my uint32 $r = 0;
+    my uint32 $g = 0;
+    my uint32 $b = 0;
+    my uint32 $combined = ncchannel_rgb8($ch, $r, $g, $b);
+
+    # ncchannel_rgb8 returns the full channel value (including flags), not just RGB
+    is $combined +& 0xFFFFFF, 0x102030, 'ncchannel_rgb8 return value contains RGB in low 24 bits';
+    is $r, 0x10, 'ncchannel_rgb8 extracts r via output param';
+    is $g, 0x20, 'ncchannel_rgb8 extracts g via output param';
+    is $b, 0x30, 'ncchannel_rgb8 extracts b via output param';
+}
+
+subtest 'ncchannel_set_rgb8 and component independence' => {
+    plan 10;
+
+    my uint32 $ch = 0;
+    is ncchannel_set_rgb8($ch, 0x11, 0x22, 0x33), 0, 'ncchannel_set_rgb8 returns 0';
+    is ncchannel_r($ch), 0x11, 'red component set correctly';
+    is ncchannel_g($ch), 0x22, 'green component set correctly';
+    is ncchannel_b($ch), 0x33, 'blue component set correctly';
+
+    # Boundary: all zeros
+    ncchannel_set_rgb8($ch, 0, 0, 0);
+    is ncchannel_rgb($ch), 0x000000, 'set_rgb8(0,0,0) gives black';
+
+    # Boundary: all max
+    ncchannel_set_rgb8($ch, 255, 255, 255);
+    is ncchannel_rgb($ch), 0xFFFFFF, 'set_rgb8(255,255,255) gives white';
+
+    # Component independence: setting one doesn't clobber others
+    ncchannel_set_rgb8($ch, 0xAA, 0xBB, 0xCC);
+    is ncchannel_r($ch), 0xAA, 'red preserved after full set';
+    is ncchannel_g($ch), 0xBB, 'green preserved after full set';
+    is ncchannel_b($ch), 0xCC, 'blue preserved after full set';
+
+    # Reject out-of-range component
+    my uint32 $ch2 = 0;
+    my int32 $ret = ncchannel_set_rgb8($ch2, 256, 0, 0);
+    is $ret, -1, 'ncchannel_set_rgb8 rejects r > 255';
+}
+
+subtest 'ncchannel_set_rgb8_clipped' => {
+    plan 6;
+
+    my uint32 $ch = 0;
+
+    # Normal values work
+    ncchannel_set_rgb8_clipped($ch, 100, 150, 200);
+    is ncchannel_r($ch), 100, 'clipped: normal red value passes through';
+    is ncchannel_g($ch), 150, 'clipped: normal green value passes through';
+    is ncchannel_b($ch), 200, 'clipped: normal blue value passes through';
+
+    # Values above 255 are clamped to 255
+    ncchannel_set_rgb8_clipped($ch, 300, 400, 500);
+    is ncchannel_r($ch), 255, 'clipped: r > 255 clamped to 255';
+    is ncchannel_g($ch), 255, 'clipped: g > 255 clamped to 255';
+    is ncchannel_b($ch), 255, 'clipped: b > 255 clamped to 255';
+}
+
+subtest 'ncchannel_alpha set/get' => {
+    plan 6;
+
+    my uint32 $ch = 0;
+    ncchannel_set($ch, 0x112233);
+
+    is ncchannel_set_alpha($ch, NCALPHA_OPAQUE), 0, 'set_alpha OPAQUE returns 0';
+    is ncchannel_alpha($ch), NCALPHA_OPAQUE, 'alpha reads back OPAQUE';
+
+    ncchannel_set_alpha($ch, NCALPHA_BLEND);
+    is ncchannel_alpha($ch), NCALPHA_BLEND, 'alpha reads back BLEND';
+
+    ncchannel_set_alpha($ch, NCALPHA_TRANSPARENT);
+    is ncchannel_alpha($ch), NCALPHA_TRANSPARENT, 'alpha reads back TRANSPARENT';
+
+    ncchannel_set_alpha($ch, NCALPHA_HIGHCONTRAST);
+    is ncchannel_alpha($ch), NCALPHA_HIGHCONTRAST, 'alpha reads back HIGHCONTRAST';
+
+    # Setting alpha does not disturb RGB
+    my uint32 $ch2 = 0;
+    ncchannel_set($ch2, 0xAABBCC);
+    ncchannel_set_alpha($ch2, NCALPHA_BLEND);
+    is ncchannel_rgb($ch2), 0xAABBCC, 'setting alpha preserves RGB';
+}
+
+subtest 'ncchannel_default_p and ncchannel_set_default' => {
+    plan 5;
+
+    my uint32 $ch = 0;
+    ok ncchannel_default_p($ch), 'freshly zeroed channel is default';
+
+    # Setting RGB clears default flag
+    ncchannel_set($ch, 0x112233);
+    nok ncchannel_default_p($ch), 'channel is not default after set RGB';
+
+    # set_default restores it
+    ncchannel_set_default($ch);
+    ok ncchannel_default_p($ch), 'channel is default after set_default';
+
+    # default flag is independent of RGB bits -- RGB may remain from prior set
+    ok ncchannel_default_p($ch), 'default_p is true even if RGB bits linger';
+
+    # set_rgb8 also clears default
+    ncchannel_set_default($ch);
+    ncchannel_set_rgb8($ch, 1, 2, 3);
+    nok ncchannel_default_p($ch), 'set_rgb8 clears default flag';
+}
+
+subtest 'ncchannel_palindex set/get and predicates' => {
+    plan 8;
+
+    my uint32 $ch = 0;
+
+    # Initially not palette-indexed
+    nok ncchannel_palindex_p($ch), 'fresh channel is not palindex';
+
+    # Set palette index
+    is ncchannel_set_palindex($ch, 42), 0, 'set_palindex returns 0';
+    ok ncchannel_palindex_p($ch), 'channel is palindex after set';
+    is ncchannel_palindex($ch), 42, 'palindex reads back 42';
+
+    # Palette and RGB are mutually exclusive
+    nok ncchannel_rgb_p($ch), 'palindex channel is not rgb_p';
+
+    # Setting RGB clears palette
+    ncchannel_set($ch, 0x112233);
+    nok ncchannel_palindex_p($ch), 'set RGB clears palindex';
+    ok ncchannel_rgb_p($ch), 'channel is rgb_p after set RGB';
+
+    # Boundary: palette index 0
+    my uint32 $ch2 = 0;
+    ncchannel_set_palindex($ch2, 0);
+    is ncchannel_palindex($ch2), 0, 'palette index 0 roundtrips';
+}
+
+subtest 'ncchannel_rgb_p predicate' => {
+    plan 4;
+
+    my uint32 $ch = 0;
+    nok ncchannel_rgb_p($ch), 'fresh channel is not rgb_p (is default)';
+
+    ncchannel_set($ch, 0x000000);
+    ok ncchannel_rgb_p($ch), 'channel with black RGB is rgb_p';
+
+    ncchannel_set_default($ch);
+    nok ncchannel_rgb_p($ch), 'default channel is not rgb_p';
+
+    ncchannel_set_palindex($ch, 10);
+    nok ncchannel_rgb_p($ch), 'palindex channel is not rgb_p';
+}
+
+# === Dual channels (uint64) tests ===
+
+subtest 'ncchannels_combine and ncchannels_fchannel/bchannel' => {
+    plan 5;
+
+    my uint32 $fg = 0;
+    my uint32 $bg = 0;
+    ncchannel_set($fg, 0xFF0000);
+    ncchannel_set($bg, 0x0000FF);
+
+    my uint64 $channels = ncchannels_combine($fg, $bg);
+    is ncchannels_fchannel($channels), $fg, 'fchannel extracts the fg we combined';
+    is ncchannels_bchannel($channels), $bg, 'bchannel extracts the bg we combined';
+
+    is ncchannels_fg_rgb($channels), 0xFF0000, 'fg_rgb reads red from combined';
+    is ncchannels_bg_rgb($channels), 0x0000FF, 'bg_rgb reads blue from combined';
+
+    # ncchannels_channels should return the full 64-bit value
+    is ncchannels_channels($channels), $channels, 'ncchannels_channels returns full value';
+}
+
+subtest 'ncchannels_reverse swaps fg and bg RGB' => {
+    plan 6;
+
+    my uint64 $channels = 0;
+    ncchannels_set_fg_rgb($channels, 0xAA0000);
+    ncchannels_set_fg_alpha($channels, NCALPHA_BLEND);
+    ncchannels_set_bg_rgb($channels, 0x0000BB);
+    ncchannels_set_bg_alpha($channels, NCALPHA_TRANSPARENT);
+
+    my uint64 $reversed = ncchannels_reverse($channels);
+
+    # reverse swaps the RGB portions of fg and bg
+    is ncchannels_fg_rgb($reversed), 0x0000BB, 'after reverse, fg has old bg RGB';
+    is ncchannels_bg_rgb($reversed), 0xAA0000, 'after reverse, bg has old fg RGB';
+
+    # alpha values stay with their respective fg/bg positions (not swapped)
+    is ncchannels_fg_alpha($reversed), NCALPHA_BLEND, 'fg alpha stays BLEND after reverse';
+    is ncchannels_bg_alpha($reversed), NCALPHA_TRANSPARENT, 'bg alpha stays TRANSPARENT after reverse';
+
+    # Verify with simple case: two distinct colors, no alpha
+    my uint64 $simple = 0;
+    ncchannels_set_fg_rgb($simple, 0x112233);
+    ncchannels_set_bg_rgb($simple, 0xAABBCC);
+    my uint64 $rev2 = ncchannels_reverse($simple);
+    is ncchannels_fg_rgb($rev2), 0xAABBCC, 'simple reverse: fg gets old bg';
+    is ncchannels_bg_rgb($rev2), 0x112233, 'simple reverse: bg gets old fg';
+}
+
+subtest 'ncchannels_set_channels, set_fchannel, set_bchannel' => {
+    plan 6;
+
+    my uint64 $channels = 0;
+
+    # Set individual channels
+    my uint32 $fg = 0;
+    ncchannel_set($fg, 0x112233);
+    ncchannels_set_fchannel($channels, $fg);
+    is ncchannels_fg_rgb($channels), 0x112233, 'set_fchannel sets fg RGB';
+    is ncchannels_bg_rgb($channels), 0x000000, 'set_fchannel leaves bg untouched';
+
+    my uint32 $bg = 0;
+    ncchannel_set($bg, 0x445566);
+    ncchannels_set_bchannel($channels, $bg);
+    is ncchannels_bg_rgb($channels), 0x445566, 'set_bchannel sets bg RGB';
+    is ncchannels_fg_rgb($channels), 0x112233, 'set_bchannel leaves fg untouched';
+
+    # set_channels overwrites everything
+    my uint64 $new-channels = 0;
+    my uint32 $nfg = 0;
+    my uint32 $nbg = 0;
+    ncchannel_set($nfg, 0xABCDEF);
+    ncchannel_set($nbg, 0xFEDCBA);
+    $new-channels = ncchannels_combine($nfg, $nbg);
+
+    my uint64 $dst = 0;
+    ncchannels_set_channels($dst, $new-channels);
+    is ncchannels_fg_rgb($dst), 0xABCDEF, 'set_channels overwrites fg';
+    is ncchannels_bg_rgb($dst), 0xFEDCBA, 'set_channels overwrites bg';
+}
+
+subtest 'ncchannels fg/bg RGB set/get via rgb and rgb8' => {
+    plan 12;
+
+    my uint64 $channels = 0;
+
+    # Set fg RGB
+    is ncchannels_set_fg_rgb($channels, 0xAABBCC), 0, 'set_fg_rgb returns 0';
+    is ncchannels_fg_rgb($channels), 0xAABBCC, 'fg_rgb roundtrips';
+
+    # Set bg RGB
+    is ncchannels_set_bg_rgb($channels, 0x112233), 0, 'set_bg_rgb returns 0';
+    is ncchannels_bg_rgb($channels), 0x112233, 'bg_rgb roundtrips';
+
+    # fg unchanged after setting bg
+    is ncchannels_fg_rgb($channels), 0xAABBCC, 'fg preserved after setting bg';
+
+    # Set via rgb8
+    is ncchannels_set_fg_rgb8($channels, 0x10, 0x20, 0x30), 0, 'set_fg_rgb8 returns 0';
+    is ncchannels_fg_rgb($channels), 0x102030, 'fg_rgb8 roundtrips';
+
+    is ncchannels_set_bg_rgb8($channels, 0x40, 0x50, 0x60), 0, 'set_bg_rgb8 returns 0';
+    is ncchannels_bg_rgb($channels), 0x405060, 'bg_rgb8 roundtrips';
+
+    # Extract via rgb8 output params
+    my uint32 $r = 0; my uint32 $g = 0; my uint32 $b = 0;
+    ncchannels_fg_rgb8($channels, $r, $g, $b);
+    is $r, 0x10, 'fg_rgb8 output r';
+    is $g, 0x20, 'fg_rgb8 output g';
+    is $b, 0x30, 'fg_rgb8 output b';
+}
+
+subtest 'ncchannels fg/bg rgb8_clipped' => {
+    plan 6;
+
+    my uint64 $channels = 0;
+
+    ncchannels_set_fg_rgb8_clipped($channels, 300, -10, 128);
+    is ncchannel_r(ncchannels_fchannel($channels)), 255, 'fg clipped: r > 255 clamped';
+    is ncchannel_g(ncchannels_fchannel($channels)), 0, 'fg clipped: r < 0 clamped to 0';
+    is ncchannel_b(ncchannels_fchannel($channels)), 128, 'fg clipped: normal value preserved';
+
+    ncchannels_set_bg_rgb8_clipped($channels, 50, 500, -1);
+    is ncchannel_r(ncchannels_bchannel($channels)), 50, 'bg clipped: normal value preserved';
+    is ncchannel_g(ncchannels_bchannel($channels)), 255, 'bg clipped: g > 255 clamped';
+    is ncchannel_b(ncchannels_bchannel($channels)), 0, 'bg clipped: b < 0 clamped to 0';
+}
+
+subtest 'ncchannels fg/bg alpha' => {
+    plan 8;
+
+    my uint64 $channels = 0;
+    ncchannels_set_fg_rgb($channels, 0x112233);
+    ncchannels_set_bg_rgb($channels, 0x445566);
+
+    is ncchannels_set_fg_alpha($channels, NCALPHA_BLEND), 0, 'set_fg_alpha BLEND returns 0';
+    is ncchannels_fg_alpha($channels), NCALPHA_BLEND, 'fg alpha reads BLEND';
+
+    is ncchannels_set_bg_alpha($channels, NCALPHA_TRANSPARENT), 0, 'set_bg_alpha TRANSPARENT returns 0';
+    is ncchannels_bg_alpha($channels), NCALPHA_TRANSPARENT, 'bg alpha reads TRANSPARENT';
+
+    # fg and bg alpha are independent
+    is ncchannels_fg_alpha($channels), NCALPHA_BLEND, 'fg alpha unchanged after setting bg alpha';
+
+    # Setting alpha preserves RGB
+    is ncchannels_fg_rgb($channels), 0x112233, 'fg RGB preserved after setting fg alpha';
+    is ncchannels_bg_rgb($channels), 0x445566, 'bg RGB preserved after setting bg alpha';
+
+    # HIGHCONTRAST
+    ncchannels_set_fg_alpha($channels, NCALPHA_HIGHCONTRAST);
+    is ncchannels_fg_alpha($channels), NCALPHA_HIGHCONTRAST, 'fg alpha reads HIGHCONTRAST';
+}
+
+subtest 'ncchannels fg/bg palindex' => {
+    plan 10;
+
+    my uint64 $channels = 0;
+
+    is ncchannels_set_fg_palindex($channels, 99), 0, 'set_fg_palindex returns 0';
+    is ncchannels_fg_palindex($channels), 99, 'fg palindex reads 99';
+    ok ncchannels_fg_palindex_p($channels), 'fg is palindex after set';
+    nok ncchannels_fg_rgb_p($channels), 'fg is not rgb_p when palindex';
+
+    is ncchannels_set_bg_palindex($channels, 200), 0, 'set_bg_palindex returns 0';
+    is ncchannels_bg_palindex($channels), 200, 'bg palindex reads 200';
+    ok ncchannels_bg_palindex_p($channels), 'bg is palindex after set';
+    nok ncchannels_bg_rgb_p($channels), 'bg is not rgb_p when palindex';
+
+    # fg palindex unchanged after setting bg
+    is ncchannels_fg_palindex($channels), 99, 'fg palindex preserved after setting bg palindex';
+
+    # Setting RGB clears palindex
+    ncchannels_set_fg_rgb($channels, 0xABCDEF);
+    nok ncchannels_fg_palindex_p($channels), 'set_fg_rgb clears fg palindex';
+}
+
+subtest 'ncchannels fg/bg default' => {
+    plan 8;
+
+    my uint64 $channels = 0;
+
+    ok ncchannels_fg_default_p($channels), 'fresh channels: fg is default';
+    ok ncchannels_bg_default_p($channels), 'fresh channels: bg is default';
+
+    ncchannels_set_fg_rgb($channels, 0x112233);
+    nok ncchannels_fg_default_p($channels), 'fg not default after set_fg_rgb';
+    ok ncchannels_bg_default_p($channels), 'bg still default after set_fg_rgb';
+
+    ncchannels_set_fg_default($channels);
+    ok ncchannels_fg_default_p($channels), 'fg default after set_fg_default';
+
+    ncchannels_set_bg_rgb($channels, 0x445566);
+    nok ncchannels_bg_default_p($channels), 'bg not default after set_bg_rgb';
+
+    ncchannels_set_bg_default($channels);
+    ok ncchannels_bg_default_p($channels), 'bg default after set_bg_default';
+
+    # Both can be non-default simultaneously
+    ncchannels_set_fg_rgb($channels, 0xAAAAAA);
+    ncchannels_set_bg_rgb($channels, 0xBBBBBB);
+    nok ncchannels_fg_default_p($channels) || ncchannels_bg_default_p($channels),
+        'both fg and bg non-default simultaneously';
+}
+
+subtest 'ncchannels bg_rgb8 output params' => {
+    plan 3;
+
+    my uint64 $channels = 0;
+    ncchannels_set_bg_rgb8($channels, 0xDE, 0xAD, 0xBE);
+
+    my uint32 $r = 0; my uint32 $g = 0; my uint32 $b = 0;
+    ncchannels_bg_rgb8($channels, $r, $g, $b);
+    is $r, 0xDE, 'bg_rgb8 output r';
+    is $g, 0xAD, 'bg_rgb8 output g';
+    is $b, 0xBE, 'bg_rgb8 output b';
+}
+
+# === Pixel (uint32 ABGR) tests ===
+
+subtest 'ncpixel create and component get' => {
+    plan 8;
+
+    my uint32 $px = ncpixel(0xAA, 0xBB, 0xCC);
+    is ncpixel_r($px), 0xAA, 'ncpixel_r extracts red';
+    is ncpixel_g($px), 0xBB, 'ncpixel_g extracts green';
+    is ncpixel_b($px), 0xCC, 'ncpixel_b extracts blue';
+    is ncpixel_a($px), 0xFF, 'ncpixel_a defaults to 0xFF (fully opaque)';
+
+    # Boundary: black pixel
+    my uint32 $black = ncpixel(0, 0, 0);
+    is ncpixel_r($black), 0, 'black pixel r is 0';
+    is ncpixel_g($black), 0, 'black pixel g is 0';
+    is ncpixel_b($black), 0, 'black pixel b is 0';
+    is ncpixel_a($black), 0xFF, 'black pixel a is 0xFF';
+}
+
+subtest 'ncpixel_set_* component setters' => {
+    plan 16;
+
+    my uint32 $px = ncpixel(0, 0, 0);
+
+    # Set red
+    is ncpixel_set_r($px, 0x42), 0, 'ncpixel_set_r returns 0';
+    is ncpixel_r($px), 0x42, 'red set correctly';
+    is ncpixel_g($px), 0, 'green unchanged after set_r';
+    is ncpixel_b($px), 0, 'blue unchanged after set_r';
+
+    # Set green
+    is ncpixel_set_g($px, 0x84), 0, 'ncpixel_set_g returns 0';
+    is ncpixel_g($px), 0x84, 'green set correctly';
+    is ncpixel_r($px), 0x42, 'red unchanged after set_g';
+
+    # Set blue
+    is ncpixel_set_b($px, 0xF0), 0, 'ncpixel_set_b returns 0';
+    is ncpixel_b($px), 0xF0, 'blue set correctly';
+    is ncpixel_r($px), 0x42, 'red unchanged after set_b';
+    is ncpixel_g($px), 0x84, 'green unchanged after set_b';
+
+    # Set alpha
+    is ncpixel_set_a($px, 0x80), 0, 'ncpixel_set_a returns 0';
+    is ncpixel_a($px), 0x80, 'alpha set correctly';
+    is ncpixel_r($px), 0x42, 'red unchanged after set_a';
+
+    # Boundary: max values
+    ncpixel_set_r($px, 255);
+    ncpixel_set_g($px, 255);
+    ncpixel_set_b($px, 255);
+    ncpixel_set_a($px, 255);
+    is ncpixel_r($px), 255, 'max red roundtrips';
+    is ncpixel_a($px), 255, 'max alpha roundtrips';
+}
+
+subtest 'ncpixel_set_rgb8' => {
+    plan 5;
+
+    my uint32 $px = ncpixel(0, 0, 0);
+    ncpixel_set_a($px, 0x80);  # Set alpha first to verify it is preserved
+
+    is ncpixel_set_rgb8($px, 0x11, 0x22, 0x33), 0, 'ncpixel_set_rgb8 returns 0';
+    is ncpixel_r($px), 0x11, 'r set by set_rgb8';
+    is ncpixel_g($px), 0x22, 'g set by set_rgb8';
+    is ncpixel_b($px), 0x33, 'b set by set_rgb8';
+    is ncpixel_a($px), 0x80, 'alpha preserved by set_rgb8';
+}
+
+done-testing;

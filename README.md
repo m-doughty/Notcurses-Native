@@ -259,13 +259,11 @@ Installation
 
     zef install Notcurses::Native
 
-If tests fail during installation due to a [known bug in prove6](https://github.com/Raku/tap-harness6/issues) where terminal escape sequences from the notcurses C library corrupt the TAP parser, you can install without tests:
+Installation runs `t/` tests only (pure-Raku channel math and input struct tests — no terminal needed). The full terminal-dependent test suite lives in `xt/` and can be run manually:
 
-    zef install --/test Notcurses::Native
+    prove -e 'raku -I lib -I t/lib' xt/*.rakutest
 
-To run tests manually after installation using Perl 5's `prove` (which handles terminal output correctly):
-
-    prove -e 'raku -I lib -I t/lib' t/*.rakutest
+`prove` (Perl 5) is recommended for `xt/` tests because [prove6 has a bug](https://github.com/Raku/tap-harness6/issues/64) where terminal escape sequences from C libraries corrupt its TAP parser.
 
 Windows
 -------
