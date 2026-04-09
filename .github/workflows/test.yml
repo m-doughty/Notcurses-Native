@@ -11,6 +11,8 @@ on:
 env:
   TERM: xterm
   COLORTERM: truecolor
+  LANG: en_US.UTF-8
+  LC_ALL: en_US.UTF-8
 
 jobs:
   test-linux:

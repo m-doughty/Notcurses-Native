@@ -55,23 +55,24 @@ subtest 'nccell_load and nccell_strdup roundtrip' => {
     is $str, 'A', 'strdup returns loaded ASCII character';
     nccell_release($child, $c1);
 
-    # Multi-byte: nccell_load with a two-byte UTF-8 character
-    my $c2 = Nccell.new;
-    nccell_init($c2);
-    $bytes = nccell_load($child, $c2, "\x[00E9]");
-    ok $bytes > 0, "nccell_load succeeds for U+00E9 ($bytes bytes)";
-    is nccell_cols($c2), 1, 'U+00E9 is 1 column wide';
-    nccell_release($child, $c2);
+    # Multi-byte: requires UTF-8 locale
+    if notcurses_canutf8($nc) {
+        my $c2 = Nccell.new;
+        nccell_init($c2);
+        $bytes = nccell_load($child, $c2, "\x[00E9]");
+        ok $bytes > 0, "nccell_load succeeds for U+00E9 ($bytes bytes)";
+        is nccell_cols($c2), 1, 'U+00E9 is 1 column wide';
+        nccell_release($child, $c2);
 
-    # Multi-byte: nccell_load with a CJK character
-    # Note: NativeCall Str marshalling may truncate multi-byte UTF-8,
-    # so we only check that the load succeeds (returns > 0).
-    my $c3 = Nccell.new;
-    nccell_init($c3);
-    $bytes = nccell_load($child, $c3, "\x[4E16]");
-    ok $bytes > 0, "nccell_load succeeds for U+4E16 ($bytes bytes)";
-    ok nccell_cols($c3) >= 1, "CJK cell reports >= 1 column ({nccell_cols($c3)})";
-    nccell_release($child, $c3);
+        my $c3 = Nccell.new;
+        nccell_init($c3);
+        $bytes = nccell_load($child, $c3, "\x[4E16]");
+        ok $bytes > 0, "nccell_load succeeds for U+4E16 ($bytes bytes)";
+        ok nccell_cols($c3) >= 1, "CJK cell reports >= 1 column ({nccell_cols($c3)})";
+        nccell_release($child, $c3);
+    } else {
+        skip 'No UTF-8 support — skipping multi-byte cell tests', 4;
+    }
 
     # Loading from a longer string takes only the first grapheme cluster
     my $c4 = Nccell.new;
