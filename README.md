@@ -254,6 +254,24 @@ Notcurses is vendored and built from source. You need:
 
 If FFmpeg is not found, the build falls back to core-only mode (no image/video support).
 
+Installation
+------------
+
+    zef install Notcurses::Native
+
+If tests fail during installation due to a [known bug in prove6](https://github.com/Raku/tap-harness6/issues) where terminal escape sequences from the notcurses C library corrupt the TAP parser, you can install without tests:
+
+    zef install --/test Notcurses::Native
+
+To run tests manually after installation using Perl 5's `prove` (which handles terminal output correctly):
+
+    prove -e 'raku -I lib -I t/lib' t/*.rakutest
+
+Windows
+-------
+
+Windows support requires MSYS2 with the UCRT64 toolchain. Notcurses 3.0.16 has unguarded `struct termios` references that may fail to compile with newer GCC versions. This is an upstream issue. Windows support will improve as notcurses upstream patches their Windows code.
+
 EXAMPLES
 ========
 

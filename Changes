@@ -2,6 +2,19 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.1.1  2026-04-09T17:23:50+01:00
+    - Fix TAP harness corruption: redirect stdout/stderr to /dev/null
+      before notcurses init, reroute $*OUT via /dev/fd/N for TAP output
+    - Fix Build.rakumod: search /opt/homebrew/bin for cmake when PATH
+      is stripped by mi6/zef subprocess
+    - Fix NcBlitter enum values (NCBLIT_PIXEL was 6, should be 7)
+    - Fix visual functions: use $nc-lib (full) not $core-lib for FFmpeg
+    - Skip Unicode cell tests on non-UTF-8 environments
+    - Set LANG/LC_ALL=en_US.UTF-8 in CI for proper UTF-8 detection
+    - CI uses prove (Perl 5) instead of prove6 to avoid TAP parser bug
+    - Windows CI disabled pending upstream notcurses termios fix
+    - Add installation troubleshooting to README
+
 0.1.0  2026-04-09T16:41:32+01:00
     - Complete NativeCall wrapper for notcurses 3.0.16 TUI library
     - 606 functions bound across 9 modules (100% of bindable symbols)
