@@ -5,7 +5,7 @@ unit module TestHelper;
 
 # Redirect stdout/stderr to /dev/null so notcurses terminal escape
 # sequences don't corrupt the TAP stream. Reroute Raku's $*OUT to
-# the saved stdout fd via /dev/fd/N so TAP output still works.
+# the saved stdout fd so TAP output still works.
 
 sub dup(int32 --> int32) is native { * }
 sub dup2(int32, int32 --> int32) is native { * }
@@ -19,16 +19,22 @@ my int32 $null-fd = open_c($null-path, 1);
 dup2($null-fd, 1);
 dup2($null-fd, 2);
 
-# Reroute $*OUT to saved fd
-if "/dev/fd/$saved-stdout".IO.e {
-	$*OUT = open("/dev/fd/$saved-stdout", :w);
-} elsif $*KERNEL.name.lc ~~ /win/ {
-	# Windows: restore fd 1 for TAP — notcurses on Windows uses ConPTY
-	# which doesn't leak escapes the same way
+# Reroute $*OUT to saved fd via fd-backed path
+my Bool $rerouted = False;
+for "/dev/fd/$saved-stdout", "/proc/self/fd/$saved-stdout" -> $path {
+	if $path.IO.e {
+		try {
+			$*OUT = open($path, :w);
+			$rerouted = True;
+			last;
+		}
+	}
+}
+
+# Last resort: restore fd 1 directly. Notcurses escape sequences may
+# leak on some platforms, but tests will at least produce output.
+unless $rerouted {
 	dup2($saved-stdout, 1);
-} else {
-	# Linux fallback: /proc/self/fd/N
-	$*OUT = open("/proc/self/fd/$saved-stdout", :w);
 }
 
 sub test-init-nc(NotcursesOptions $opts --> List) is export {

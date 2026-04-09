@@ -136,7 +136,9 @@ jobs:
 
   test-windows:
     name: Windows
-    runs-on: windows-latest
+    # Pin windows-2022 to match upstream notcurses CI — newer runners
+    # have GCC/MSYS2 changes that break struct termios compilation
+    runs-on: windows-2022
     defaults:
       run:
         shell: msys2 {0}
