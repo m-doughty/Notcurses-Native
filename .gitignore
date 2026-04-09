@@ -7,6 +7,7 @@ lib/.precomp
 *.bak *.tmp *.old
 *.log core *.core
 Notcurses-Native-*
+NUL
 vendor/notcurses/build/
 resources/lib/*.dylib
 resources/lib/*.so
