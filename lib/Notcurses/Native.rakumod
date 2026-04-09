@@ -6,32 +6,18 @@ unit module Notcurses::Native;
 # === Library paths ===
 # We load from both libnotcurses (full, with multimedia) and libnotcurses-ffi
 # (C wrappers for static inline functions).
+# Uses %?RESOURCES for portable library resolution.
 
-# Library resolution: use vendored build, system install, or resources
-sub _libpath(Str:D $name --> Str:D) {
-	my $ext = $*KERNEL.name.lc ~~ /darwin/ ?? 'dylib'
-		!! $*KERNEL.name.lc ~~ /win/ ?? 'dll'
-		!! 'so';
-	my $resdir = $?FILE.IO.parent.parent.parent.child("resources/lib");
+constant $os is export = $*KERNEL.name.lc;
+constant $ext is export = $os ~~ /darwin/ ?? 'dylib' !! $os ~~ /win/ ?? 'dll' !! 'so';
 
-	# Check vendored build first (development)
-	my $vendored = $resdir.child("{$name}.{$ext}");
-	return $vendored.Str if $vendored.e;
+sub _nc-lib   { %?RESOURCES{"lib/libnotcurses.{$ext}"}.IO.Str      }
+sub _ffi-lib  { %?RESOURCES{"lib/libnotcurses-ffi.{$ext}"}.IO.Str  }
+sub _core-lib { %?RESOURCES{"lib/libnotcurses-core.{$ext}"}.IO.Str }
 
-	# Windows: try without lib prefix (MSVC convention)
-	if $*KERNEL.name.lc ~~ /win/ {
-		my $nolib = $name.subst(/^ 'lib'/, '');
-		my $alt = $resdir.child("{$nolib}.{$ext}");
-		return $alt.Str if $alt.e;
-	}
-
-	# Fall back to system library
-	$name;
-}
-
-constant $nc-lib is export  = _libpath('libnotcurses');
-constant $ffi-lib is export = _libpath('libnotcurses-ffi');
-constant $core-lib is export = _libpath('libnotcurses-core');
+constant $nc-lib is export   = _nc-lib();
+constant $ffi-lib is export  = _ffi-lib();
+constant $core-lib is export = _core-lib();
 
 # === Version ===
 
