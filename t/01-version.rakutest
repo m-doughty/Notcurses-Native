@@ -1,0 +1,45 @@
+use Test;
+use lib 'lib';
+use lib 't/lib';
+use TestHelper;
+use NativeCall;
+use Notcurses::Native;
+use Notcurses::Native::Types;
+
+plan 3;
+
+subtest 'Version string' => {
+	plan 2;
+	my $ver = notcurses_version();
+	ok $ver.defined, 'Version string returned';
+	ok $ver.contains('3.0'), "Version is 3.0.x (got: $ver)";
+};
+
+subtest 'Version components' => {
+	plan 4;
+	my int32 ($major, $minor, $patch, $tweak);
+	notcurses_version_components($major, $minor, $patch, $tweak);
+	is $major, 3, 'Major version';
+	is $minor, 0, 'Minor version';
+	is $patch, 16, 'Patch version';
+	ok $tweak.defined, 'Tweak defined';
+};
+
+subtest 'Init and stop' => {
+	plan 2;
+	my $opts = NotcursesOptions.new(
+		:loglevel(NCLOGLEVEL_SILENT),
+		:flags(NCOPTION_SUPPRESS_BANNERS +| NCOPTION_NO_ALTERNATE_SCREEN +| NCOPTION_INHIBIT_SETLOCALE),
+	);
+	my ($nc, $) = test-init-nc($opts);
+	if $nc.defined {
+		ok True, 'notcurses_init succeeded';
+		my $rc = notcurses_stop($nc);
+		is $rc, 0, 'notcurses_stop returned 0';
+	} else {
+		# May fail in CI without a terminal
+		skip 'No terminal available for init', 2;
+	}
+};
+
+done-testing;

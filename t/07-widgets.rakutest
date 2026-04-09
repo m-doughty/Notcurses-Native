@@ -1,0 +1,92 @@
+use Test;
+use lib 'lib';
+use lib 't/lib';
+use TestHelper;
+use NativeCall;
+use Notcurses::Native;
+use Notcurses::Native::Types;
+use Notcurses::Native::Plane;
+use Notcurses::Native::Widgets;
+
+plan 5;
+
+
+my $opts = NotcursesOptions.new(
+	:loglevel(NCLOGLEVEL_SILENT),
+	:flags(NCOPTION_SUPPRESS_BANNERS +| NCOPTION_NO_ALTERNATE_SCREEN +| NCOPTION_INHIBIT_SETLOCALE),
+);
+my ($nc, $) = test-init-nc($opts);
+unless $nc.defined {
+	skip 'No terminal available', 5;
+	exit 0;
+}
+LEAVE { notcurses_stop($nc) if $nc.defined }
+my $std = notcurses_stdplane($nc);
+
+subtest 'Progress bar' => {
+	plan 4;
+	my $plane = ncplane_create($std, NcplaneOptions.new(:rows(1), :cols(40)));
+	my $popts = NcprogbarOptions.new(:ulchannel(0), :urchannel(0), :blchannel(0), :brchannel(0));
+	my $bar = ncprogbar_create($plane, $popts);
+	ok $bar.defined, 'Progress bar created';
+	my $rc = ncprogbar_set_progress($bar, 0.5e0);
+	is $rc, 0, 'Set progress to 50%';
+	my num64 $p = ncprogbar_progress($bar);
+	ok $p >= 0.49e0 && $p <= 0.51e0, "Progress = $p (expected ~0.5)";
+	my $bplane = ncprogbar_plane($bar);
+	ok $bplane.defined, 'Got progress bar plane';
+	ncprogbar_destroy($bar);
+};
+
+subtest 'Reel' => {
+	plan 3;
+	my $plane = ncplane_create($std, NcplaneOptions.new(:rows(10), :cols(30)));
+	my $ropts = NcreelOptions.new;
+	my $reel = ncreel_create($plane, $ropts);
+	ok $reel.defined, 'Reel created';
+	is ncreel_tabletcount($reel), 0, 'Empty reel has 0 tablets';
+	my $rplane = ncreel_plane($reel);
+	ok $rplane.defined, 'Got reel plane';
+	ncreel_destroy($reel);
+};
+
+subtest 'Tabbed widget' => {
+	plan 3;
+	my $plane = ncplane_create($std, NcplaneOptions.new(:rows(10), :cols(40)));
+	my $topts = NctabbedOptions.new(:separator(' | '));
+	my $tabbed = nctabbed_create($plane, $topts);
+	ok $tabbed.defined, 'Tabbed widget created';
+	is nctabbed_tabcount($tabbed), 0, 'No tabs initially';
+	my $tplane = nctabbed_plane($tabbed);
+	ok $tplane.defined, 'Got tabbed plane';
+	nctabbed_destroy($tabbed);
+};
+
+subtest 'Reader' => {
+	plan 3;
+	my $plane = ncplane_create($std, NcplaneOptions.new(:rows(3), :cols(30)));
+	my $ropts = NcreaderOptions.new(:flags(NCREADER_OPTION_CURSOR));
+	my $reader = ncreader_create($plane, $ropts);
+	ok $reader.defined, 'Reader created';
+	my $rplane = ncreader_plane($reader);
+	ok $rplane.defined, 'Got reader plane';
+	my $rc = ncreader_clear($reader);
+	is $rc, 0, 'Reader cleared';
+	ncreader_destroy($reader, Pointer);
+};
+
+subtest 'Options struct construction' => {
+	plan 5;
+	my $vopts = NcvisualOptions.new(:scaling(1), :blitter(0), :flags(NCVISUAL_OPTION_BLEND));
+	is $vopts.scaling, 1, 'Visual options scaling';
+	is $vopts.flags, NCVISUAL_OPTION_BLEND, 'Visual options flags';
+
+	my $geom = Ncvgeom.new;
+	is $geom.pixy, 0, 'Geometry default pixy = 0';
+
+	my $popts = NcplotOptions.new(:rangex(100), :flags(NCPLOT_OPTION_LABELTICKSD));
+	is $popts.rangex, 100, 'Plot options rangex';
+	is $popts.flags, NCPLOT_OPTION_LABELTICKSD, 'Plot options flags';
+};
+
+done-testing;

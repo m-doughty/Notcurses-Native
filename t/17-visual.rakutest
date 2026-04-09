@@ -1,0 +1,153 @@
+use Test;
+use lib 'lib';
+use lib 't/lib';
+use TestHelper;
+use NativeCall;
+use Notcurses::Native;
+use Notcurses::Native::Types;
+use Notcurses::Native::Plane;
+use Notcurses::Native::Visual;
+
+plan 8;
+
+
+my $opts = NotcursesOptions.new(
+	:loglevel(NCLOGLEVEL_SILENT),
+	:flags(NCOPTION_SUPPRESS_BANNERS +| NCOPTION_NO_ALTERNATE_SCREEN +| NCOPTION_INHIBIT_SETLOCALE),
+);
+my ($nc, $) = test-init-nc($opts);
+unless $nc.defined {
+	skip 'No terminal available', 8;
+	exit 0;
+}
+LEAVE { notcurses_stop($nc) if $nc.defined }
+my $std = notcurses_stdplane($nc);
+
+my $fixture = 't/fixtures/test-4x4.png';
+unless $fixture.IO.e {
+	skip 'Test fixture missing', 8;
+	exit 0;
+}
+
+subtest 'ncvisual_from_file and destroy' => {
+	plan 2;
+	my $v = ncvisual_from_file($fixture);
+	ok $v.defined, 'Visual loaded from PNG';
+	ncvisual_destroy($v);
+	ok True, 'Destroy succeeded without crash';
+};
+
+subtest 'ncvisual_decode on still image' => {
+	plan 4;
+	my $v = ncvisual_from_file($fixture);
+	# FFmpeg decodes PNG on from_file, so first decode returns 1 (already decoded/EOF)
+	my $rc = ncvisual_decode($v);
+	ok $rc >= 0, "First decode returns $rc (non-negative = success)";
+	# Second decode on a still image returns 1 (no more frames)
+	$rc = ncvisual_decode($v);
+	is $rc, 1, 'Second decode returns 1 (EOF, no more frames)';
+
+	my $v2 = ncvisual_from_file($fixture);
+	$rc = ncvisual_decode_loop($v2);
+	ok $rc >= 0, "decode_loop first call returns $rc";
+	$rc = ncvisual_decode_loop($v2);
+	is $rc, 1, 'decode_loop second call returns 1 (looped)';
+	ncvisual_destroy($v);
+	ncvisual_destroy($v2);
+};
+
+subtest 'ncvisual_geom with fixture' => {
+	plan 3;
+	my $v = ncvisual_from_file($fixture);
+	my $vopts = NcvisualOptions.new(:blitter(NCBLIT_1x1));
+	my $geom = Ncvgeom.new;
+	my $rc = ncvisual_geom($nc, $v, $vopts, $geom);
+	is $rc, 0, 'ncvisual_geom returns 0';
+	is $geom.pixy, 4, 'Pixel height = 4';
+	is $geom.pixx, 4, 'Pixel width = 4';
+	ncvisual_destroy($v);
+};
+
+subtest 'ncvisual_blit to plane' => {
+	plan 3;
+	my $v = ncvisual_from_file($fixture);
+	my $vopts = NcvisualOptions.new(:blitter(NCBLIT_1x1));
+	my $plane = ncvisual_blit($nc, $v, $vopts);
+	ok $plane.defined, 'Blit returned a plane';
+	my $rows = ncplane_dim_y($plane);
+	my $cols = ncplane_dim_x($plane);
+	ok $rows > 0, "Blitted plane has rows = $rows";
+	ok $cols > 0, "Blitted plane has cols = $cols";
+	ncplane_destroy($plane);
+	ncvisual_destroy($v);
+};
+
+subtest 'ncvisual_at_yx and set_yx pixel manipulation' => {
+	plan 6;
+	my $v = ncvisual_from_file($fixture);
+	# Read pixel at (0,0) — should be red RGB(255,0,0)
+	# notcurses stores pixels as ABGR: 0xAABBGGRR
+	my uint32 $pixel;
+	my $rc = ncvisual_at_yx($v, 0, 0, $pixel);
+	is $rc, 0, 'at_yx(0,0) returns 0';
+	my $r = $pixel +& 0xFF;
+	my $g = ($pixel +> 8) +& 0xFF;
+	my $b = ($pixel +> 16) +& 0xFF;
+	is $r, 255, 'Pixel (0,0) R = 255 (red)';
+	is $g, 0,   'Pixel (0,0) G = 0';
+	is $b, 0,   'Pixel (0,0) B = 0';
+
+	# Set pixel at (0,0) to pure green and verify
+	my uint32 $green-pixel = 0xFF00FF00;  # ABGR: A=FF B=00 G=FF R=00
+	$rc = ncvisual_set_yx($v, 0, 0, $green-pixel);
+	is $rc, 0, 'set_yx returns 0';
+	ncvisual_at_yx($v, 0, 0, $pixel);
+	is $pixel, $green-pixel, 'Pixel readback matches what we set';
+	ncvisual_destroy($v);
+};
+
+subtest 'ncvisual_resize changes geometry' => {
+	plan 3;
+	my $v = ncvisual_from_file($fixture);
+	my $rc = ncvisual_resize($v, 8, 8);
+	is $rc, 0, 'Resize to 8x8 returns 0';
+	my $vopts = NcvisualOptions.new(:blitter(NCBLIT_1x1));
+	my $geom = Ncvgeom.new;
+	ncvisual_geom($nc, $v, $vopts, $geom);
+	is $geom.pixy, 8, 'After resize, height = 8';
+	is $geom.pixx, 8, 'After resize, width = 8';
+	ncvisual_destroy($v);
+};
+
+subtest 'ncvisual_resize_noninterpolative' => {
+	plan 3;
+	my $v = ncvisual_from_file($fixture);
+	my $rc = ncvisual_resize_noninterpolative($v, 8, 8);
+	is $rc, 0, 'Noninterpolative resize to 8x8 returns 0';
+	my $vopts = NcvisualOptions.new(:blitter(NCBLIT_1x1));
+	my $geom = Ncvgeom.new;
+	ncvisual_geom($nc, $v, $vopts, $geom);
+	is $geom.pixy, 8, 'After noninterp resize, height = 8';
+	is $geom.pixx, 8, 'After noninterp resize, width = 8';
+	ncvisual_destroy($v);
+};
+
+subtest 'ncvisual_media_defblitter and polyfill' => {
+	plan 3;
+	# media_defblitter returns the default blitter for a given scale mode
+	my $blitter = ncvisual_media_defblitter($nc, NCSCALE_NONE);
+	ok $blitter >= 0, "Default blitter for NONE scale = $blitter";
+	my $blitter2 = ncvisual_media_defblitter($nc, NCSCALE_SCALE);
+	ok $blitter2 >= 0, "Default blitter for SCALE = $blitter2";
+
+	# polyfill: fill a region of pixels with a color
+	my $v = ncvisual_from_file($fixture);
+	# Fill from (0,0) which is red — flood fill with white
+	my uint32 $white = 0xFFFFFFFF;  # ABGR white
+	my $filled = ncvisual_polyfill_yx($v, 0, 0, $white);
+	# polyfill returns number of pixels changed (should be 1 since only (0,0) is red)
+	ok $filled >= 1, "Polyfill changed $filled pixels";
+	ncvisual_destroy($v);
+};
+
+done-testing;

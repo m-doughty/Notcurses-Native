@@ -1,0 +1,113 @@
+use Test;
+use lib 'lib';
+use lib 't/lib';
+use TestHelper;
+use NativeCall;
+use Notcurses::Native::Types;
+use Notcurses::Native::Direct;
+
+
+
+plan 8;
+
+my $ncd = do { my ($n, $) = test-init-direct(); $n };
+unless $ncd.defined {
+	skip 'No direct mode', 8;
+	exit 0;
+}
+LEAVE { ncdirect_stop($ncd) if $ncd.defined }
+
+subtest 'All capability queries return defined values' => {
+	plan 14;
+
+	ok ncdirect_cantruecolor($ncd).defined, 'cantruecolor is defined';
+	ok ncdirect_canchangecolor($ncd).defined, 'canchangecolor is defined';
+	ok ncdirect_canfade($ncd).defined, 'canfade is defined';
+	ok ncdirect_canhalfblock($ncd).defined, 'canhalfblock is defined';
+	ok ncdirect_canquadrant($ncd).defined, 'canquadrant is defined';
+	ok ncdirect_cansextant($ncd).defined, 'cansextant is defined';
+	ok ncdirect_canoctant($ncd).defined, 'canoctant is defined';
+	ok ncdirect_canbraille($ncd).defined, 'canbraille is defined';
+	ok ncdirect_canget_cursor($ncd).defined, 'canget_cursor is defined';
+	ok ncdirect_canutf8($ncd).defined, 'canutf8 is defined';
+	ok ncdirect_canopen_images($ncd).defined, 'canopen_images is defined';
+	ok ncdirect_canopen_videos($ncd).defined, 'canopen_videos is defined';
+
+	my $pixel = ncdirect_check_pixel_support($ncd);
+	ok $pixel.defined, "check_pixel_support returned $pixel";
+
+	my $term = ncdirect_detected_terminal($ncd);
+	ok $term.defined, "detected_terminal: $term";
+};
+
+subtest 'Color set/reset roundtrips' => {
+	plan 8;
+
+	is ncdirect_set_fg_rgb($ncd, 0xFF0000), 0, 'set_fg_rgb red returns 0';
+	is ncdirect_set_bg_rgb($ncd, 0x0000FF), 0, 'set_bg_rgb blue returns 0';
+	is ncdirect_set_fg_rgb8($ncd, 0, 255, 0), 0, 'set_fg_rgb8 green returns 0';
+	is ncdirect_set_bg_rgb8($ncd, 128, 128, 128), 0, 'set_bg_rgb8 gray returns 0';
+	is ncdirect_set_fg_palindex($ncd, 1), 0, 'set_fg_palindex(1) returns 0';
+	is ncdirect_set_bg_palindex($ncd, 2), 0, 'set_bg_palindex(2) returns 0';
+	is ncdirect_set_fg_default($ncd), 0, 'set_fg_default returns 0';
+	is ncdirect_set_bg_default($ncd), 0, 'set_bg_default returns 0';
+};
+
+subtest 'Cursor movement operations' => {
+	plan 9;
+
+	is ncdirect_cursor_move_yx($ncd, 0, 0), 0, 'move_yx(0,0) returns 0';
+	is ncdirect_cursor_down($ncd, 1), 0, 'cursor_down(1) returns 0';
+	is ncdirect_cursor_up($ncd, 1), 0, 'cursor_up(1) returns 0';
+	is ncdirect_cursor_right($ncd, 2), 0, 'cursor_right(2) returns 0';
+	is ncdirect_cursor_left($ncd, 2), 0, 'cursor_left(2) returns 0';
+	is ncdirect_cursor_enable($ncd), 0, 'cursor_enable returns 0';
+	is ncdirect_cursor_disable($ncd), 0, 'cursor_disable returns 0';
+	is ncdirect_cursor_push($ncd), 0, 'cursor_push returns 0';
+	is ncdirect_cursor_pop($ncd), 0, 'cursor_pop returns 0';
+};
+
+subtest 'Box drawing functions' => {
+	plan 5;
+
+	# All box functions: (handle, ul, ur, ll, lr, ylen, xlen, ctlword)
+	# Use 0 for all channel params (default colors), 3 rows x 6 cols, ctlword 0
+	is ncdirect_rounded_box($ncd, 0, 0, 0, 0, 3, 6, 0), 0, 'rounded_box returns 0';
+	is ncdirect_double_box($ncd, 0, 0, 0, 0, 3, 6, 0), 0, 'double_box returns 0';
+	is ncdirect_light_box($ncd, 0, 0, 0, 0, 3, 6, 0), 0, 'light_box returns 0';
+	is ncdirect_heavy_box($ncd, 0, 0, 0, 0, 3, 6, 0), 0, 'heavy_box returns 0';
+	is ncdirect_ascii_box($ncd, 0, 0, 0, 0, 3, 6, 0), 0, 'ascii_box returns 0';
+};
+
+subtest 'Clear screen' => {
+	plan 1;
+
+	is ncdirect_clear($ncd), 0, 'clear returns 0';
+};
+
+subtest 'putegc outputs a character' => {
+	plan 2;
+
+	my int32 $sbytes = 0;
+	my $rc = ncdirect_putegc($ncd, 0, "A", $sbytes);
+	ok $rc > 0, "putegc returned $rc columns (> 0)";
+	is $sbytes, 1, 'putegc reports 1 byte consumed for "A"';
+};
+
+subtest 'Capabilities struct fields' => {
+	plan 3;
+
+	my $caps = ncdirect_capabilities($ncd);
+	ok $caps.defined, 'ncdirect_capabilities returns defined struct';
+	ok $caps.colors > 0, "colors = {$caps.colors} (> 0)";
+	ok $caps.utf8.defined, "utf8 field is defined = {$caps.utf8}";
+};
+
+subtest 'Input ready file descriptor' => {
+	plan 1;
+
+	my $fd = ncdirect_inputready_fd($ncd);
+	ok $fd >= 0, "inputready_fd returned valid fd ($fd)";
+};
+
+done-testing;

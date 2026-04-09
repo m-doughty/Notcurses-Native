@@ -1,0 +1,137 @@
+use Test;
+use lib 'lib';
+use lib 't/lib';
+use TestHelper;
+use NativeCall;
+use Notcurses::Native;
+use Notcurses::Native::Types;
+use Notcurses::Native::Plane;
+
+plan 10;
+
+
+my $opts = NotcursesOptions.new(
+	:loglevel(NCLOGLEVEL_SILENT),
+	:flags(NCOPTION_SUPPRESS_BANNERS +| NCOPTION_NO_ALTERNATE_SCREEN +| NCOPTION_INHIBIT_SETLOCALE),
+);
+my ($nc, $) = test-init-nc($opts);
+unless $nc.defined {
+	skip 'No terminal available', 5;
+	exit 0;
+}
+
+LEAVE { notcurses_stop($nc) if $nc.defined }
+
+my $std = notcurses_stdplane($nc);
+
+subtest 'Standard plane exists' => {
+	plan 1;
+	ok $std.defined, 'Standard plane returned';
+};
+
+subtest 'Plane dimensions' => {
+	plan 2;
+	my uint32 ($rows, $cols);
+	ncplane_dim_yx($std, $rows, $cols);
+	ok $rows > 0, "Rows > 0 (got $rows)";
+	ok $cols > 0, "Cols > 0 (got $cols)";
+};
+
+subtest 'Plane dim helpers (FFI)' => {
+	plan 2;
+	my $y = ncplane_dim_y($std);
+	my $x = ncplane_dim_x($std);
+	ok $y > 0, "dim_y > 0 (got $y)";
+	ok $x > 0, "dim_x > 0 (got $x)";
+};
+
+subtest 'Create child plane' => {
+	plan 3;
+	my $child-opts = NcplaneOptions.new(:y(0), :x(0), :rows(5), :cols(10));
+	my $child = ncplane_create($std, $child-opts);
+	ok $child.defined, 'Child plane created';
+	my $cy = ncplane_dim_y($child);
+	my $cx = ncplane_dim_x($child);
+	is $cy, 5, 'Child rows = 5';
+	is $cx, 10, 'Child cols = 10';
+	ncplane_destroy($child);
+};
+
+subtest 'Plane putstr and cursor' => {
+	plan 2;
+	my $child-opts = NcplaneOptions.new(:y(0), :x(0), :rows(3), :cols(20));
+	my $child = ncplane_create($std, $child-opts);
+	ncplane_putstr_yx($child, 0, 0, 'Hello');
+	my uint32 ($cy, $cx);
+	ncplane_cursor_yx($child, $cy, $cx);
+	is $cy, 0, 'Cursor y = 0 (same row)';
+	is $cx, 5, 'Cursor x = 5 (after Hello)';
+	ncplane_destroy($child);
+};
+
+subtest 'Plane read back text' => {
+	plan 1;
+	my $child-opts = NcplaneOptions.new(:y(0), :x(0), :rows(3), :cols(20));
+	my $child = ncplane_create($std, $child-opts);
+	ncplane_putstr_yx($child, 0, 0, 'Hello');
+	my uint16 $style;
+	my uint64 $channels;
+	my $ch = ncplane_at_cursor($child, $style, $channels);
+	# Cursor is at (0,5) after "Hello", reading there gives space or empty
+	# Read at (0,0) should give 'H'
+	ncplane_cursor_move_yx($child, 0, 0);
+	$ch = ncplane_at_yx($child, 0, 0, $style, $channels);
+	is $ch, 'H', 'Read back H at (0,0)';
+	ncplane_destroy($child);
+};
+
+subtest 'Plane colors (via Plane module)' => {
+	plan 2;
+	my $child-opts = NcplaneOptions.new(:y(0), :x(0), :rows(5), :cols(10));
+	my $child = ncplane_create($std, $child-opts);
+	ncplane_set_fg_rgb8($child, 255, 0, 0);
+	ncplane_set_bg_rgb8($child, 0, 0, 255);
+	my $fg = ncplane_fg_rgb($child);
+	my $bg = ncplane_bg_rgb($child);
+	is $fg, 0xFF0000, 'FG red via Plane module';
+	is $bg, 0x0000FF, 'BG blue via Plane module';
+	ncplane_destroy($child);
+};
+
+subtest 'Plane styles (via Plane module)' => {
+	plan 2;
+	my $child-opts = NcplaneOptions.new(:y(0), :x(0), :rows(5), :cols(10));
+	my $child = ncplane_create($std, $child-opts);
+	ncplane_on_styles($child, NCSTYLE_BOLD);
+	my $s = ncplane_styles($child);
+	ok $s +& NCSTYLE_BOLD, 'Bold set';
+	ncplane_off_styles($child, NCSTYLE_BOLD);
+	$s = ncplane_styles($child);
+	nok $s +& NCSTYLE_BOLD, 'Bold cleared';
+	ncplane_destroy($child);
+};
+
+subtest 'Plane navigation' => {
+	plan 2;
+	my $child-opts = NcplaneOptions.new(:y(0), :x(0), :rows(5), :cols(10));
+	my $child = ncplane_create($std, $child-opts);
+	my $parent = ncplane_parent($child);
+	ok $parent.defined, 'Parent plane found';
+	my $nc-from-plane = ncplane_notcurses($child);
+	ok $nc-from-plane.defined, 'notcurses context from plane';
+	ncplane_destroy($child);
+};
+
+subtest 'Plane printf (variadic)' => {
+	plan 1;
+	my $child-opts = NcplaneOptions.new(:y(0), :x(0), :rows(3), :cols(40));
+	my $child = ncplane_create($std, $child-opts);
+	my int32 $num = 42;
+	ncplane_printf_yx($child, 0, 0, "val=%d", $num);
+	my uint32 ($cy, $cx);
+	ncplane_cursor_yx($child, $cy, $cx);
+	is $cx, 6, 'Printf wrote 6 chars (val=42)';
+	ncplane_destroy($child);
+};
+
+done-testing;

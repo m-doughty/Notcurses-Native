@@ -1,0 +1,192 @@
+use Test;
+use lib 'lib';
+use lib 't/lib';
+use TestHelper;
+use NativeCall;
+use Notcurses::Native;
+use Notcurses::Native::Types;
+use Notcurses::Native::Context;
+use Notcurses::Native::Plane;
+
+plan 13;
+
+
+my $opts = NotcursesOptions.new(
+	:loglevel(NCLOGLEVEL_SILENT),
+	:flags(NCOPTION_SUPPRESS_BANNERS +| NCOPTION_NO_ALTERNATE_SCREEN +| NCOPTION_INHIBIT_SETLOCALE),
+);
+my ($nc, $) = test-init-nc($opts);
+unless $nc.defined {
+	skip 'No terminal available', 13;
+	exit 0;
+}
+LEAVE { notcurses_stop($nc) if $nc.defined }
+my $std = notcurses_stdplane($nc);
+
+subtest 'ncstrwidth on ASCII string' => {
+	plan 3;
+
+	my int32 $validbytes = 0;
+	my int32 $validwidth = 0;
+	my $rc = ncstrwidth("Hello", $validbytes, $validwidth);
+
+	is $rc, 5, 'ncstrwidth("Hello") returns 5 columns';
+	is $validbytes, 5, '"Hello" is 5 valid bytes';
+	is $validwidth, 5, '"Hello" is 5 valid columns wide';
+};
+
+subtest 'ncstrwidth on empty string' => {
+	plan 3;
+
+	my int32 $validbytes = 0;
+	my int32 $validwidth = 0;
+	my $rc = ncstrwidth("", $validbytes, $validwidth);
+
+	is $rc, 0, 'ncstrwidth("") returns 0 columns';
+	is $validbytes, 0, 'empty string is 0 valid bytes';
+	is $validwidth, 0, 'empty string is 0 valid columns wide';
+};
+
+subtest 'Lex blitter roundtrip' => {
+	plan 4;
+
+	my int32 $blitter = -1;
+	my $rc = notcurses_lex_blitter("default", $blitter);
+	is $rc, 0, 'lex_blitter("default") returns 0';
+	is $blitter, 0, 'lex_blitter("default") sets blitter to NCBLIT_DEFAULT (0)';
+
+	my $str = notcurses_str_blitter(0);
+	ok $str.defined, 'str_blitter(0) returns a defined string';
+	is $str, 'default', 'str_blitter(0) returns "default"';
+};
+
+subtest 'Lex scalemode roundtrip' => {
+	plan 4;
+
+	my int32 $scale = -1;
+	my $rc = notcurses_lex_scalemode("none", $scale);
+	is $rc, 0, 'lex_scalemode("none") returns 0';
+	is $scale, 0, 'lex_scalemode("none") sets scale to NCSCALE_NONE (0)';
+
+	my $str = notcurses_str_scalemode(0);
+	ok $str.defined, 'str_scalemode(0) returns a defined string';
+	is $str, 'none', 'str_scalemode(0) returns "none"';
+};
+
+subtest 'Alignment calculations' => {
+	plan 4;
+
+	my $center = notcurses_align(80, NCALIGN_CENTER, 10);
+	is $center, 35, 'CENTER: 10 in 80 => offset 35';
+
+	my $right = notcurses_align(80, NCALIGN_RIGHT, 10);
+	is $right, 70, 'RIGHT: 10 in 80 => offset 70';
+
+	my $left = notcurses_align(80, NCALIGN_LEFT, 10);
+	is $left, 0, 'LEFT: 10 in 80 => offset 0';
+
+	# Edge case: content fills entire width
+	my $full = notcurses_align(80, NCALIGN_CENTER, 80);
+	is $full, 0, 'CENTER: 80 in 80 => offset 0';
+};
+
+subtest 'notcurses_at_yx reads back rendered content' => {
+	plan 2;
+
+	# Write text to stdplane and render
+	ncplane_putstr_yx($std, 0, 0, "X");
+	notcurses_render($nc);
+
+	my uint16 $style = 0;
+	my uint64 $channels = 0;
+	my $ch = notcurses_at_yx($nc, 0, 0, $style, $channels);
+	ok $ch.defined, 'notcurses_at_yx returns a defined value';
+	is $ch, 'X', 'notcurses_at_yx reads back "X" from (0,0)';
+};
+
+subtest 'Stats alloc, query, and reset' => {
+	plan 6;
+
+	my $stats = notcurses_stats_alloc($nc);
+	ok $stats.defined, 'Stats struct allocated';
+
+	# Do a render to ensure there is at least one
+	notcurses_render($nc);
+
+	notcurses_stats($nc, $stats);
+	ok $stats.renders >= 1, "After render: renders >= 1 (got {$stats.renders})";
+	ok $stats.planes > 0, "Planes count > 0 (got {$stats.planes})";
+
+	# Reset and verify the cumulative counters are cleared
+	my $stats2 = notcurses_stats_alloc($nc);
+	notcurses_stats_reset($nc, $stats2);
+
+	# After reset, a fresh stats query should show renders reset to 0
+	my $stats3 = notcurses_stats_alloc($nc);
+	notcurses_stats($nc, $stats3);
+	ok $stats3.defined, 'Stats after reset are defined';
+	ok $stats3.renders == 0, "Renders reset to 0 after stats_reset (got {$stats3.renders})";
+	ok $stats3.planes > 0, "Planes still > 0 after reset (got {$stats3.planes})";
+};
+
+subtest 'Default colors query' => {
+	plan 2;
+
+	my uint32 $fg = 0;
+	my uint32 $bg = 0;
+	my $rc-fg = notcurses_default_foreground($nc, $fg);
+	my $rc-bg = notcurses_default_background($nc, $bg);
+
+	# These may return 0 (success) or -1 (terminal does not report defaults)
+	ok $rc-fg.defined, "default_foreground returned $rc-fg (fg=$fg)";
+	ok $rc-bg.defined, "default_background returned $rc-bg (bg=$bg)";
+};
+
+subtest 'Pixel support check' => {
+	plan 1;
+
+	my $pixel = notcurses_check_pixel_support($nc);
+	ok $pixel.defined, "check_pixel_support returned $pixel";
+};
+
+subtest 'Can octant' => {
+	plan 1;
+
+	my $octant = notcurses_canoctant($nc);
+	ok $octant.defined, "canoctant returned $octant";
+};
+
+subtest 'Linesigs disable and enable' => {
+	plan 2;
+
+	my $rc = notcurses_linesigs_disable($nc);
+	is $rc, 0, 'linesigs_disable returns 0';
+
+	$rc = notcurses_linesigs_enable($nc);
+	is $rc, 0, 'linesigs_enable returns 0';
+};
+
+subtest 'Input ready file descriptor' => {
+	plan 1;
+
+	my $fd = notcurses_inputready_fd($nc);
+	ok $fd >= 0, "inputready_fd returned valid fd ($fd)";
+};
+
+subtest 'Ncpile create and destroy' => {
+	plan 3;
+
+	my $pile-opts = NcplaneOptions.new(:rows(5), :cols(10));
+	my $pile = ncpile_create($nc, $pile-opts);
+	ok $pile.defined, 'ncpile_create returns a defined plane';
+
+	# Verify we can query dimensions on the pile plane
+	my uint32 ($rows, $cols);
+	ncplane_dim_yx($pile, $rows, $cols);
+	is $rows, 5, 'Pile plane has 5 rows';
+	is $cols, 10, 'Pile plane has 10 cols';
+
+	ncplane_destroy($pile);
+};
+
+done-testing;

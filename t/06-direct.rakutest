@@ -1,0 +1,74 @@
+use Test;
+use lib 'lib';
+use lib 't/lib';
+use TestHelper;
+use NativeCall;
+use Notcurses::Native;
+use Notcurses::Native::Types;
+use Notcurses::Native::Direct;
+
+
+
+plan 7;
+
+# Single context for all tests — avoids multiple init/stop terminal resets
+my $ncd = do { my ($n, $) = test-init-direct(); $n };
+unless $ncd.defined {
+	skip 'No direct mode', 7;
+	exit 0;
+}
+
+subtest 'Direct mode init' => {
+	plan 1;
+	ok $ncd.defined, 'ncdirect_core_init succeeded';
+};
+
+subtest 'Direct mode dimensions' => {
+	plan 2;
+	my $rows = ncdirect_dim_y($ncd);
+	my $cols = ncdirect_dim_x($ncd);
+	ok $rows > 0, "Rows > 0 (got $rows)";
+	ok $cols > 0, "Cols > 0 (got $cols)";
+};
+
+subtest 'Direct mode capabilities' => {
+	plan 6;
+	ok ncdirect_canutf8($ncd).defined, "canutf8 defined";
+	ok ncdirect_cantruecolor($ncd).defined, "cantruecolor defined";
+	ok ncdirect_canhalfblock($ncd).defined, "canhalfblock defined";
+	ok ncdirect_canbraille($ncd).defined, "canbraille defined";
+	ok ncdirect_detected_terminal($ncd).defined, "terminal detected";
+	ok ncdirect_palette_size($ncd) > 0, "palette size > 0";
+};
+
+subtest 'Direct mode colors' => {
+	plan 4;
+	is ncdirect_set_fg_rgb($ncd, 0xFF0000), 0, 'Set FG red';
+	is ncdirect_set_bg_rgb($ncd, 0x0000FF), 0, 'Set BG blue';
+	is ncdirect_set_fg_rgb8($ncd, 0, 255, 0), 0, 'Set FG green via rgb8';
+	is ncdirect_set_fg_default($ncd), 0, 'Reset FG to default';
+};
+
+subtest 'Direct mode styles' => {
+	plan 4;
+	ok ncdirect_supported_styles($ncd).defined, "Supported styles defined";
+	is ncdirect_on_styles($ncd, NCSTYLE_BOLD), 0, 'Bold on';
+	ok ncdirect_styles($ncd) +& NCSTYLE_BOLD, 'Bold is set';
+	is ncdirect_off_styles($ncd, NCSTYLE_BOLD), 0, 'Bold off';
+};
+
+subtest 'Direct mode cursor' => {
+	plan 3;
+	is ncdirect_cursor_move_yx($ncd, 0, 0), 0, 'Move cursor to (0,0)';
+	is ncdirect_cursor_down($ncd, 1), 0, 'Cursor down 1';
+	is ncdirect_cursor_right($ncd, 5), 0, 'Cursor right 5';
+};
+
+subtest 'Direct mode output' => {
+	plan 2;
+	ok ncdirect_putstr($ncd, 0, 'Hello Direct') > 0, "putstr wrote columns";
+	is ncdirect_flush($ncd), 0, 'Flush succeeded';
+};
+
+ncdirect_stop($ncd);
+done-testing;

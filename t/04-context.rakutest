@@ -1,0 +1,174 @@
+use Test;
+use lib 'lib';
+use lib 't/lib';
+use TestHelper;
+use NativeCall;
+use Notcurses::Native;
+use Notcurses::Native::Types;
+use Notcurses::Native::Context;
+use Notcurses::Native::Plane;
+
+plan 15;
+
+
+my $opts = NotcursesOptions.new(
+	:loglevel(NCLOGLEVEL_SILENT),
+	:flags(NCOPTION_SUPPRESS_BANNERS +| NCOPTION_NO_ALTERNATE_SCREEN +| NCOPTION_INHIBIT_SETLOCALE),
+);
+my ($nc, $) = test-init-nc($opts);
+unless $nc.defined {
+	skip 'No terminal available', 12;
+	exit 0;
+}
+LEAVE { notcurses_stop($nc) if $nc.defined }
+my $std = notcurses_stdplane($nc);
+
+subtest 'Capabilities' => {
+	plan 3;
+	my $utf8 = notcurses_canutf8($nc);
+	ok $utf8.defined, "canutf8 = $utf8";
+	my $tc = notcurses_cantruecolor($nc);
+	ok $tc.defined, "cantruecolor = $tc";
+	my $hb = notcurses_canhalfblock($nc);
+	ok $hb.defined, "canhalfblock = $hb";
+};
+
+subtest 'Terminal dimensions' => {
+	plan 2;
+	my uint32 ($rows, $cols);
+	notcurses_term_dim_yx($nc, $rows, $cols);
+	ok $rows > 0, "Terminal rows > 0 (got $rows)";
+	ok $cols > 0, "Terminal cols > 0 (got $cols)";
+};
+
+subtest 'Render' => {
+	plan 1;
+	my $rc = notcurses_render($nc);
+	is $rc, 0, 'Render returns 0';
+};
+
+subtest 'Refresh' => {
+	plan 1;
+	my uint32 ($rows, $cols);
+	my $rc = notcurses_refresh($nc, $rows, $cols);
+	is $rc, 0, 'Refresh returns 0';
+};
+
+subtest 'Cursor' => {
+	plan 1;
+	my $rc = notcurses_cursor_enable($nc, 0, 0);
+	ok $rc.defined, "cursor_enable returned ($rc)";
+	notcurses_cursor_disable($nc);
+};
+
+subtest 'Pile operations' => {
+	plan 4;
+	my $top = ncpile_top($std);
+	ok $top.defined, 'ncpile_top returns plane';
+	my $bottom = ncpile_bottom($std);
+	ok $bottom.defined, 'ncpile_bottom returns plane';
+	my $ntop = notcurses_top($nc);
+	ok $ntop.defined, 'notcurses_top returns plane';
+	my $nbot = notcurses_bottom($nc);
+	ok $nbot.defined, 'notcurses_bottom returns plane';
+};
+
+subtest 'Pile render/rasterize' => {
+	plan 2;
+	my $child = ncplane_create($std, NcplaneOptions.new(:rows(3), :cols(10)));
+	ncplane_putstr_yx($child, 0, 0, 'Test');
+	my $rc = ncpile_render($child);
+	is $rc, 0, 'ncpile_render returns 0';
+	$rc = ncpile_rasterize($child);
+	is $rc, 0, 'ncpile_rasterize returns 0';
+	ncplane_destroy($child);
+};
+
+subtest 'Palette' => {
+	plan 5;
+	my $pal = ncpalette_new($nc);
+	ok $pal.defined, 'Palette created';
+	my $rc = ncpalette_set_rgb8($pal, 0, 255, 0, 0);
+	is $rc, 0, 'Set palette entry 0 to red';
+	my $rc2 = ncpalette_set($pal, 1, 0x00FF00);
+	is $rc2, 0, 'Set palette entry 1 to green';
+	my uint32 $palent;
+	ncpalette_get($pal, 1, $palent);
+	is $palent, 0x00FF00, 'Get palette entry 1 = green';
+	my uint32 ($r, $g, $b);
+	ncpalette_get_rgb8($pal, 0, $r, $g, $b);
+	is $r, 255, 'Palette entry 0 red component = 255';
+	ncpalette_free($pal);
+};
+
+subtest 'Capabilities detail' => {
+	plan 4;
+	my $styles = notcurses_supported_styles($nc);
+	ok $styles.defined, "Supported styles mask = $styles";
+	my $palsize = notcurses_palette_size($nc);
+	ok $palsize > 0, "Palette size = $palsize";
+	my $term = notcurses_detected_terminal($nc);
+	ok $term.defined, "Detected terminal: $term";
+	my $caps = notcurses_capabilities($nc);
+	ok $caps.defined, 'Capabilities pointer returned';
+};
+
+subtest 'System info' => {
+	plan 3;
+	my $account = notcurses_accountname();
+	ok $account.defined, "Account: $account";
+	my $host = notcurses_hostname();
+	ok $host.defined, "Hostname: $host";
+	my $os = notcurses_osversion();
+	ok $os.defined, "OS version: $os";
+};
+
+subtest 'Stddim const' => {
+	plan 3;
+	my uint32 ($y, $x);
+	my $plane = notcurses_stddim_yx_const($nc, $y, $x);
+	ok $plane.defined, 'stddim_yx_const returns plane';
+	ok $y > 0, "Rows via const = $y";
+	ok $x > 0, "Cols via const = $x";
+};
+
+subtest 'Fade context' => {
+	plan 2;
+	my $child = ncplane_create($std, NcplaneOptions.new(:rows(3), :cols(10)));
+	my $fctx = ncfadectx_setup($child);
+	ok $fctx.defined, 'Fade context created';
+	my $iters = ncfadectx_iterations($fctx);
+	ok $iters >= 0, "Fade iterations = $iters";
+	ncfadectx_free($fctx);
+	ncplane_destroy($child);
+};
+
+subtest 'Capabilities struct' => {
+	plan 4;
+	my $caps = notcurses_capabilities($nc);
+	ok $caps.defined, 'Capabilities returned';
+	ok $caps.colors > 0, "Colors = {$caps.colors}";
+	my $cc = nccapability_canchangecolor($caps);
+	ok $cc.defined, "Can change color = $cc";
+	# Check struct fields are accessible
+	ok $caps.rgb.defined, "RGB = {$caps.rgb}";
+};
+
+subtest 'Stats struct' => {
+	plan 4;
+	my $stats = notcurses_stats_alloc($nc);
+	ok $stats.defined, 'Stats allocated';
+	notcurses_stats($nc, $stats);
+	ok $stats.renders >= 0, "Renders = {$stats.renders}";
+	ok $stats.planes > 0, "Planes = {$stats.planes}";
+	ok $stats.fbbytes >= 0, "FB bytes = {$stats.fbbytes}";
+};
+
+subtest 'Timespec struct' => {
+	plan 2;
+	my $ts = Timespec.new(:tv_sec(1), :tv_nsec(500000000));
+	is $ts.tv_sec, 1, 'Timespec seconds';
+	is $ts.tv_nsec, 500000000, 'Timespec nanoseconds';
+};
+
+done-testing;

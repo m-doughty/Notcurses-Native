@@ -1,0 +1,35 @@
+Revision history for Notcurses::Native
+
+{{$NEXT}}
+
+0.1.0  2026-04-09T16:41:32+01:00
+    - Complete NativeCall wrapper for notcurses 3.0.16 TUI library
+    - 606 functions bound across 9 modules (100% of bindable symbols)
+    - Vendored notcurses 3.0.16 built with FFmpeg multimedia + FFI lib
+    - Build.rakumod: CMake build for macOS, Linux, Windows (MSYS2)
+    - Modules: Native (core), Types, Plane, Cell, Channel, Context,
+      Direct, Input, Visual, Widgets
+    - 25 CStruct types: all notcurses options structs, nccell, ncinput,
+      ncstats, nccapabilities, ncvgeom, ncvisual_options, timespec,
+      widget options (selector, menu, tree, tabbed, plot, reader, etc.)
+    - 19 opaque CPointer handle types for type-safe FFI
+    - 226 constants: NCKEY_* (130 key codes), NCSTYLE_*, NCOPTION_*,
+      NCALPHA_*, NCVISUAL_OPTION_*, NCMICE_*, NCBOX_*, NC_BG_* bitmasks
+    - 7 enums: NcLogLevel, NcAlign, NcBlitter, NcScale, NcInputType,
+      NcPixelImpl, NcBlitter (with corrected values matching C header)
+    - CStruct Str field workaround: set-cstruct-str helper + multi
+      method new constructors for all structs with string fields
+    - NcvisualOptions.set-plane method for correct plane compositing
+    - Visual functions use libnotcurses (full) for FFmpeg backend
+    - Variadic printf bindings (Rakudo 2026.03+)
+    - 16 test files, 161 subtests, 748+ assertions
+    - Tests cover: channel math, cell operations, plane lifecycle,
+      widget lifecycle, input handling, context/capabilities, direct
+      mode, visual/image loading, rendered output verification
+    - Render verification tests: exact text, color, style, z-order,
+      box drawing, erase, merge, and gradient checks via notcurses_at_yx
+    - 4x4 PNG test fixture for visual pipeline testing
+    - 8 example programs: hello, colors, boxes, input, clock,
+      image viewer (with kitty pixel protocol), direct mode, progress bars
+    - GitHub Actions CI for Linux, macOS, Windows
+    - Only unbound: 4 vprintf variants (va_list is not FFI-bridgeable)

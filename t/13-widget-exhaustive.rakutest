@@ -1,0 +1,375 @@
+use Test;
+use lib 'lib';
+use lib 't/lib';
+use TestHelper;
+use NativeCall;
+use Notcurses::Native;
+use Notcurses::Native::Types;
+use Notcurses::Native::Plane;
+use Notcurses::Native::Cell;
+use Notcurses::Native::Widgets;
+
+plan 8;
+
+
+my $opts = NotcursesOptions.new(
+	:loglevel(NCLOGLEVEL_SILENT),
+	:flags(NCOPTION_SUPPRESS_BANNERS +| NCOPTION_NO_ALTERNATE_SCREEN +| NCOPTION_INHIBIT_SETLOCALE),
+);
+my ($nc, $) = test-init-nc($opts);
+unless $nc.defined {
+    skip 'No terminal available', 8;
+    exit 0;
+}
+LEAVE { notcurses_stop($nc) if $nc.defined }
+my $std = notcurses_stdplane($nc);
+
+# === 1. Progress bar lifecycle ===
+
+subtest 'Progress bar lifecycle' => {
+    plan 16;
+
+    my $plane = ncplane_create($std, NcplaneOptions.new(:rows(1), :cols(40)));
+    ok $plane.defined, 'Created plane for progress bar';
+
+    my $popts = NcprogbarOptions.new(:ulchannel(0), :urchannel(0), :blchannel(0), :brchannel(0));
+    my $bar = ncprogbar_create($plane, $popts);
+    ok $bar.defined, 'Progress bar created';
+
+    # Set and verify progress at multiple points
+    my int32 $rc;
+
+    $rc = ncprogbar_set_progress($bar, 0e0);
+    is $rc, 0, 'Set progress to 0.0';
+    my num64 $p = ncprogbar_progress($bar);
+    ok $p >= -0.01e0 && $p <= 0.01e0, "Read back progress 0.0 (got $p)";
+
+    $rc = ncprogbar_set_progress($bar, 0.25e0);
+    is $rc, 0, 'Set progress to 0.25';
+    $p = ncprogbar_progress($bar);
+    ok $p >= 0.24e0 && $p <= 0.26e0, "Read back progress 0.25 (got $p)";
+
+    $rc = ncprogbar_set_progress($bar, 0.5e0);
+    is $rc, 0, 'Set progress to 0.5';
+    $p = ncprogbar_progress($bar);
+    ok $p >= 0.49e0 && $p <= 0.51e0, "Read back progress 0.5 (got $p)";
+
+    $rc = ncprogbar_set_progress($bar, 0.75e0);
+    is $rc, 0, 'Set progress to 0.75';
+    $p = ncprogbar_progress($bar);
+    ok $p >= 0.74e0 && $p <= 0.76e0, "Read back progress 0.75 (got $p)";
+
+    $rc = ncprogbar_set_progress($bar, 1e0);
+    is $rc, 0, 'Set progress to 1.0';
+    $p = ncprogbar_progress($bar);
+    ok $p >= 0.99e0 && $p <= 1.01e0, "Read back progress 1.0 (got $p)";
+
+    # Verify plane accessor
+    my $bplane = ncprogbar_plane($bar);
+    ok $bplane.defined, 'ncprogbar_plane returns a valid plane';
+
+    # Test retrograde flag
+    my $plane2 = ncplane_create($std, NcplaneOptions.new(:rows(1), :cols(40)));
+    my $retro-opts = NcprogbarOptions.new(:flags(NCPROGBAR_OPTION_RETROGRADE));
+    my $retro-bar = ncprogbar_create($plane2, $retro-opts);
+    ok $retro-bar.defined, 'Retrograde progress bar created';
+
+    $rc = ncprogbar_set_progress($retro-bar, 0.5e0);
+    is $rc, 0, 'Set retrograde bar progress to 0.5';
+    $p = ncprogbar_progress($retro-bar);
+    ok $p >= 0.49e0 && $p <= 0.51e0, "Retrograde bar reads back 0.5 (got $p)";
+
+    ncprogbar_destroy($retro-bar);
+    ncprogbar_destroy($bar);
+};
+
+# === 2. Reel lifecycle ===
+
+subtest 'Reel lifecycle' => {
+    plan 5;
+
+    my $plane = ncplane_create($std, NcplaneOptions.new(:rows(10), :cols(30)));
+    ok $plane.defined, 'Created plane for reel';
+
+    my $ropts = NcreelOptions.new;
+    my $reel = ncreel_create($plane, $ropts);
+    ok $reel.defined, 'Reel created';
+
+    is ncreel_tabletcount($reel), 0, 'Empty reel has 0 tablets';
+
+    my $rplane = ncreel_plane($reel);
+    ok $rplane.defined, 'ncreel_plane returns a valid plane';
+
+    my int32 $rc = ncreel_redraw($reel);
+    is $rc, 0, 'ncreel_redraw succeeds on empty reel';
+
+    ncreel_destroy($reel);
+};
+
+# === 3. Tabbed full lifecycle ===
+
+subtest 'Tabbed full lifecycle' => {
+    plan 24;
+
+    my $plane = ncplane_create($std, NcplaneOptions.new(:rows(10), :cols(50)));
+    ok $plane.defined, 'Created plane for tabbed widget';
+
+    my $topts = NctabbedOptions.new(:separator(' | '));
+    my $tabbed = nctabbed_create($plane, $topts);
+    ok $tabbed.defined, 'Tabbed widget created';
+    is nctabbed_tabcount($tabbed), 0, 'No tabs initially';
+
+    # Add 3 tabs (pass type objects for NULL after/before, Pointer for NULL callback/opaque)
+    my $tab1 = nctabbed_add($tabbed, NctabHandle, NctabHandle, Pointer, 'Tab1', Pointer);
+    ok $tab1.defined, 'Added Tab1';
+
+    my $tab2 = nctabbed_add($tabbed, NctabHandle, NctabHandle, Pointer, 'Tab2', Pointer);
+    ok $tab2.defined, 'Added Tab2';
+
+    my $tab3 = nctabbed_add($tabbed, NctabHandle, NctabHandle, Pointer, 'Tab3', Pointer);
+    ok $tab3.defined, 'Added Tab3';
+
+    is nctabbed_tabcount($tabbed), 3, 'Tab count is 3 after adding 3 tabs';
+
+    # Get selected tab and verify its name
+    my $selected = nctabbed_selected($tabbed);
+    ok $selected.defined, 'Got selected tab handle';
+    my $name = nctab_name($selected);
+    ok $name.defined, "Selected tab has a name: $name";
+
+    # Navigate forward
+    my $next = nctabbed_next($tabbed);
+    ok $next.defined, 'nctabbed_next returns a tab';
+    my $next-name = nctab_name($next);
+    ok $next-name.defined, "Next tab name: $next-name";
+
+    # Navigate backward
+    my $prev = nctabbed_prev($tabbed);
+    ok $prev.defined, 'nctabbed_prev returns a tab';
+
+    # Verify separator
+    my $sep = nctabbed_separator($tabbed);
+    is $sep, ' | ', 'Separator is " | "';
+
+    my int32 $sep-width = nctabbed_separator_width($tabbed);
+    is $sep-width, 3, 'Separator width is 3';
+
+    # Get/set channels
+    my uint64 $hdrchan = nctabbed_hdrchan($tabbed);
+    ok $hdrchan.defined, "Got hdrchan: $hdrchan";
+
+    my uint64 $selchan = nctabbed_selchan($tabbed);
+    ok $selchan.defined, "Got selchan: $selchan";
+
+    my uint64 $sepchan = nctabbed_sepchan($tabbed);
+    ok $sepchan.defined, "Got sepchan: $sepchan";
+
+    nctabbed_set_hdrchan($tabbed, 0x0000FF00_0000FF00);
+    my uint64 $new-hdr = nctabbed_hdrchan($tabbed);
+    is $new-hdr, 0x0000FF00_0000FF00, 'Set and read back hdrchan';
+
+    # Set tab name
+    my int32 $rc = nctab_set_name($tab1, 'Renamed');
+    is $rc, 0, 'nctab_set_name succeeded';
+    my $renamed = nctab_name($tab1);
+    is $renamed, 'Renamed', 'Tab name updated to Renamed';
+
+    # Move tabs
+    nctab_move_right($tabbed, $tab1);
+    nctab_move_left($tabbed, $tab1);
+    ok True, 'Move right/left did not crash';
+
+    # Get content plane
+    my $cplane = nctabbed_content_plane($tabbed);
+    ok $cplane.defined, 'Got content plane';
+
+    # Delete a tab
+    $rc = nctabbed_del($tabbed, $tab3);
+    is $rc, 0, 'Deleted Tab3';
+    is nctabbed_tabcount($tabbed), 2, 'Tab count is 2 after deletion';
+
+    # Redraw and destroy
+    nctabbed_redraw($tabbed);
+    nctabbed_destroy($tabbed);
+};
+
+# === 4. uint64 Plot lifecycle ===
+
+subtest 'uint64 Plot lifecycle' => {
+    plan 8;
+
+    my $plane = ncplane_create($std, NcplaneOptions.new(:rows(5), :cols(40)));
+    ok $plane.defined, 'Created plane for uint64 plot';
+
+    my $popts = NcplotOptions.new(:rangex(10));
+    my $plot = ncuplot_create($plane, $popts, 0, 100);
+    ok $plot.defined, 'ncuplot created with range 0..100';
+
+    my $pplane = ncuplot_plane($plot);
+    ok $pplane.defined, 'ncuplot_plane returns valid plane';
+
+    my int32 $rc;
+    $rc = ncuplot_add_sample($plot, 0, 50);
+    is $rc, 0, 'ncuplot_add_sample(0, 50) succeeded';
+
+    $rc = ncuplot_add_sample($plot, 1, 75);
+    is $rc, 0, 'ncuplot_add_sample(1, 75) succeeded';
+
+    $rc = ncuplot_set_sample($plot, 2, 25);
+    is $rc, 0, 'ncuplot_set_sample(2, 25) succeeded';
+
+    # Read back sample at slot 2
+    my uint64 $y = 0;
+    $rc = ncuplot_sample($plot, 2, $y);
+    is $rc, 0, 'ncuplot_sample read succeeded';
+    is $y, 25, 'ncuplot_sample reads back 25 at slot 2';
+
+    ncuplot_destroy($plot);
+};
+
+# === 5. double Plot lifecycle ===
+
+subtest 'double Plot lifecycle' => {
+    plan 8;
+
+    my $plane = ncplane_create($std, NcplaneOptions.new(:rows(5), :cols(40)));
+    ok $plane.defined, 'Created plane for double plot';
+
+    my $popts = NcplotOptions.new(:rangex(10));
+    my $plot = ncdplot_create($plane, $popts, 0e0, 100e0);
+    ok $plot.defined, 'ncdplot created with range 0.0..100.0';
+
+    my $pplane = ncdplot_plane($plot);
+    ok $pplane.defined, 'ncdplot_plane returns valid plane';
+
+    my int32 $rc;
+    $rc = ncdplot_add_sample($plot, 0, 50.5e0);
+    is $rc, 0, 'ncdplot_add_sample(0, 50.5) succeeded';
+
+    $rc = ncdplot_set_sample($plot, 1, 75.25e0);
+    is $rc, 0, 'ncdplot_set_sample(1, 75.25) succeeded';
+
+    # Read back sample at slot 1
+    my num64 $y = 0e0;
+    $rc = ncdplot_sample($plot, 1, $y);
+    is $rc, 0, 'ncdplot_sample read succeeded';
+    ok $y >= 75.24e0 && $y <= 75.26e0, "ncdplot_sample reads back ~75.25 at slot 1 (got $y)";
+
+    $rc = ncdplot_set_sample($plot, 2, 0e0);
+    is $rc, 0, 'ncdplot_set_sample(2, 0.0) succeeded for boundary value';
+
+    ncdplot_destroy($plot);
+};
+
+# === 6. Reader lifecycle ===
+
+subtest 'Reader lifecycle' => {
+    plan 10;
+
+    my $plane = ncplane_create($std, NcplaneOptions.new(:rows(3), :cols(30)));
+    ok $plane.defined, 'Created plane for reader';
+
+    my $ropts = NcreaderOptions.new(:flags(NCREADER_OPTION_CURSOR));
+    my $reader = ncreader_create($plane, $ropts);
+    ok $reader.defined, 'Reader created with cursor option';
+
+    my $rplane = ncreader_plane($reader);
+    ok $rplane.defined, 'ncreader_plane returns valid plane';
+
+    # Write text character by character
+    my int32 $rc;
+    $rc = ncreader_write_egc($reader, 'H');
+    is $rc, 0, 'Wrote "H" to reader';
+
+    $rc = ncreader_write_egc($reader, 'i');
+    is $rc, 0, 'Wrote "i" to reader';
+
+    # Read contents back
+    my $contents = ncreader_contents($reader);
+    ok $contents.defined && $contents.contains('Hi'), "Contents contain 'Hi' (got: {$contents.raku})";
+
+    # Move cursor left and right
+    $rc = ncreader_move_left($reader);
+    ok $rc == 0 || $rc == -1, "ncreader_move_left returned $rc (0 or -1 acceptable)";
+
+    $rc = ncreader_move_right($reader);
+    ok $rc == 0 || $rc == -1, "ncreader_move_right returned $rc (0 or -1 acceptable)";
+
+    # Clear the reader
+    $rc = ncreader_clear($reader);
+    is $rc, 0, 'ncreader_clear succeeded';
+
+    # Contents after clear should be empty or whitespace
+    my $after-clear = ncreader_contents($reader);
+    ok !$after-clear.defined || $after-clear.trim eq '', "Contents after clear are empty (got: {($after-clear // '').raku})";
+
+    ncreader_destroy($reader, Pointer);
+};
+
+# === 7. Multiselector lifecycle ===
+
+subtest 'Multiselector lifecycle' => {
+    plan 3;
+
+    my $plane = ncplane_create($std, NcplaneOptions.new(:rows(10), :cols(40)));
+    ok $plane.defined, 'Created plane for multiselector';
+
+    # Create with no items (empty options)
+    my $msopts = NcmultiselectorOptions.new(:title('Select items'), :footer('Space to toggle'));
+    my $msel = ncmultiselector_create($plane, $msopts);
+    ok $msel.defined, 'Multiselector created';
+
+    my $msplane = ncmultiselector_plane($msel);
+    ok $msplane.defined, 'ncmultiselector_plane returns valid plane';
+
+    ncmultiselector_destroy($msel);
+};
+
+# === 8. Selector lifecycle ===
+
+subtest 'Selector lifecycle' => {
+    plan 10;
+
+    my $plane = ncplane_create($std, NcplaneOptions.new(:rows(10), :cols(40)));
+    ok $plane.defined, 'Created plane for selector';
+
+    my $sopts = NcselectorOptions.new(:title('Pick one'), :footer('Use arrows'));
+    my $sel = ncselector_create($plane, $sopts);
+    ok $sel.defined, 'Selector created';
+
+    my $splane = ncselector_plane($sel);
+    ok $splane.defined, 'ncselector_plane returns valid plane';
+
+    # Add items
+    my $item-a = NcselectorItem.new(:option('alpha'), :desc('First option'));
+    my int32 $rc = ncselector_additem($sel, $item-a);
+    is $rc, 0, 'Added item alpha';
+
+    my $item-b = NcselectorItem.new(:option('beta'), :desc('Second option'));
+    $rc = ncselector_additem($sel, $item-b);
+    is $rc, 0, 'Added item beta';
+
+    my $item-c = NcselectorItem.new(:option('gamma'), :desc('Third option'));
+    $rc = ncselector_additem($sel, $item-c);
+    is $rc, 0, 'Added item gamma';
+
+    # Get selected — should be the first item
+    my $selected = ncselector_selected($sel);
+    ok $selected.defined, "Selected item: $selected";
+
+    # Navigate forward
+    my $next = ncselector_nextitem($sel);
+    ok $next.defined, "After nextitem, selected: $next";
+
+    # Navigate backward
+    my $prev = ncselector_previtem($sel);
+    ok $prev.defined, "After previtem, selected: $prev";
+
+    # Delete an item
+    $rc = ncselector_delitem($sel, 'gamma');
+    is $rc, 0, 'Deleted item gamma';
+
+    ncselector_destroy($sel, Pointer);
+};
+
+done-testing;

@@ -1,0 +1,144 @@
+use Test;
+use lib 'lib';
+use lib 't/lib';
+use TestHelper;
+use NativeCall;
+use Notcurses::Native;
+use Notcurses::Native::Types;
+use Notcurses::Native::Plane;
+use Notcurses::Native::Cell;
+use Notcurses::Native::Channel;
+
+plan 10;
+
+
+my $opts = NotcursesOptions.new(
+	:loglevel(NCLOGLEVEL_SILENT),
+	:flags(NCOPTION_SUPPRESS_BANNERS +| NCOPTION_NO_ALTERNATE_SCREEN +| NCOPTION_INHIBIT_SETLOCALE),
+);
+my ($nc, $) = test-init-nc($opts);
+unless $nc.defined {
+	skip 'No terminal available', 10;
+	exit 0;
+}
+LEAVE { notcurses_stop($nc) if $nc.defined }
+my $std = notcurses_stdplane($nc);
+
+# === Channel math (pure computation) ===
+
+subtest 'Dual channel set/get RGB' => {
+	plan 4;
+	my uint64 $channels = 0;
+	ncchannels_set_fg_rgb($channels, 0xFF0000);
+	ncchannels_set_bg_rgb($channels, 0x00FF00);
+	is ncchannels_fg_rgb($channels), 0xFF0000, 'FG red';
+	is ncchannels_bg_rgb($channels), 0x00FF00, 'BG green';
+	ncchannels_set_fg_rgb8($channels, 0, 0, 255);
+	is ncchannels_fg_rgb($channels), 0x0000FF, 'FG blue via rgb8';
+	ncchannels_set_bg_rgb8($channels, 128, 128, 128);
+	is ncchannels_bg_rgb($channels), 0x808080, 'BG grey via rgb8';
+};
+
+subtest 'Dual channel alpha' => {
+	plan 2;
+	my uint64 $channels = 0;
+	my $BLEND = 0x10000000;
+	my $TRANSPARENT = 0x20000000;
+	ncchannels_set_fg_alpha($channels, $BLEND);
+	is ncchannels_fg_alpha($channels), $BLEND, 'FG alpha BLEND';
+	ncchannels_set_bg_alpha($channels, $TRANSPARENT);
+	is ncchannels_bg_alpha($channels), $TRANSPARENT, 'BG alpha TRANSPARENT';
+};
+
+subtest 'Single channel operations' => {
+	plan 4;
+	my uint32 $ch = 0;
+	ncchannel_set($ch, 0xABCDEF);
+	is ncchannel_rgb($ch), 0xABCDEF, 'Channel RGB set/get';
+	is ncchannel_r($ch), 0xAB, 'Red component';
+	is ncchannel_g($ch), 0xCD, 'Green component';
+	is ncchannel_b($ch), 0xEF, 'Blue component';
+};
+
+subtest 'Channel combine/reverse' => {
+	plan 2;
+	my $combined = ncchannels_combine(0xFF0000, 0x00FF00);
+	is ncchannels_fg_rgb($combined), 0xFF0000, 'Combined FG';
+	my $reversed = ncchannels_reverse($combined);
+	is ncchannels_fg_rgb($reversed), 0x00FF00, 'Reversed FG = old BG';
+};
+
+subtest 'Channel defaults' => {
+	plan 2;
+	my uint64 $channels = 0;
+	ncchannels_set_fg_rgb($channels, 0xFF0000);
+	ncchannels_set_fg_default($channels);
+	ok ncchannels_fg_default_p($channels), 'FG default set';
+	ncchannels_set_bg_default($channels);
+	ok ncchannels_bg_default_p($channels), 'BG default set';
+};
+
+subtest 'Pixel operations' => {
+	plan 4;
+	my uint32 $px = ncpixel(255, 128, 64);
+	is ncpixel_r($px), 255, 'Pixel R';
+	is ncpixel_g($px), 128, 'Pixel G';
+	is ncpixel_b($px), 64, 'Pixel B';
+	ncpixel_set_r($px, 100);
+	is ncpixel_r($px), 100, 'Pixel R after set';
+};
+
+# === Cell operations ===
+
+subtest 'Cell load and read' => {
+	plan 3;
+	my $child = ncplane_create($std, NcplaneOptions.new(:rows(5), :cols(20)));
+	my $c = Nccell.new;
+	my $loaded = nccell_load($child, $c, 'A');
+	ok $loaded > 0, "Cell loaded ($loaded bytes)";
+	is $c.gcluster +& 0xFF, 'A'.ord, 'Cell gcluster is A';
+	my $s = nccell_strdup($child, $c);
+	is $s, 'A', 'Cell strdup returns A';
+	nccell_release($child, $c);
+	ncplane_destroy($child);
+};
+
+subtest 'Cell colors' => {
+	plan 4;
+	my $c = Nccell.new;
+	nccell_set_fg_rgb($c, 0xFF0000);
+	nccell_set_bg_rgb($c, 0x00FF00);
+	is nccell_fg_rgb($c), 0xFF0000, 'Cell FG red';
+	is nccell_bg_rgb($c), 0x00FF00, 'Cell BG green';
+	nccell_set_fg_rgb8($c, 0, 0, 255);
+	is nccell_fg_rgb($c), 0x0000FF, 'Cell FG blue via rgb8';
+	ok !nccell_fg_default_p($c), 'Cell FG not default after set';
+};
+
+subtest 'Cell styles' => {
+	plan 3;
+	my $c = Nccell.new;
+	nccell_set_styles($c, NCSTYLE_BOLD +| NCSTYLE_ITALIC);
+	is nccell_styles($c), NCSTYLE_BOLD +| NCSTYLE_ITALIC, 'Both styles set';
+	nccell_off_styles($c, NCSTYLE_BOLD);
+	is nccell_styles($c), NCSTYLE_ITALIC, 'Bold removed, italic remains';
+	nccell_on_styles($c, NCSTYLE_UNDERLINE);
+	is nccell_styles($c), NCSTYLE_ITALIC +| NCSTYLE_UNDERLINE, 'Underline added';
+};
+
+subtest 'Cell duplicate' => {
+	plan 2;
+	my $child = ncplane_create($std, NcplaneOptions.new(:rows(5), :cols(20)));
+	my $c = Nccell.new;
+	nccell_load($child, $c, 'X');
+	nccell_set_fg_rgb($c, 0xABCDEF);
+	my $dup = Nccell.new;
+	my $rc = nccell_duplicate($child, $dup, $c);
+	is $rc, 0, 'Duplicate succeeded';
+	is nccell_fg_rgb($dup), 0xABCDEF, 'Duplicate has same FG color';
+	nccell_release($child, $c);
+	nccell_release($child, $dup);
+	ncplane_destroy($child);
+};
+
+done-testing;

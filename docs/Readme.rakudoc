@@ -1,0 +1,286 @@
+=begin pod
+
+=head1 NAME
+
+Notcurses::Native - Complete NativeCall bindings for the notcurses TUI library
+
+=head1 SYNOPSIS
+
+=begin code :lang<raku>
+use Notcurses::Native;
+use Notcurses::Native::Types;
+use Notcurses::Native::Plane;
+
+# Initialize notcurses
+my $nc = notcurses_init(NotcursesOptions.new, Pointer);
+my $std = notcurses_stdplane($nc);
+
+# Write colored text
+ncplane_set_fg_rgb8($std, 0, 255, 128);
+ncplane_putstr_yx($std, 0, 0, 'Hello from notcurses!');
+notcurses_render($nc);
+
+# Wait for input
+my $ni = Ncinput.new;
+notcurses_get_blocking($nc, $ni);
+
+notcurses_stop($nc);
+=end code
+
+=head1 DESCRIPTION
+
+Notcurses::Native provides complete 1:1 NativeCall bindings for
+L<notcurses|https://github.com/dankamongmen/notcurses> v3.0.16, a modern
+terminal UI library supporting rich text, colors, images, video, and
+pixel-perfect rendering via Sixel and Kitty graphics protocols.
+
+This module vendors notcurses and builds it from source, so no system
+installation of notcurses is required. FFmpeg is used for multimedia
+support (image/video loading).
+
+B<606 functions> are bound across 9 modules, covering 100% of the bindable
+notcurses API. The only unbound functions are 4 C<vprintf> variants that
+take C<va_list>, which cannot be bridged through any FFI.
+
+=head1 MODULES
+
+=head2 Notcurses::Native
+
+Core context management: init, stop, render, input, capabilities.
+
+=begin code :lang<raku>
+use Notcurses::Native;
+
+my $nc = notcurses_init(NotcursesOptions.new, Pointer);
+notcurses_render($nc);
+my $ni = Ncinput.new;
+my $key = notcurses_get_blocking($nc, $ni);
+notcurses_stop($nc);
+=end code
+
+Key functions: C<notcurses_init>, C<notcurses_stop>, C<notcurses_render>,
+C<notcurses_stdplane>, C<notcurses_get_blocking>, C<notcurses_get_nblock>,
+C<notcurses_cantruecolor>, C<notcurses_canutf8>, C<notcurses_mice_enable>.
+
+=head2 Notcurses::Native::Types
+
+All CStruct definitions, enums, constants, and opaque handle types.
+
+B<CStruct types:> NotcursesOptions, NcplaneOptions, Nccell, Ncinput,
+Ncstats, Nccapabilities, Ncvgeom, NcvisualOptions, Timespec, and all
+widget options structs (NcselectorOptions, NcmenuOptions, NctabbedOptions,
+NcplotOptions, NcprogbarOptions, NcreaderOptions, etc.)
+
+B<Enums:> NcLogLevel, NcAlign, NcBlitter, NcScale, NcInputType, NcPixelImpl.
+
+B<Key constants:> 130 NCKEY_* key codes (NCKEY_UP, NCKEY_ESC, NCKEY_F01,
+NCKEY_BUTTON1, etc.), NCSTYLE_*, NCOPTION_*, NCALPHA_*, NCVISUAL_OPTION_*,
+NCMICE_*, NCBOX_*, NCKEY_MOD_*.
+
+=head2 Notcurses::Native::Plane
+
+133 plane functions: create, destroy, write text, read back, cursor,
+colors, styles, channels, box drawing, lines, gradients, merge, resize,
+reparent, z-ordering, printf (variadic).
+
+=begin code :lang<raku>
+use Notcurses::Native::Plane;
+
+my $child = ncplane_create($std, NcplaneOptions.new(:rows(10), :cols(40)));
+ncplane_set_fg_rgb8($child, 255, 0, 0);
+ncplane_putstr_yx($child, 0, 0, 'Red text');
+ncplane_rounded_box($child, 0, 0, 9, 39, 0);
+ncplane_destroy($child);
+=end code
+
+=head2 Notcurses::Native::Cell
+
+56 cell functions: load characters, get/set colors, styles, channels,
+alpha, palette index, duplicate, compare, box cell helpers.
+
+=begin code :lang<raku>
+use Notcurses::Native::Cell;
+
+my $c = Nccell.new;
+nccell_load($plane, $c, 'A');
+nccell_set_fg_rgb($c, 0xFF0000);
+nccell_set_styles($c, NCSTYLE_BOLD);
+my $text = nccell_strdup($plane, $c);
+nccell_release($plane, $c);
+=end code
+
+=head2 Notcurses::Native::Channel
+
+60 channel functions: pure computation on 32-bit single channels and
+64-bit dual channels. Set/get RGB, alpha, palette index, default flags.
+Also pixel (ABGR uint32) creation and component access.
+
+=begin code :lang<raku>
+use Notcurses::Native::Channel;
+
+my uint64 $channels = 0;
+ncchannels_set_fg_rgb($channels, 0xFF0000);
+ncchannels_set_bg_rgb($channels, 0x0000FF);
+my $reversed = ncchannels_reverse($channels);
+=end code
+
+=head2 Notcurses::Native::Context
+
+55 functions: pile operations, palette management, capabilities queries,
+statistics, alignment, string width, fade context, metric formatting,
+system info.
+
+=head2 Notcurses::Native::Direct
+
+70 direct mode functions: simple terminal control without full-screen
+takeover. Colors, styles, cursor, box drawing, input, capabilities.
+
+=begin code :lang<raku>
+use Notcurses::Native::Direct;
+
+my $ncd = ncdirect_core_init(Str, Pointer, 0);
+ncdirect_set_fg_rgb8($ncd, 255, 0, 0);
+ncdirect_putstr($ncd, 0, "Red text\n");
+ncdirect_stop($ncd);
+=end code
+
+=head2 Notcurses::Native::Input
+
+15 input query functions: modifier key predicates, key classification.
+
+=begin code :lang<raku>
+use Notcurses::Native::Input;
+
+if ncinput_ctrl_p($ni) { say "Ctrl held" }
+if nckey_synthesized_p($ni.id) { say "Synthesized key" }
+if nckey_mouse_p($ni.id) { say "Mouse event" }
+=end code
+
+=head2 Notcurses::Native::Visual
+
+23 visual/image functions: load from file, decode, resize, pixel
+manipulation, blit to planes, geometry queries.
+
+=begin code :lang<raku>
+use Notcurses::Native::Visual;
+
+my $v = ncvisual_from_file('photo.png');
+my $vopts = NcvisualOptions.new(:scaling(NCSCALE_SCALE), :blitter(NCBLIT_PIXEL));
+$vopts.set-plane($std);
+ncvisual_blit($nc, $v, $vopts);
+ncvisual_destroy($v);
+=end code
+
+=head2 Notcurses::Native::Widgets
+
+124 widget functions: progress bar, reel, selector, multiselector, tree,
+menu, tabbed, plot (uint64 and double), reader, FD plane, subprocess.
+
+=begin code :lang<raku>
+use Notcurses::Native::Widgets;
+
+my $bar = ncprogbar_create($plane, NcprogbarOptions.new);
+ncprogbar_set_progress($bar, 0.75e0);
+ncprogbar_destroy($bar);
+=end code
+
+=head1 IMAGE VIEWING
+
+Notcurses supports multiple rendering backends for images. On terminals
+that support it (Kitty, iTerm2), pixel-perfect rendering is available:
+
+=begin code :lang<raku>
+my $v = ncvisual_from_file('image.png');
+
+# Check for pixel protocol support
+my $pixel-ok = notcurses_check_pixel_support($nc);
+
+my $blitter = $pixel-ok > 0 ?? NCBLIT_PIXEL
+    !! ncvisual_media_defblitter($nc, NCSCALE_SCALE);
+
+my $plane = ncplane_create($std, NcplaneOptions.new(:rows($rows), :cols($cols)));
+my $vopts = NcvisualOptions.new(:scaling(NCSCALE_SCALE), :blitter($blitter));
+$vopts.set-plane($plane);
+ncvisual_blit($nc, $v, $vopts);
+=end code
+
+=head1 INPUT HANDLING
+
+=begin code :lang<raku>
+loop {
+    my $ni = Ncinput.new;
+    notcurses_get_blocking($nc, $ni);
+
+    given $ni.id {
+        when NCKEY_UP    { say "Up arrow" }
+        when NCKEY_DOWN  { say "Down arrow" }
+        when NCKEY_ESC   { last }
+        when NCKEY_ENTER { say "Enter" }
+        when NCKEY_F01   { say "F1" }
+        default          { say "Key: {chr($ni.id)}" if $ni.id >= 32 }
+    }
+
+    if ncinput_ctrl_p($ni) { say "  +Ctrl" }
+    if ncinput_shift_p($ni) { say "  +Shift" }
+}
+=end code
+
+=head1 MOUSE SUPPORT
+
+=begin code :lang<raku>
+notcurses_mice_enable($nc, NCMICE_ALL_EVENTS);
+
+my $ni = Ncinput.new;
+notcurses_get_blocking($nc, $ni);
+if nckey_mouse_p($ni.id) {
+    say "Mouse at ({$ni.y}, {$ni.x})";
+    say "Button 1" if $ni.id == NCKEY_BUTTON1;
+    say "Scroll up" if $ni.id == NCKEY_SCROLL_UP;
+}
+
+notcurses_mice_disable($nc);
+=end code
+
+=head1 BUILD REQUIREMENTS
+
+Notcurses is vendored and built from source. You need:
+
+=item CMake 3.14+
+=item C compiler (gcc, clang, or MSVC)
+=item FFmpeg development libraries (for image/video support)
+=item ncurses, libunistring, libdeflate (typically system-installed)
+
+B<macOS:> C<brew install cmake ffmpeg ncurses libunistring libdeflate>
+
+B<Linux:> C<apt install cmake libncurses-dev libunistring-dev libdeflate-dev libavformat-dev libavcodec-dev libavdevice-dev libavutil-dev libswscale-dev>
+
+B<Windows:> Use MSYS2 UCRT64: C<pacman -S mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-toolchain mingw-w64-ucrt-x86_64-ffmpeg mingw-w64-ucrt-x86_64-libdeflate mingw-w64-ucrt-x86_64-libunistring mingw-w64-ucrt-x86_64-ncurses>
+
+If FFmpeg is not found, the build falls back to core-only mode (no
+image/video support).
+
+=head1 EXAMPLES
+
+See the C<examples/> directory for complete working programs:
+
+=item C<01-hello.raku> — Hello world
+=item C<02-colors.raku> — Color palette and style showcase
+=item C<03-boxes.raku> — Box drawing with nesting and colors
+=item C<04-input.raku> — Interactive keypress event viewer
+=item C<05-clock.raku> — Color-cycling real-time clock
+=item C<06-imgview.raku> — Terminal image viewer with pixel protocol support
+=item C<07-direct.raku> — Direct mode (no full-screen takeover)
+=item C<08-progress.raku> — Animated progress bar widgets
+
+=head1 AUTHOR
+
+Matt Doughty
+
+=head1 COPYRIGHT AND LICENSE
+
+Copyright 2026 Matt Doughty
+
+This library is free software; you can redistribute it and/or modify it
+under the Artistic License 2.0.
+
+=end pod

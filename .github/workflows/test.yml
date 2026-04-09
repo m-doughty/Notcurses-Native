@@ -1,0 +1,210 @@
+name: test
+
+on:
+  push:
+    branches:
+      - '*'
+    tags-ignore:
+      - '*'
+  pull_request:
+
+env:
+  TERM: xterm
+  COLORTERM: truecolor
+
+jobs:
+  test-linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            pkg-config \
+            libncurses-dev \
+            libunistring-dev \
+            libdeflate-dev \
+            ffmpeg \
+            libavformat-dev \
+            libavcodec-dev \
+            libavdevice-dev \
+            libavutil-dev \
+            libswscale-dev
+
+      - uses: Raku/setup-raku@v1
+        with:
+          raku-version: 'latest'
+
+      - name: Build notcurses
+        run: |
+          mkdir -p resources/lib
+          cd vendor/notcurses
+          mkdir -p build && cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DUSE_MULTIMEDIA=ffmpeg \
+            -DBUILD_FFI_LIBRARY=ON \
+            -DUSE_CXX=OFF \
+            -DBUILD_EXECUTABLES=OFF \
+            -DUSE_PANDOC=OFF \
+            -DUSE_DOCTEST=OFF \
+            -DUSE_POC=OFF \
+            -DUSE_STATIC=OFF
+          make -j$(nproc)
+          cd ../../..
+          for lib in libnotcurses libnotcurses-core libnotcurses-ffi; do
+            found=$(find vendor/notcurses/build -name "${lib}.so*" -type f | head -1)
+            if [ -n "$found" ]; then
+              cp "$found" "resources/lib/${lib}.so"
+              echo "Staged ${lib}.so"
+            fi
+          done
+          touch resources/lib/libnotcurses.dylib resources/lib/libnotcurses-core.dylib resources/lib/libnotcurses-ffi.dylib
+          touch resources/lib/libnotcurses.dll resources/lib/libnotcurses-core.dll resources/lib/libnotcurses-ffi.dll
+
+      - name: Install Raku dependencies
+        run: |
+          zef install --/test --test-depends --deps-only .
+          zef install --/test App::Prove6
+
+      - name: Run tests
+        run: prove6 --verbose -I lib -I t/lib t
+
+  test-macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          brew install \
+            cmake \
+            pkg-config \
+            ffmpeg \
+            ncurses \
+            libunistring \
+            libdeflate
+
+      - uses: Raku/setup-raku@v1
+        with:
+          raku-version: 'latest'
+
+      - name: Build notcurses
+        run: |
+          mkdir -p resources/lib
+          BREW_PREFIX=$(brew --prefix)
+          cd vendor/notcurses
+          mkdir -p build && cd build
+          PKG_CONFIG_PATH="${BREW_PREFIX}/opt/ncurses/lib/pkgconfig:${PKG_CONFIG_PATH}" \
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DUSE_MULTIMEDIA=ffmpeg \
+            -DBUILD_FFI_LIBRARY=ON \
+            -DUSE_CXX=OFF \
+            -DBUILD_EXECUTABLES=OFF \
+            -DUSE_PANDOC=OFF \
+            -DUSE_DOCTEST=OFF \
+            -DUSE_POC=OFF \
+            -DUSE_STATIC=OFF
+          make -j$(sysctl -n hw.ncpu)
+          cd ../../..
+          for lib in libnotcurses libnotcurses-core libnotcurses-ffi; do
+            found=$(find vendor/notcurses/build -name "${lib}*.dylib" -type f | sort | tail -1)
+            if [ -n "$found" ]; then
+              cp "$found" "resources/lib/${lib}.dylib"
+              echo "Staged ${lib}.dylib"
+            fi
+          done
+          touch resources/lib/libnotcurses.so resources/lib/libnotcurses-core.so resources/lib/libnotcurses-ffi.so
+          touch resources/lib/libnotcurses.dll resources/lib/libnotcurses-core.dll resources/lib/libnotcurses-ffi.dll
+
+      - name: Install Raku dependencies
+        run: |
+          zef install --/test --test-depends --deps-only .
+          zef install --/test App::Prove6
+
+      - name: Run tests
+        run: prove6 --verbose -I lib -I t/lib t
+
+  test-windows:
+    name: Windows
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >
+            base-devel
+            git
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-libdeflate
+            mingw-w64-ucrt-x86_64-libunistring
+            mingw-w64-ucrt-x86_64-ncurses
+            mingw-w64-ucrt-x86_64-ffmpeg
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: Raku/setup-raku@v1
+        with:
+          raku-version: 'latest'
+
+      - name: Build notcurses
+        run: |
+          mkdir -p resources/lib
+          cd vendor/notcurses
+          mkdir -p build && cd build
+          cmake .. \
+            -GNinja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DUSE_MULTIMEDIA=ffmpeg \
+            -DBUILD_FFI_LIBRARY=ON \
+            -DUSE_CXX=OFF \
+            -DBUILD_EXECUTABLES=OFF \
+            -DUSE_PANDOC=OFF \
+            -DUSE_DOCTEST=OFF \
+            -DUSE_POC=OFF \
+            -DUSE_STATIC=OFF
+          ninja -j${NUMBER_OF_PROCESSORS:-4}
+          cd ../../..
+          for lib in libnotcurses libnotcurses-core libnotcurses-ffi; do
+            found=$(find vendor/notcurses/build -name "${lib}*.dll" -type f | head -1)
+            if [ -z "$found" ]; then
+              nolib=${lib#lib}
+              found=$(find vendor/notcurses/build -name "${nolib}*.dll" -type f | head -1)
+            fi
+            if [ -n "$found" ]; then
+              cp "$found" "resources/lib/${lib}.dll"
+              echo "Staged ${lib}.dll from $found"
+            else
+              echo "Warning: ${lib}.dll not found"
+            fi
+          done
+          touch resources/lib/libnotcurses.dylib resources/lib/libnotcurses-core.dylib resources/lib/libnotcurses-ffi.dylib
+          touch resources/lib/libnotcurses.so resources/lib/libnotcurses-core.so resources/lib/libnotcurses-ffi.so
+          ls -la resources/lib/
+
+      - name: Install Raku dependencies
+        run: |
+          zef install --/test --test-depends --deps-only .
+          zef install --/test App::Prove6
+
+      - name: Run tests
+        run: prove6 --verbose -I lib -I t/lib t

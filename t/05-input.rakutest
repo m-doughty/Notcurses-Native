@@ -1,0 +1,39 @@
+use Test;
+use lib 'lib';
+use lib 't/lib';
+use TestHelper;
+use NativeCall;
+use Notcurses::Native;
+use Notcurses::Native::Types;
+use Notcurses::Native::Input;
+
+plan 2;
+
+subtest 'Ncinput struct creation' => {
+	plan 3;
+	my $ni = Ncinput.new;
+	is $ni.id, 0, 'Default id is 0';
+	is $ni.y, -1, 'Default y is -1';
+	is $ni.x, -1, 'Default x is -1';
+};
+
+subtest 'Non-blocking input (no key pressed)' => {
+	plan 1;
+	my $opts = NotcursesOptions.new(
+		:loglevel(NCLOGLEVEL_SILENT),
+		:flags(NCOPTION_SUPPRESS_BANNERS +| NCOPTION_NO_ALTERNATE_SCREEN +| NCOPTION_INHIBIT_SETLOCALE),
+	);
+	my ($nc, $) = test-init-nc($opts);
+	unless $nc.defined {
+		skip 'No terminal', 1;
+		next;
+	}
+	LEAVE { notcurses_stop($nc) if $nc.defined }
+
+	my $ni = Ncinput.new;
+	my $key = notcurses_get_nblock($nc, $ni);
+	# No key pressed in test environment, should return 0
+	ok $key.defined, "get_nblock returned ($key)";
+};
+
+done-testing;

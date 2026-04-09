@@ -1,0 +1,77 @@
+use Test;
+use lib 'lib';
+use NativeCall;
+use Notcurses::Native::Types;
+use Notcurses::Native::Input;
+
+plan 5;
+
+# Ncinput CStruct fields are read-only (no `is rw`), so we can only test with
+# default-constructed instances where modifiers=0 and id=0.
+
+subtest 'Modifier predicates on default Ncinput (all false)' => {
+	plan 8;
+
+	my $ni = Ncinput.new;
+
+	# With modifiers=0, every individual modifier predicate should be False
+	nok ncinput_shift_p($ni), 'shift not set on default Ncinput';
+	nok ncinput_ctrl_p($ni), 'ctrl not set on default Ncinput';
+	nok ncinput_alt_p($ni), 'alt not set on default Ncinput';
+	nok ncinput_meta_p($ni), 'meta not set on default Ncinput';
+	nok ncinput_super_p($ni), 'super not set on default Ncinput';
+	nok ncinput_hyper_p($ni), 'hyper not set on default Ncinput';
+	nok ncinput_capslock_p($ni), 'capslock not set on default Ncinput';
+	nok ncinput_numlock_p($ni), 'numlock not set on default Ncinput';
+};
+
+subtest 'ncinput_nomod_p on default Ncinput' => {
+	plan 1;
+
+	my $ni = Ncinput.new;
+
+	# With modifiers=0, nomod should be True
+	ok ncinput_nomod_p($ni), 'nomod is true when no modifiers set';
+};
+
+subtest 'ncinput_equal_p with identical default inputs' => {
+	plan 2;
+
+	my $a = Ncinput.new;
+	my $b = Ncinput.new;
+
+	# Two freshly created Ncinput with identical defaults should be equal
+	ok ncinput_equal_p($a, $b), 'two default Ncinput are equal';
+
+	# Same object compared to itself
+	ok ncinput_equal_p($a, $a), 'Ncinput is equal to itself';
+};
+
+subtest 'nckey_mouse_p with non-mouse id' => {
+	plan 2;
+
+	# id=0 is not a mouse event
+	nok nckey_mouse_p(0), 'id 0 is not a mouse event';
+
+	# ASCII character 'A' (65) is not a mouse event
+	nok nckey_mouse_p(65), 'id 65 (A) is not a mouse event';
+};
+
+subtest 'Modifier predicates return defined boolean values' => {
+	plan 9;
+
+	my $ni = Ncinput.new;
+
+	# Verify each predicate returns a defined value (not Nil)
+	ok ncinput_shift_p($ni).defined, 'ncinput_shift_p returns defined value';
+	ok ncinput_ctrl_p($ni).defined, 'ncinput_ctrl_p returns defined value';
+	ok ncinput_alt_p($ni).defined, 'ncinput_alt_p returns defined value';
+	ok ncinput_meta_p($ni).defined, 'ncinput_meta_p returns defined value';
+	ok ncinput_super_p($ni).defined, 'ncinput_super_p returns defined value';
+	ok ncinput_hyper_p($ni).defined, 'ncinput_hyper_p returns defined value';
+	ok ncinput_capslock_p($ni).defined, 'ncinput_capslock_p returns defined value';
+	ok ncinput_numlock_p($ni).defined, 'ncinput_numlock_p returns defined value';
+	ok ncinput_nomod_p($ni).defined, 'ncinput_nomod_p returns defined value';
+};
+
+done-testing;

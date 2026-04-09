@@ -1,0 +1,244 @@
+use Test;
+use lib 'lib';
+use lib 't/lib';
+use TestHelper;
+use NativeCall;
+use Notcurses::Native;
+use Notcurses::Native::Types;
+use Notcurses::Native::Plane;
+use Notcurses::Native::Cell;
+use Notcurses::Native::Channel;
+use Notcurses::Native::Context;
+
+plan 8;
+
+
+my $opts = NotcursesOptions.new(
+	:loglevel(NCLOGLEVEL_SILENT),
+	:flags(NCOPTION_SUPPRESS_BANNERS +| NCOPTION_NO_ALTERNATE_SCREEN +| NCOPTION_INHIBIT_SETLOCALE),
+);
+my ($nc, $) = test-init-nc($opts);
+unless $nc.defined {
+	skip 'No terminal available', 8;
+	exit 0;
+}
+LEAVE { notcurses_stop($nc) if $nc.defined }
+my $std = notcurses_stdplane($nc);
+
+# Helper: render and read back character + attributes at given position
+sub rendered-at(Int $y, Int $x) {
+	my uint16 $style;
+	my uint64 $channels;
+	my $ch = notcurses_at_yx($nc, $y, $x, $style, $channels);
+	%( :$ch, :$style, :$channels,
+	   fg => ncchannels_fg_rgb($channels),
+	   bg => ncchannels_bg_rgb($channels) )
+}
+
+subtest 'Rendered text matches written text' => {
+	plan 10;
+	my $child = ncplane_create($std, NcplaneOptions.new(:rows(2), :cols(20)));
+	ncplane_putstr_yx($child, 0, 0, 'ABCDE');
+	ncplane_putstr_yx($child, 1, 0, 'FGHIJ');
+	notcurses_render($nc);
+
+	for <A B C D E>.kv -> $i, $expected {
+		my %r = rendered-at(0, $i);
+		is %r<ch>, $expected, "Position (0,$i) renders '$expected'";
+	}
+	for <F G H I J>.kv -> $i, $expected {
+		my %r = rendered-at(1, $i);
+		is %r<ch>, $expected, "Position (1,$i) renders '$expected'";
+	}
+	ncplane_destroy($child);
+};
+
+subtest 'Rendered colors match set colors' => {
+	plan 8;
+	my $child = ncplane_create($std, NcplaneOptions.new(:rows(2), :cols(10)));
+	# Red text on blue background
+	ncplane_set_fg_rgb8($child, 255, 0, 0);
+	ncplane_set_bg_rgb8($child, 0, 0, 255);
+	ncplane_putstr_yx($child, 0, 0, 'Red');
+	# Green text on black background
+	ncplane_set_fg_rgb8($child, 0, 255, 0);
+	ncplane_set_bg_rgb8($child, 0, 0, 0);
+	ncplane_putstr_yx($child, 1, 0, 'Grn');
+	notcurses_render($nc);
+
+	my %r0 = rendered-at(0, 0);
+	is %r0<ch>, 'R', 'Char at (0,0) = R';
+	is %r0<fg>, 0xFF0000, 'FG at (0,0) = red';
+	is %r0<bg>, 0x0000FF, 'BG at (0,0) = blue';
+
+	my %r01 = rendered-at(0, 1);
+	is %r01<fg>, 0xFF0000, 'FG at (0,1) still red (same putstr)';
+
+	my %r1 = rendered-at(1, 0);
+	is %r1<ch>, 'G', 'Char at (1,0) = G';
+	is %r1<fg>, 0x00FF00, 'FG at (1,0) = green';
+	is %r1<bg>, 0x000000, 'BG at (1,0) = black';
+
+	my %r12 = rendered-at(1, 2);
+	is %r12<fg>, 0x00FF00, 'FG at (1,2) still green';
+	ncplane_destroy($child);
+};
+
+subtest 'Rendered styles match set styles' => {
+	plan 6;
+	my $child = ncplane_create($std, NcplaneOptions.new(:rows(3), :cols(10)));
+	ncplane_on_styles($child, NCSTYLE_BOLD);
+	ncplane_putstr_yx($child, 0, 0, 'B');
+	ncplane_off_styles($child, NCSTYLE_BOLD);
+
+	ncplane_on_styles($child, NCSTYLE_ITALIC);
+	ncplane_putstr_yx($child, 1, 0, 'I');
+	ncplane_off_styles($child, NCSTYLE_ITALIC);
+
+	ncplane_on_styles($child, NCSTYLE_BOLD +| NCSTYLE_UNDERLINE);
+	ncplane_putstr_yx($child, 2, 0, 'X');
+	notcurses_render($nc);
+
+	my %b = rendered-at(0, 0);
+	ok %b<style> +& NCSTYLE_BOLD, 'Row 0 has BOLD';
+	nok %b<style> +& NCSTYLE_ITALIC, 'Row 0 does not have ITALIC';
+
+	my %i = rendered-at(1, 0);
+	ok %i<style> +& NCSTYLE_ITALIC, 'Row 1 has ITALIC';
+	nok %i<style> +& NCSTYLE_BOLD, 'Row 1 does not have BOLD';
+
+	my %x = rendered-at(2, 0);
+	ok %x<style> +& NCSTYLE_BOLD, 'Row 2 has BOLD';
+	ok %x<style> +& NCSTYLE_UNDERLINE, 'Row 2 has UNDERLINE';
+	ncplane_destroy($child);
+};
+
+subtest 'Z-order: top plane occludes bottom plane' => {
+	plan 4;
+	my $bottom = ncplane_create($std, NcplaneOptions.new(:rows(2), :cols(10)));
+	ncplane_set_fg_rgb8($bottom, 255, 0, 0);
+	ncplane_putstr_yx($bottom, 0, 0, 'BBBBBBBBBB');
+	ncplane_putstr_yx($bottom, 1, 0, 'BBBBBBBBBB');
+
+	my $top = ncplane_create($std, NcplaneOptions.new(:rows(1), :cols(5)));
+	ncplane_set_fg_rgb8($top, 0, 255, 0);
+	ncplane_putstr_yx($top, 0, 0, 'TTTTT');
+
+	notcurses_render($nc);
+
+	# Top plane occludes bottom at (0,0)-(0,4)
+	my %t = rendered-at(0, 2);
+	is %t<ch>, 'T', 'Occluded position shows top plane char';
+	is %t<fg>, 0x00FF00, 'Occluded position shows top plane color';
+
+	# Bottom plane visible at (0,6) and (1,0)
+	my %b1 = rendered-at(0, 6);
+	is %b1<ch>, 'B', 'Unoccluded position shows bottom plane char';
+
+	my %b2 = rendered-at(1, 0);
+	is %b2<ch>, 'B', 'Row below top plane shows bottom plane';
+	ncplane_destroy($top);
+	ncplane_destroy($bottom);
+};
+
+subtest 'Box drawing renders correct corner characters' => {
+	plan 5;
+	my $child = ncplane_create($std, NcplaneOptions.new(:rows(5), :cols(10)));
+	my $rc = ncplane_rounded_box($child, 0, 0, 4, 9, 0);
+	is $rc, 0, 'rounded_box returns 0';
+	notcurses_render($nc);
+
+	# Corners: ╭╮╰╯ with UTF-8, or /\\/  with ASCII fallback
+	my %ul = rendered-at(0, 0);
+	my %ur = rendered-at(0, 9);
+	my %ll = rendered-at(4, 0);
+	my %lr = rendered-at(4, 9);
+	ok %ul<ch> eq '╭' || %ul<ch> eq '/', "Upper-left corner ({%ul<ch>})";
+	ok %ur<ch> eq '╮' || %ur<ch> eq '\\', "Upper-right corner ({%ur<ch>})";
+	ok %ll<ch> eq '╰' || %ll<ch> eq '\\', "Lower-left corner ({%ll<ch>})";
+	ok %lr<ch> eq '╯' || %lr<ch> eq '/', "Lower-right corner ({%lr<ch>})";
+	ncplane_destroy($child);
+};
+
+subtest 'Erase clears rendered content' => {
+	plan 4;
+	my $child = ncplane_create($std, NcplaneOptions.new(:rows(2), :cols(10)));
+	ncplane_set_fg_rgb8($child, 255, 0, 0);
+	ncplane_putstr_yx($child, 0, 0, 'XXXXXXXXXX');
+	notcurses_render($nc);
+
+	my %before = rendered-at(0, 0);
+	is %before<ch>, 'X', 'Before erase: X visible';
+	is %before<fg>, 0xFF0000, 'Before erase: red color';
+
+	ncplane_erase($child);
+	notcurses_render($nc);
+
+	my %after = rendered-at(0, 0);
+	isnt %after<ch>, 'X', 'After erase: X gone';
+	# After erase, cell reverts to stdplane default (space or empty)
+	ok %after<ch> eq ' ' || %after<ch> eq '', 'After erase: cell is space/empty';
+	ncplane_destroy($child);
+};
+
+subtest 'Merged planes render combined content' => {
+	plan 4;
+	my $src = ncplane_create($std, NcplaneOptions.new(:rows(1), :cols(5)));
+	my $dst = ncplane_create($std, NcplaneOptions.new(:rows(1), :cols(10)));
+
+	ncplane_set_fg_rgb8($dst, 0, 0, 255);
+	ncplane_putstr_yx($dst, 0, 0, 'DDDDDDDDDD');
+
+	ncplane_set_fg_rgb8($src, 255, 0, 0);
+	ncplane_putstr_yx($src, 0, 0, 'SSSSS');
+
+	ncplane_mergedown_simple($src, $dst);
+	# Destroy src, render dst only
+	ncplane_destroy($src);
+	notcurses_render($nc);
+
+	# First 5 cols should have src content (S, red)
+	my %s = rendered-at(0, 0);
+	is %s<ch>, 'S', 'Merged region has source char';
+	is %s<fg>, 0xFF0000, 'Merged region has source color';
+
+	# Cols 5-9 should still have dst content (D, blue)
+	my %d = rendered-at(0, 7);
+	is %d<ch>, 'D', 'Unmerged region keeps dest char';
+	is %d<fg>, 0x0000FF, 'Unmerged region keeps dest color';
+	ncplane_destroy($dst);
+};
+
+subtest 'Stain applies color gradient to existing content' => {
+	plan 4;
+	my $child = ncplane_create($std, NcplaneOptions.new(:rows(1), :cols(10)));
+	# Fill with spaces first so stain has content to color
+	ncplane_putstr_yx($child, 0, 0, 'XXXXXXXXXX');
+
+	# Stain from red (left) to blue (right)
+	my uint64 $ul = 0; my uint64 $ur = 0;
+	my uint64 $ll = 0; my uint64 $lr = 0;
+	ncchannels_set_fg_rgb($ul, 0xFF0000);
+	ncchannels_set_fg_rgb($ur, 0x0000FF);
+	ncchannels_set_fg_rgb($ll, 0xFF0000);
+	ncchannels_set_fg_rgb($lr, 0x0000FF);
+	my $rc = ncplane_stain($child, 0, 0, 1, 10, $ul, $ur, $ll, $lr);
+	ok $rc >= 0, "stain returned $rc";
+	notcurses_render($nc);
+
+	# Left edge should be pure red
+	my %left = rendered-at(0, 0);
+	is %left<fg>, 0xFF0000, 'Left edge is red';
+
+	# Right edge should be pure blue
+	my %right = rendered-at(0, 9);
+	is %right<fg>, 0x0000FF, 'Right edge is blue';
+
+	# Middle should be interpolated (neither pure red nor pure blue)
+	my %mid = rendered-at(0, 5);
+	ok %mid<fg> != 0xFF0000 && %mid<fg> != 0x0000FF,
+		"Middle is interpolated (0x{%mid<fg>.base(16)})";
+	ncplane_destroy($child);
+};
+
+done-testing;

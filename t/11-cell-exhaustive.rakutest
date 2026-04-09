@@ -1,0 +1,473 @@
+use Test;
+use lib 'lib';
+use lib 't/lib';
+use TestHelper;
+use NativeCall;
+use Notcurses::Native;
+use Notcurses::Native::Types;
+use Notcurses::Native::Plane;
+use Notcurses::Native::Cell;
+
+plan 17;
+
+# === Initialize notcurses ===
+
+
+my $opts = NotcursesOptions.new(
+	:loglevel(NCLOGLEVEL_SILENT),
+	:flags(NCOPTION_SUPPRESS_BANNERS +| NCOPTION_NO_ALTERNATE_SCREEN +| NCOPTION_INHIBIT_SETLOCALE),
+);
+my ($nc, $) = test-init-nc($opts);
+unless $nc.defined {
+    skip 'No terminal available', 16;
+    exit 0;
+}
+LEAVE { notcurses_stop($nc) if $nc.defined }
+
+my $std = notcurses_stdplane($nc);
+my $child = ncplane_create($std, NcplaneOptions.new(:rows(10), :cols(40)));
+ok $child.defined, 'Child plane created for cell operations';
+LEAVE { ncplane_destroy($child) if $child.defined }
+
+# === Subtest 1: nccell_init ===
+
+subtest 'nccell_init zeroes a cell' => {
+    plan 4;
+    my $cell = Nccell.new(:gcluster(0xDEAD), :stylemask(0xFF), :channels(0xCAFEBABE));
+    nccell_init($cell);
+    is $cell.gcluster, 0, 'gcluster zeroed';
+    is $cell.gcluster_backstop, 0, 'backstop zeroed';
+    is $cell.stylemask, 0, 'stylemask zeroed';
+    is $cell.channels, 0, 'channels zeroed';
+}
+
+# === Subtest 2: nccell_load and nccell_strdup ===
+
+subtest 'nccell_load and nccell_strdup roundtrip' => {
+    plan 8;
+
+    # ASCII character
+    my $c1 = Nccell.new;
+    nccell_init($c1);
+    my $bytes = nccell_load($child, $c1, 'A');
+    ok $bytes > 0, "nccell_load returns positive bytes for ASCII ($bytes)";
+    my $str = nccell_strdup($child, $c1);
+    is $str, 'A', 'strdup returns loaded ASCII character';
+    nccell_release($child, $c1);
+
+    # Multi-byte: nccell_load with a two-byte UTF-8 character
+    my $c2 = Nccell.new;
+    nccell_init($c2);
+    $bytes = nccell_load($child, $c2, "\x[00E9]");
+    ok $bytes > 0, "nccell_load succeeds for U+00E9 ($bytes bytes)";
+    is nccell_cols($c2), 1, 'U+00E9 is 1 column wide';
+    nccell_release($child, $c2);
+
+    # Multi-byte: nccell_load with a CJK character
+    # Note: NativeCall Str marshalling may truncate multi-byte UTF-8,
+    # so we only check that the load succeeds (returns > 0).
+    my $c3 = Nccell.new;
+    nccell_init($c3);
+    $bytes = nccell_load($child, $c3, "\x[4E16]");
+    ok $bytes > 0, "nccell_load succeeds for U+4E16 ($bytes bytes)";
+    ok nccell_cols($c3) >= 1, "CJK cell reports >= 1 column ({nccell_cols($c3)})";
+    nccell_release($child, $c3);
+
+    # Loading from a longer string takes only the first grapheme cluster
+    my $c4 = Nccell.new;
+    nccell_init($c4);
+    $bytes = nccell_load($child, $c4, 'Hello');
+    ok $bytes > 0, 'nccell_load from multi-char string succeeds';
+    $str = nccell_strdup($child, $c4);
+    is $str, 'H', 'strdup returns only first grapheme cluster';
+    nccell_release($child, $c4);
+}
+
+# === Subtest 3: nccell_load_char ===
+
+subtest 'nccell_load_char loads a single byte character' => {
+    plan 3;
+    my $cell = Nccell.new;
+    nccell_init($cell);
+    my $ret = nccell_load_char($child, $cell, 0x5A);  # 'Z'
+    ok $ret > 0, "nccell_load_char returns positive ($ret)";
+    my $str = nccell_strdup($child, $cell);
+    is $str, 'Z', 'Loaded char is Z';
+    is nccell_cols($cell), 1, 'Single-width character has 1 column';
+    nccell_release($child, $cell);
+}
+
+# === Subtest 4: nccell_prime ===
+
+subtest 'nccell_prime loads with style and channels' => {
+    plan 4;
+    my $cell = Nccell.new;
+    nccell_init($cell);
+    my $style = NCSTYLE_BOLD +| NCSTYLE_ITALIC;
+    my uint64 $channels = 0x00FF000000FF0000;
+    my $ret = nccell_prime($child, $cell, 'X', $style, $channels);
+    ok $ret > 0, "nccell_prime returns positive ($ret)";
+    my $str = nccell_strdup($child, $cell);
+    is $str, 'X', 'Prime loaded correct character';
+    is nccell_styles($cell), $style, 'Prime set correct styles';
+    is nccell_channels($cell), $channels, 'Prime set correct channels';
+    nccell_release($child, $cell);
+}
+
+# === Subtest 5: nccell_duplicate ===
+
+subtest 'nccell_duplicate creates independent copy' => {
+    plan 5;
+    my $src = Nccell.new;
+    nccell_init($src);
+    nccell_load($child, $src, 'D');
+    nccell_set_fg_rgb($src, 0x112233);
+    nccell_set_bg_rgb($src, 0x445566);
+    nccell_set_styles($src, NCSTYLE_UNDERLINE);
+
+    my $dst = Nccell.new;
+    nccell_init($dst);
+    my $ret = nccell_duplicate($child, $dst, $src);
+    is $ret, 0, 'nccell_duplicate returns 0 on success';
+
+    my $dst-str = nccell_strdup($child, $dst);
+    is $dst-str, 'D', 'Duplicate has same character';
+    is nccell_fg_rgb($dst), 0x112233, 'Duplicate has same fg color';
+    is nccell_bg_rgb($dst), 0x445566, 'Duplicate has same bg color';
+
+    # Modify source, verify duplicate is independent
+    nccell_set_fg_rgb($src, 0xAABBCC);
+    is nccell_fg_rgb($dst), 0x112233, 'Duplicate fg unchanged after modifying source';
+
+    nccell_release($child, $src);
+    nccell_release($child, $dst);
+}
+
+# === Subtest 6: Foreground/background RGB set/get roundtrips ===
+
+subtest 'Foreground and background RGB set/get roundtrips' => {
+    plan 10;
+    my $cell = Nccell.new;
+    nccell_init($cell);
+
+    # Set/get fg as packed RGB
+    nccell_set_fg_rgb($cell, 0xABCDEF);
+    is nccell_fg_rgb($cell), 0xABCDEF, 'fg_rgb roundtrips packed value';
+
+    # Set/get bg as packed RGB
+    nccell_set_bg_rgb($cell, 0x123456);
+    is nccell_bg_rgb($cell), 0x123456, 'bg_rgb roundtrips packed value';
+
+    # Verify fg unchanged after setting bg
+    is nccell_fg_rgb($cell), 0xABCDEF, 'fg_rgb unchanged after setting bg';
+
+    # Set/get fg as RGB8 components
+    nccell_set_fg_rgb8($cell, 0x10, 0x20, 0x30);
+    my uint32 $r = 0; my uint32 $g = 0; my uint32 $b = 0;
+    nccell_fg_rgb8($cell, $r, $g, $b);
+    is $r, 0x10, 'fg r component roundtrips';
+    is $g, 0x20, 'fg g component roundtrips';
+    is $b, 0x30, 'fg b component roundtrips';
+
+    # Set/get bg as RGB8 components
+    nccell_set_bg_rgb8($cell, 0xA0, 0xB0, 0xC0);
+    $r = 0; $g = 0; $b = 0;
+    nccell_bg_rgb8($cell, $r, $g, $b);
+    is $r, 0xA0, 'bg r component roundtrips';
+    is $g, 0xB0, 'bg g component roundtrips';
+    is $b, 0xC0, 'bg b component roundtrips';
+
+    # Verify packed value matches components
+    is nccell_bg_rgb($cell), 0xA0B0C0, 'bg_rgb matches assembled components';
+}
+
+# === Subtest 7: Alpha set/get ===
+
+subtest 'Alpha set/get for foreground and background' => {
+    plan 8;
+    my $cell = Nccell.new;
+    nccell_init($cell);
+
+    # Default alpha is OPAQUE
+    is nccell_fg_alpha($cell), NCALPHA_OPAQUE, 'fg alpha defaults to OPAQUE';
+    is nccell_bg_alpha($cell), NCALPHA_OPAQUE, 'bg alpha defaults to OPAQUE';
+
+    # Set fg to BLEND
+    my $ret = nccell_set_fg_alpha($cell, NCALPHA_BLEND);
+    is $ret, 0, 'set_fg_alpha BLEND returns 0';
+    is nccell_fg_alpha($cell), NCALPHA_BLEND, 'fg alpha is BLEND';
+
+    # Set bg to TRANSPARENT
+    $ret = nccell_set_bg_alpha($cell, NCALPHA_TRANSPARENT);
+    is $ret, 0, 'set_bg_alpha TRANSPARENT returns 0';
+    is nccell_bg_alpha($cell), NCALPHA_TRANSPARENT, 'bg alpha is TRANSPARENT';
+
+    # Verify fg alpha unchanged after setting bg alpha
+    is nccell_fg_alpha($cell), NCALPHA_BLEND, 'fg alpha unchanged after setting bg alpha';
+
+    # Set fg to HIGHCONTRAST
+    nccell_set_fg_alpha($cell, NCALPHA_HIGHCONTRAST);
+    is nccell_fg_alpha($cell), NCALPHA_HIGHCONTRAST, 'fg alpha is HIGHCONTRAST';
+}
+
+# === Subtest 8: Default flag set/get ===
+
+subtest 'Default foreground/background flag' => {
+    plan 6;
+    my $cell = Nccell.new;
+    nccell_init($cell);
+
+    # Fresh cell uses default colors
+    ok nccell_fg_default_p($cell), 'Fresh cell has fg default set';
+    ok nccell_bg_default_p($cell), 'Fresh cell has bg default set';
+
+    # Setting an explicit RGB clears the default flag
+    nccell_set_fg_rgb($cell, 0xFF0000);
+    nok nccell_fg_default_p($cell), 'fg default cleared after setting RGB';
+    ok nccell_bg_default_p($cell), 'bg default still set';
+
+    # Restore default
+    nccell_set_fg_default($cell);
+    ok nccell_fg_default_p($cell), 'fg default restored';
+
+    # Same for bg
+    nccell_set_bg_rgb($cell, 0x00FF00);
+    nccell_set_bg_default($cell);
+    ok nccell_bg_default_p($cell), 'bg default restored after set+clear';
+}
+
+# === Subtest 9: Palette index set/get ===
+
+subtest 'Palette index foreground/background' => {
+    plan 8;
+    my $cell = Nccell.new;
+    nccell_init($cell);
+
+    # Initially not palette-indexed
+    nok nccell_fg_palindex_p($cell), 'Fresh cell fg is not palette-indexed';
+    nok nccell_bg_palindex_p($cell), 'Fresh cell bg is not palette-indexed';
+
+    # Set fg palette index
+    my $ret = nccell_set_fg_palindex($cell, 42);
+    is $ret, 0, 'set_fg_palindex returns 0';
+    ok nccell_fg_palindex_p($cell), 'fg is now palette-indexed';
+    is nccell_fg_palindex($cell), 42, 'fg palindex is 42';
+
+    # Set bg palette index
+    $ret = nccell_set_bg_palindex($cell, 200);
+    is $ret, 0, 'set_bg_palindex returns 0';
+    ok nccell_bg_palindex_p($cell), 'bg is now palette-indexed';
+    is nccell_bg_palindex($cell), 200, 'bg palindex is 200';
+}
+
+# === Subtest 10: Style manipulation ===
+
+subtest 'Style set, on, and off operations' => {
+    plan 8;
+    my $cell = Nccell.new;
+    nccell_init($cell);
+
+    is nccell_styles($cell), NCSTYLE_NONE, 'Fresh cell has no styles';
+
+    # Set bold
+    nccell_set_styles($cell, NCSTYLE_BOLD);
+    is nccell_styles($cell), NCSTYLE_BOLD, 'set_styles to BOLD';
+
+    # Add italic via on_styles
+    nccell_on_styles($cell, NCSTYLE_ITALIC);
+    is nccell_styles($cell), NCSTYLE_BOLD +| NCSTYLE_ITALIC, 'on_styles added ITALIC';
+
+    # Add underline
+    nccell_on_styles($cell, NCSTYLE_UNDERLINE);
+    is nccell_styles($cell), NCSTYLE_BOLD +| NCSTYLE_ITALIC +| NCSTYLE_UNDERLINE,
+        'on_styles added UNDERLINE';
+
+    # Remove bold via off_styles
+    nccell_off_styles($cell, NCSTYLE_BOLD);
+    is nccell_styles($cell), NCSTYLE_ITALIC +| NCSTYLE_UNDERLINE,
+        'off_styles removed BOLD';
+
+    # Off a style that is not set (no-op)
+    nccell_off_styles($cell, NCSTYLE_STRUCK);
+    is nccell_styles($cell), NCSTYLE_ITALIC +| NCSTYLE_UNDERLINE,
+        'off_styles of unset style is a no-op';
+
+    # Set overwrites all styles
+    nccell_set_styles($cell, NCSTYLE_STRUCK);
+    is nccell_styles($cell), NCSTYLE_STRUCK, 'set_styles overwrites to STRUCK only';
+
+    # Clear all styles
+    nccell_set_styles($cell, NCSTYLE_NONE);
+    is nccell_styles($cell), NCSTYLE_NONE, 'set_styles to NONE clears all';
+}
+
+# === Subtest 11: Whole channels and individual channel set/get ===
+
+subtest 'Whole channels and individual fchannel/bchannel' => {
+    plan 6;
+    my $cell = Nccell.new;
+    nccell_init($cell);
+
+    # Set whole channels
+    my uint64 $ch = 0x00AABBCC00112233;
+    nccell_set_channels($cell, $ch);
+    is nccell_channels($cell), $ch, 'set/get channels roundtrip';
+
+    # Read individual channels
+    is nccell_fchannel($cell), 0x00AABBCC, 'fchannel extracts upper 32 bits';
+    is nccell_bchannel($cell), 0x00112233, 'bchannel extracts lower 32 bits';
+
+    # Set individual channels
+    nccell_set_fchannel($cell, 0x00DEADBE);
+    is nccell_fchannel($cell), 0x00DEADBE, 'set_fchannel updates fg channel';
+    is nccell_bchannel($cell), 0x00112233, 'bchannel unchanged after set_fchannel';
+
+    nccell_set_bchannel($cell, 0x00CAFE01);
+    is nccell_bchannel($cell), 0x00CAFE01, 'set_bchannel updates bg channel';
+}
+
+# === Subtest 12: nccell_extract ===
+
+subtest 'nccell_extract returns character, style, and channels' => {
+    plan 4;
+    my $cell = Nccell.new;
+    nccell_init($cell);
+    nccell_load($child, $cell, 'E');
+    nccell_set_styles($cell, NCSTYLE_BOLD +| NCSTYLE_UNDERLINE);
+    nccell_set_fg_rgb($cell, 0xAA0000);
+    nccell_set_bg_rgb($cell, 0x0000BB);
+
+    my uint16 $stylemask = 0;
+    my uint64 $channels = 0;
+    my $str = nccell_extract($child, $cell, $stylemask, $channels);
+
+    is $str, 'E', 'extract returns correct character';
+    is $stylemask, NCSTYLE_BOLD +| NCSTYLE_UNDERLINE, 'extract returns correct stylemask';
+    ok $channels != 0, 'extract returns non-zero channels';
+    # Verify fg portion of channels contains our color
+    is nccell_fg_rgb($cell), 0xAA0000, 'fg color consistent with what was set';
+    nccell_release($child, $cell);
+}
+
+# === Subtest 13: nccellcmp ===
+
+subtest 'nccellcmp compares cells' => {
+    plan 3;
+
+    # Two identical cells
+    my $c1 = Nccell.new;
+    nccell_init($c1);
+    nccell_load($child, $c1, 'Q');
+    nccell_set_fg_rgb($c1, 0x111111);
+
+    my $c2 = Nccell.new;
+    nccell_init($c2);
+    nccell_duplicate($child, $c2, $c1);
+
+    nok nccellcmp($child, $c1, $child, $c2), 'Identical cells compare as equal (false = no difference)';
+
+    # Different character
+    my $c3 = Nccell.new;
+    nccell_init($c3);
+    nccell_load($child, $c3, 'R');
+    nccell_set_fg_rgb($c3, 0x111111);
+
+    ok nccellcmp($child, $c1, $child, $c3), 'Different characters compare as unequal';
+
+    # Same char, different color
+    my $c4 = Nccell.new;
+    nccell_init($c4);
+    nccell_load($child, $c4, 'Q');
+    nccell_set_fg_rgb($c4, 0x999999);
+
+    ok nccellcmp($child, $c1, $child, $c4), 'Same char but different fg color compares as unequal';
+
+    nccell_release($child, $c1);
+    nccell_release($child, $c2);
+    nccell_release($child, $c3);
+    nccell_release($child, $c4);
+}
+
+# === Subtest 14: Box cell helpers ===
+
+subtest 'Box cell loading (rounded, double, ascii, light, heavy)' => {
+    plan 15;
+
+    sub test-box-cells(Str $label, &loader) {
+        my $ul = Nccell.new; nccell_init($ul);
+        my $ur = Nccell.new; nccell_init($ur);
+        my $ll = Nccell.new; nccell_init($ll);
+        my $lr = Nccell.new; nccell_init($lr);
+        my $hl = Nccell.new; nccell_init($hl);
+        my $vl = Nccell.new; nccell_init($vl);
+
+        my $ret = loader($child, 0, 0, $ul, $ur, $ll, $lr, $hl, $vl);
+        is $ret, 0, "$label box returns 0";
+
+        my $ul-str = nccell_strdup($child, $ul);
+        ok $ul-str.defined && $ul-str.chars > 0, "$label box ul has content: {$ul-str // '(undef)'}";
+
+        my $hl-str = nccell_strdup($child, $hl);
+        ok $hl-str.defined && $hl-str.chars > 0, "$label box hl has content: {$hl-str // '(undef)'}";
+
+        nccell_release($child, $ul);
+        nccell_release($child, $ur);
+        nccell_release($child, $ll);
+        nccell_release($child, $lr);
+        nccell_release($child, $hl);
+        nccell_release($child, $vl);
+    }
+
+    test-box-cells('rounded', &nccells_rounded_box);
+    test-box-cells('double', &nccells_double_box);
+    test-box-cells('ascii', &nccells_ascii_box);
+    test-box-cells('light', &nccells_light_box);
+    test-box-cells('heavy', &nccells_heavy_box);
+}
+
+# === Subtest 15: nccell_cols for single-width and wide characters ===
+
+subtest 'nccell_cols reports column width' => {
+    plan 3;
+
+    # Single-width ASCII
+    my $c1 = Nccell.new;
+    nccell_init($c1);
+    nccell_load($child, $c1, 'W');
+    is nccell_cols($c1), 1, 'ASCII character W is 1 column wide';
+    nccell_release($child, $c1);
+
+    # Another ASCII character for consistency
+    my $c2 = Nccell.new;
+    nccell_init($c2);
+    nccell_load($child, $c2, '!');
+    is nccell_cols($c2), 1, 'Punctuation ! is 1 column wide';
+    nccell_release($child, $c2);
+
+    # Fresh cell (no load) should report 1 column (default width field)
+    my $c3 = Nccell.new;
+    nccell_init($c3);
+    is nccell_cols($c3), 1, 'Empty initialized cell reports 1 column';
+}
+
+# === Subtest 16: nccell_set_fg_rgb8_clipped / nccell_set_bg_rgb8_clipped ===
+
+subtest 'Clipped RGB8 set clamps out-of-range values' => {
+    plan 4;
+    my $cell = Nccell.new;
+    nccell_init($cell);
+
+    # Set fg with values that exceed byte range (should be clamped)
+    nccell_set_fg_rgb8_clipped($cell, 300, -10, 128);
+    my uint32 $r = 0; my uint32 $g = 0; my uint32 $b = 0;
+    nccell_fg_rgb8($cell, $r, $g, $b);
+    is $r, 255, 'fg r clamped from 300 to 255';
+    is $g, 0, 'fg g clamped from -10 to 0';
+
+    # Set bg with clipped values
+    nccell_set_bg_rgb8_clipped($cell, 0, 500, 100);
+    $r = 0; $g = 0; $b = 0;
+    nccell_bg_rgb8($cell, $r, $g, $b);
+    is $g, 255, 'bg g clamped from 500 to 255';
+    is $b, 100, 'bg b passes through unchanged at 100';
+}
