@@ -21,7 +21,7 @@ subtest 'Version components' => {
 	notcurses_version_components($major, $minor, $patch, $tweak);
 	is $major, 3, 'Major version';
 	is $minor, 0, 'Minor version';
-	is $patch, 16, 'Patch version';
+	is $patch, 17, 'Patch version';
 	ok $tweak.defined, 'Tweak defined';
 };
 
