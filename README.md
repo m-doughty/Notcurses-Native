@@ -32,7 +32,7 @@ notcurses_stop($nc);
 DESCRIPTION
 ===========
 
-Notcurses::Native provides complete 1:1 NativeCall bindings for [notcurses](https://github.com/dankamongmen/notcurses) v3.0.16, a modern terminal UI library supporting rich text, colors, images, video, and pixel-perfect rendering via Sixel and Kitty graphics protocols.
+Notcurses::Native provides complete 1:1 NativeCall bindings for [notcurses](https://github.com/dankamongmen/notcurses) v3.0.17, a modern terminal UI library supporting rich text, colors, images, video, and pixel-perfect rendering via Sixel and Kitty graphics protocols.
 
 This module vendors notcurses and builds it from source, so no system installation of notcurses is required. FFmpeg is used for multimedia support (image/video loading).
 
@@ -244,7 +244,7 @@ Notcurses is vendored and built from source. You need:
 
   * `ncurses`, `libunistring`, `libdeflate` development headers
 
-  * A multimedia backend for image/video support: **FFmpeg** on Linux/macOS, **OpenImageIO** on Windows
+  * FFmpeg for image/video support (Linux, macOS, and Windows)
 
 Linux (Debian / Ubuntu)
 -----------------------
@@ -268,7 +268,7 @@ macOS (Homebrew)
 Windows (MSYS2 UCRT64)
 ----------------------
 
-Windows support requires MSYS2 in its **UCRT64** environment — this produces native Windows DLLs via mingw-w64 GCC. Visual Studio / MSVC are not supported. Per upstream notcurses docs, OpenImageIO (not FFmpeg) is the recommended multimedia backend on Windows.
+Windows support requires MSYS2 in its **UCRT64** environment — this produces native Windows DLLs via mingw-w64 GCC. Visual Studio / MSVC are not supported. Upstream notcurses docs recommend OpenImageIO on Windows, but current MSYS2 OIIO (3.1.x) has ABI drift vs notcurses 3.0.17's oiio.cpp, so we use FFmpeg instead — same media path as Linux/macOS.
 
 Install MSYS2 from [https://www.msys2.org/](https://www.msys2.org/), open a **UCRT64** shell, and:
 
@@ -279,14 +279,14 @@ Install MSYS2 from [https://www.msys2.org/](https://www.msys2.org/), open a **UC
         mingw-w64-ucrt-x86_64-libdeflate \
         mingw-w64-ucrt-x86_64-libunistring \
         mingw-w64-ucrt-x86_64-ncurses \
-        mingw-w64-ucrt-x86_64-openimageio
+        mingw-w64-ucrt-x86_64-ffmpeg
 
 Build tests (`notcurses-tester`) do not run on Windows — upstream limitation. The module builds and loads; terminal-dependent tests (`xt/`) need to be run on Linux or macOS.
 
 Core-only (no multimedia)
 -------------------------
 
-If you don't need image/video support, you can omit the FFmpeg or OpenImageIO dependency. The build detects missing multimedia libraries and falls back automatically.
+If you don't need image/video support, you can omit the FFmpeg dependency. The build detects missing multimedia libraries and falls back automatically.
 
 INSTALLATION
 ============

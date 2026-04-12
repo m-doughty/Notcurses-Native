@@ -30,7 +30,7 @@ notcurses_stop($nc);
 =head1 DESCRIPTION
 
 Notcurses::Native provides complete 1:1 NativeCall bindings for
-L<notcurses|https://github.com/dankamongmen/notcurses> v3.0.16, a modern
+L<notcurses|https://github.com/dankamongmen/notcurses> v3.0.17, a modern
 terminal UI library supporting rich text, colors, images, video, and
 pixel-perfect rendering via Sixel and Kitty graphics protocols.
 
@@ -248,7 +248,7 @@ Notcurses is vendored and built from source. You need:
 =item CMake 3.14+
 =item A C compiler (gcc, clang, or mingw-w64 under MSYS2)
 =item C<ncurses>, C<libunistring>, C<libdeflate> development headers
-=item A multimedia backend for image/video support: B<FFmpeg> on Linux/macOS, B<OpenImageIO> on Windows
+=item FFmpeg for image/video support (Linux, macOS, and Windows)
 
 =head2 Linux (Debian / Ubuntu)
 
@@ -271,8 +271,10 @@ Fedora / RHEL equivalents:
 
 Windows support requires MSYS2 in its B<UCRT64> environment — this
 produces native Windows DLLs via mingw-w64 GCC. Visual Studio / MSVC
-are not supported. Per upstream notcurses docs, OpenImageIO (not
-FFmpeg) is the recommended multimedia backend on Windows.
+are not supported. Upstream notcurses docs recommend OpenImageIO on
+Windows, but current MSYS2 OIIO (3.1.x) has ABI drift vs notcurses
+3.0.17's oiio.cpp, so we use FFmpeg instead — same media path as
+Linux/macOS.
 
 Install MSYS2 from L<https://www.msys2.org/>, open a B<UCRT64> shell,
 and:
@@ -284,7 +286,7 @@ and:
         mingw-w64-ucrt-x86_64-libdeflate \
         mingw-w64-ucrt-x86_64-libunistring \
         mingw-w64-ucrt-x86_64-ncurses \
-        mingw-w64-ucrt-x86_64-openimageio
+        mingw-w64-ucrt-x86_64-ffmpeg
 
 Build tests (C<notcurses-tester>) do not run on Windows — upstream
 limitation. The module builds and loads; terminal-dependent tests
@@ -292,9 +294,9 @@ limitation. The module builds and loads; terminal-dependent tests
 
 =head2 Core-only (no multimedia)
 
-If you don't need image/video support, you can omit the FFmpeg or
-OpenImageIO dependency. The build detects missing multimedia libraries
-and falls back automatically.
+If you don't need image/video support, you can omit the FFmpeg
+dependency. The build detects missing multimedia libraries and falls
+back automatically.
 
 =head1 INSTALLATION
 

@@ -2,6 +2,21 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.1.5  2026-04-12T21:17:32+01:00
+    - Build: tighten library-matching regex in Build.rakumod so that
+      staging `libnotcurses` doesn't accidentally pick up
+      `libnotcurses-ffi` (only `.` is a valid separator after the
+      library name, never `-`). The 3.0.16 → 3.0.17 bump surfaced this:
+      filesystem ordering began handing us the FFI shim first, which
+      lacks `notcurses_init` and quietly broke every terminal-dependent
+      test.
+    - Bump vendored notcurses 3.0.16 → 3.0.17, which upstream describes
+      as "Fix build problems on Windows and Mac OSX." The public API is
+      unchanged between these releases (single-character attribute-macro
+      typo fix in notcurses.h, no ABI impact), so our bindings need no
+      changes. Drops the Windows termios workaround that would otherwise
+      have been needed for 3.0.16.
+
 0.1.4  2026-04-12T20:19:12+01:00
     - CI: add Windows (MSYS2 UCRT64) to the GitHub Actions test matrix.
       Uses OpenImageIO as the multimedia backend (per upstream notcurses

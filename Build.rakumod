@@ -94,11 +94,17 @@ class Build {
 	}
 
 	method !find-lib(IO::Path $dir, Str $lib, Str $ext, IO::Path $target) {
-		# Search for the library in build output, handling platform naming differences
-		# MinGW: libnotcurses-core.dll or libnotcurses-core-3.dll
-		# MSVC: notcurses-core.dll
-		# Linux: libnotcurses-core.so or libnotcurses-core.so.3.0.17
-		# macOS: libnotcurses-core.dylib or libnotcurses-core.3.dylib
+		# Search for the library in build output, handling platform naming differences.
+		# MinGW:  libnotcurses-core.dll, libnotcurses-core-3.dll, notcurses-core.dll
+		# Linux:  libnotcurses-core.so, libnotcurses-core.so.3, libnotcurses-core.so.3.0.17
+		# macOS:  libnotcurses-core.dylib, libnotcurses-core.3.dylib, libnotcurses-core.3.0.17.dylib
+		#
+		# IMPORTANT: these libraries share a prefix — `libnotcurses`,
+		# `libnotcurses-core`, `libnotcurses-ffi`. A naive "dash or dot"
+		# regex on `libnotcurses` would also match `libnotcurses-ffi`,
+		# staging the wrong artifact. We only allow a `.` (version separator
+		# or extension) after the pattern, never `-`. Each lib then matches
+		# only its own variants.
 		my $nolib = $lib.subst(/^ 'lib'/, '');
 		my @patterns = ($lib, $nolib);
 
@@ -111,7 +117,7 @@ class Build {
 			next unless $entry.f;
 			my $name = $entry.basename;
 			for @patterns -> $pat {
-				if $name ~~ /^ $pat [ '.' | '-' ] .* $ext $/ || $name eq "$pat.$ext" {
+				if $name eq "$pat.$ext" || $name ~~ /^ $pat '.' .* $ext $/ {
 					copy $entry, $target;
 					say "  Staged: {$target.basename} (from $name)";
 					return;
