@@ -186,7 +186,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DUSE_MULTIMEDIA=oiio \
             -DBUILD_FFI_LIBRARY=ON \
-            -DUSE_CXX=OFF \
+            -DUSE_CXX=ON \
             -DBUILD_EXECUTABLES=OFF \
             -DUSE_PANDOC=OFF \
             -DUSE_DOCTEST=OFF \
