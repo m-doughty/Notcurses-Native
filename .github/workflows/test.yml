@@ -153,6 +153,11 @@ jobs:
         with:
           submodules: recursive
 
+      # Rakudo first so msys2 (below) can inherit PATH including raku/zef.
+      - uses: Raku/setup-raku@v1
+        with:
+          raku-version: 'latest'
+
       # MSYS2 in UCRT64 mode — produces native Windows DLLs/EXEs built
       # with mingw-w64 GCC. Per upstream notcurses docs this is the only
       # supported Windows build environment.
@@ -160,6 +165,10 @@ jobs:
         with:
           msystem: UCRT64
           update: true
+          # Inherit the Windows PATH so Raku/setup-raku's rakudo + zef
+          # are visible inside the msys2 shell. Without this the msys2
+          # environment is sandboxed from the runner's PATH entries.
+          path-type: inherit
           install: >-
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ffmpeg
@@ -168,10 +177,6 @@ jobs:
             mingw-w64-ucrt-x86_64-ncurses
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-toolchain
-
-      - uses: Raku/setup-raku@v1
-        with:
-          raku-version: 'latest'
 
       # Windows build uses ffmpeg for multimedia. Upstream notcurses docs
       # recommend OpenImageIO on Windows, but MSYS2 ships only the latest
