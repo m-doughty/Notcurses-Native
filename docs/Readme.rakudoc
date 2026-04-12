@@ -246,39 +246,70 @@ notcurses_mice_disable($nc);
 Notcurses is vendored and built from source. You need:
 
 =item CMake 3.14+
-=item C compiler (gcc, clang, or MSVC)
-=item FFmpeg development libraries (for image/video support)
-=item ncurses, libunistring, libdeflate (typically system-installed)
+=item A C compiler (gcc, clang, or mingw-w64 under MSYS2)
+=item C<ncurses>, C<libunistring>, C<libdeflate> development headers
+=item A multimedia backend for image/video support: B<FFmpeg> on Linux/macOS, B<OpenImageIO> on Windows
 
-B<macOS:> C<brew install cmake ffmpeg ncurses libunistring libdeflate>
+=head2 Linux (Debian / Ubuntu)
 
-B<Linux:> C<apt install cmake libncurses-dev libunistring-dev libdeflate-dev libavformat-dev libavcodec-dev libavdevice-dev libavutil-dev libswscale-dev>
+    sudo apt install \
+        cmake pkg-config \
+        libncurses-dev libunistring-dev libdeflate-dev \
+        libavformat-dev libavcodec-dev libavdevice-dev \
+        libavutil-dev libswscale-dev
 
-B<Windows:> Use MSYS2 UCRT64: C<pacman -S mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-toolchain mingw-w64-ucrt-x86_64-ffmpeg mingw-w64-ucrt-x86_64-libdeflate mingw-w64-ucrt-x86_64-libunistring mingw-w64-ucrt-x86_64-ncurses>
+Fedora / RHEL equivalents:
 
-If FFmpeg is not found, the build falls back to core-only mode (no
-image/video support).
+    sudo dnf install cmake pkgconf-pkg-config \
+        ncurses-devel libunistring-devel libdeflate-devel ffmpeg-devel
 
-=head2 Installation
+=head2 macOS (Homebrew)
+
+    brew install cmake pkg-config ffmpeg ncurses libunistring libdeflate
+
+=head2 Windows (MSYS2 UCRT64)
+
+Windows support requires MSYS2 in its B<UCRT64> environment — this
+produces native Windows DLLs via mingw-w64 GCC. Visual Studio / MSVC
+are not supported. Per upstream notcurses docs, OpenImageIO (not
+FFmpeg) is the recommended multimedia backend on Windows.
+
+Install MSYS2 from L<https://www.msys2.org/>, open a B<UCRT64> shell,
+and:
+
+    pacman -S \
+        mingw-w64-ucrt-x86_64-cmake \
+        mingw-w64-ucrt-x86_64-ninja \
+        mingw-w64-ucrt-x86_64-toolchain \
+        mingw-w64-ucrt-x86_64-libdeflate \
+        mingw-w64-ucrt-x86_64-libunistring \
+        mingw-w64-ucrt-x86_64-ncurses \
+        mingw-w64-ucrt-x86_64-openimageio
+
+Build tests (C<notcurses-tester>) do not run on Windows — upstream
+limitation. The module builds and loads; terminal-dependent tests
+(C<xt/>) need to be run on Linux or macOS.
+
+=head2 Core-only (no multimedia)
+
+If you don't need image/video support, you can omit the FFmpeg or
+OpenImageIO dependency. The build detects missing multimedia libraries
+and falls back automatically.
+
+=head1 INSTALLATION
 
     zef install Notcurses::Native
 
-Installation runs C<t/> tests only (pure-Raku channel math and input
-struct tests — no terminal needed). The full terminal-dependent test
-suite lives in C<xt/> and can be run manually:
+Installation runs C<t/> tests only — pure-Raku channel math and input
+struct tests that don't need a terminal. The full terminal-dependent
+test suite lives in C<xt/> and can be run manually:
 
     prove -e 'raku -I lib -I t/lib' xt/*.rakutest
 
 C<prove> (Perl 5) is recommended for C<xt/> tests because
-L<prove6 has a bug|https://github.com/Raku/tap-harness6/issues/64> where
-terminal escape sequences from C libraries corrupt its TAP parser.
-
-=head2 Windows
-
-Windows support requires MSYS2 with the UCRT64 toolchain. Notcurses
-3.0.16 has unguarded C<struct termios> references that may fail to
-compile with newer GCC versions. This is an upstream issue. Windows
-support will improve as notcurses upstream patches their Windows code.
+L<prove6 has a bug|https://github.com/Raku/tap-harness6/issues/64>
+where terminal escape sequences from C libraries corrupt its TAP
+parser.
 
 =head1 EXAMPLES
 
