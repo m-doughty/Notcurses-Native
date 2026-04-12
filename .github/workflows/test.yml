@@ -162,22 +162,23 @@ jobs:
           update: true
           install: >-
             mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-fmt
+            mingw-w64-ucrt-x86_64-ffmpeg
             mingw-w64-ucrt-x86_64-libdeflate
             mingw-w64-ucrt-x86_64-libunistring
             mingw-w64-ucrt-x86_64-ncurses
             mingw-w64-ucrt-x86_64-ninja
-            mingw-w64-ucrt-x86_64-openimageio
             mingw-w64-ucrt-x86_64-toolchain
 
       - uses: Raku/setup-raku@v1
         with:
           raku-version: 'latest'
 
-      # Windows build uses OpenImageIO for multimedia (ffmpeg isn't the
-      # recommended backend on Windows per upstream), no pandoc, no
-      # doctest (notcurses-tester doesn't build on Windows), no static
-      # (we want a DLL).
+      # Windows build uses ffmpeg for multimedia. Upstream notcurses docs
+      # recommend OpenImageIO on Windows, but MSYS2 ships only the latest
+      # OIIO which has ABI drift vs notcurses 3.0.17's oiio.cpp. ffmpeg's
+      # media path is the same well-tested one used on Linux/macOS. No
+      # pandoc, no doctest (notcurses-tester doesn't build on Windows),
+      # no static (we want a DLL).
       - name: Build notcurses
         run: |
           mkdir -p resources/lib
@@ -185,9 +186,9 @@ jobs:
           mkdir -p build && cd build
           cmake .. -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DUSE_MULTIMEDIA=oiio \
+            -DUSE_MULTIMEDIA=ffmpeg \
             -DBUILD_FFI_LIBRARY=ON \
-            -DUSE_CXX=ON \
+            -DUSE_CXX=OFF \
             -DBUILD_EXECUTABLES=OFF \
             -DUSE_PANDOC=OFF \
             -DUSE_DOCTEST=OFF \
