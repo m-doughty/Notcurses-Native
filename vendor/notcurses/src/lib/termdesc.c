@@ -1364,6 +1364,11 @@ int interrogate_terminfo(tinfo* ti, FILE* out, unsigned utf8,
 #endif
 #endif
   if(ti->ttyfd >= 0){
+#ifndef __MINGW32__
+    // `struct termios` is incomplete in mingw-w64's headers; tcgetattr/
+    // tcsetattr don't exist on Windows anyway. Skip the Unix terminal-
+    // state preservation on mingw — tpreserved stays NULL and the later
+    // `if(ti->tpreserved)` guard at the ISIG check handles it naturally.
     if((ti->tpreserved = calloc(1, sizeof(*ti->tpreserved))) == NULL){
       return -1;
     }
@@ -1378,6 +1383,7 @@ int interrogate_terminfo(tinfo* ti, FILE* out, unsigned utf8,
       free(ti->tpreserved);
       return -1;
     }
+#endif
     // if we already know our terminal (e.g. on the linux console), there's no
     // need to send the identification queries. the controls are sufficient.
     bool minimal = (ti->qterm != TERMINAL_UNKNOWN);
