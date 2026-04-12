@@ -179,7 +179,7 @@ query_rgb(void){
   if(!rgb){
     // RGB terminfo capability being a new thing (as of ncurses 6.1), it's not
     // commonly found in terminal entries today. COLORTERM, however, is a
-    // de-facto (if imperfect/kludgy) standard way of indicating TrueColor
+    // de facto (if imperfect/kludgy) standard way of indicating TrueColor
     // support for a terminal. The variable takes one of two case-sensitive
     // values:
     //
@@ -1365,10 +1365,6 @@ int interrogate_terminfo(tinfo* ti, FILE* out, unsigned utf8,
 #endif
   if(ti->ttyfd >= 0){
 #ifndef __MINGW32__
-    // `struct termios` is incomplete in mingw-w64's headers; tcgetattr/
-    // tcsetattr don't exist on Windows anyway. Skip the Unix terminal-
-    // state preservation on mingw — tpreserved stays NULL and the later
-    // `if(ti->tpreserved)` guard at the ISIG check handles it naturally.
     if((ti->tpreserved = calloc(1, sizeof(*ti->tpreserved))) == NULL){
       return -1;
     }
@@ -1401,13 +1397,15 @@ int interrogate_terminfo(tinfo* ti, FILE* out, unsigned utf8,
     goto err;
   }
   tname = termname(); // longname() is also available
-#endif
   int linesigs_enabled = 1;
   if(ti->tpreserved){
     if(!(ti->tpreserved->c_lflag & ISIG)){
       linesigs_enabled = 0;
     }
   }
+#else
+  int linesigs_enabled = 0;
+#endif
   if(init_inputlayer(ti, stdin, lmargin, tmargin, rmargin, bmargin,
                      stats, draininput, linesigs_enabled)){
     goto err;
@@ -1658,25 +1656,27 @@ int cbreak_mode(tinfo* ti){
 }
 
 // replace or populate the TERM environment variable with 'termname'
+// (for the benefit of subprocesses)
+#define ENVVAR "TERM"
 int putenv_term(const char* tname){
-  #define ENVVAR "TERM"
   const char* oldterm = getenv(ENVVAR);
   if(oldterm){
-    logdebug("replacing %s value %s with %s", ENVVAR, oldterm, tname);
+    if(strcmp(oldterm, tname) == 0){
+      return 0;
+    }
+    logdebug("replacing " ENVVAR " value %s with %s", oldterm, tname);
   }else{
-    loginfo("provided %s value %s", ENVVAR, tname);
+    loginfo("providing " ENVVAR "=%s", tname);
   }
-  if(oldterm && strcmp(oldterm, tname) == 0){
-    return 0;
-  }
-  char* buf = malloc(strlen(tname) + strlen(ENVVAR) + 1);
-  if(buf == NULL){
+#ifndef __MINGW32__
+  if(setenv(ENVVAR, tname, 1)){
+#else
+  SetEnvironmentVariable(ENVVAR, NULL); // clear it from environment
+  if(!SetEnvironmentVariable(ENVVAR, tname)){ // set it
+#endif
+    logerror("error exporting " ENVVAR "=%s (%s)", tname, strerror(errno));
     return -1;
   }
-  int c = putenv(buf);
-  if(c){
-    logerror("couldn't export %s", buf);
-  }
-  free(buf);
-  return c;
+  return 0;
 }
+#undef ENVVAR

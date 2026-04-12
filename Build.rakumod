@@ -8,7 +8,7 @@ class Build {
 
 		$resources.IO.mkdir;
 
-		say "Building notcurses 3.0.16 from vendored source...";
+		say "Building notcurses 3.0.17 from vendored source...";
 
 		my $os = $*KERNEL.name.lc;
 		my $ext = $os ~~ /darwin/ ?? 'dylib' !! $os ~~ /win/ ?? 'dll' !! 'so';
@@ -97,7 +97,7 @@ class Build {
 		# Search for the library in build output, handling platform naming differences
 		# MinGW: libnotcurses-core.dll or libnotcurses-core-3.dll
 		# MSVC: notcurses-core.dll
-		# Linux: libnotcurses-core.so or libnotcurses-core.so.3.0.16
+		# Linux: libnotcurses-core.so or libnotcurses-core.so.3.0.17
 		# macOS: libnotcurses-core.dylib or libnotcurses-core.3.dylib
 		my $nolib = $lib.subst(/^ 'lib'/, '');
 		my @patterns = ($lib, $nolib);
