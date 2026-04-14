@@ -20,37 +20,45 @@ constant $ext is export = $os ~~ /darwin/ ?? 'dylib'
                        !! $*DISTRO.is-win ?? 'dll'
                        !! 'so';
 
-sub _lib-in-dir(Str $dir, Str $name --> Str) {
-    my $path = "$dir/$name.$ext".IO;
-    return $path.Str if $path.e;
-    # Some distros ship versioned sibling names (libnotcurses.3.dylib,
-    # libnotcurses.so.3). Walk the dir looking for any variant of
-    # <name>.<ext>; matches `name.ext`, `name-N.ext`, `name.N.ext`,
-    # `name.ext.N`, `name.ext.N.M.K`.
-    for $path.parent.dir -> $entry {
+# Env-override check. Returns a resolved path if
+# NOTCURSES_NATIVE_LIB_DIR is set and the file exists there,
+# otherwise the Str type object — callers use `//` to fall
+# through to %?RESOURCES. Keeping the %?RESOURCES lookup in the
+# per-lib subs below (not here) because the twigil only resolves
+# correctly when accessed from the sub that's directly evaluated
+# by the `constant` at module load time.
+sub _env-lib(Str $name --> Str) {
+    my $dir = %*ENV<NOTCURSES_NATIVE_LIB_DIR> // '';
+    return Str unless $dir.chars && $dir.IO.d;
+
+    # Exact match wins. Some distros ship versioned sibling names
+    # (libnotcurses.3.dylib, libnotcurses.so.3) — scan for the
+    # first plausible variant so the escape hatch accepts a Homebrew
+    # install dir or similar.
+    my $exact = "$dir/$name.$ext".IO;
+    return $exact.Str if $exact.e;
+
+    for $exact.parent.dir -> $entry {
         next unless $entry.f;
         my $bn = $entry.basename;
-        return $entry.Str if $bn eq "$name.$ext";
         return $entry.Str if $bn.starts-with("$name.") && $bn.contains(".$ext");
         return $entry.Str if $bn.starts-with("$name-") && $bn.ends-with(".$ext");
     }
     Str;
 }
 
-sub _resolve-lib(Str $name --> Str) {
-    with %*ENV<NOTCURSES_NATIVE_LIB_DIR> -> $override-dir {
-        if $override-dir.chars && $override-dir.IO.d {
-            with _lib-in-dir($override-dir, $name) -> $path {
-                return $path;
-            }
-        }
-    }
-    %?RESOURCES{"lib/$name.{$ext}"}.IO.Str;
+sub _nc-lib {
+    _env-lib('libnotcurses')
+        // %?RESOURCES{"lib/libnotcurses.{$ext}"}.IO.Str;
 }
-
-sub _nc-lib   { _resolve-lib('libnotcurses')      }
-sub _ffi-lib  { _resolve-lib('libnotcurses-ffi')  }
-sub _core-lib { _resolve-lib('libnotcurses-core') }
+sub _ffi-lib {
+    _env-lib('libnotcurses-ffi')
+        // %?RESOURCES{"lib/libnotcurses-ffi.{$ext}"}.IO.Str;
+}
+sub _core-lib {
+    _env-lib('libnotcurses-core')
+        // %?RESOURCES{"lib/libnotcurses-core.{$ext}"}.IO.Str;
+}
 
 constant $nc-lib is export   = _nc-lib();
 constant $ffi-lib is export  = _ffi-lib();

@@ -123,7 +123,7 @@ jobs:
           # for each of the three notcurses libs.
           for lib in libnotcurses libnotcurses-core libnotcurses-ffi; do
             real_in_bundle=$(ls bundle/${lib}.*.*.dylib 2>/dev/null | head -1)
-            dylibbundler -od -b -ns \
+            dylibbundler -of -b -ns \
               -x "$real_in_bundle" \
               -d bundle/ \
               -p '@loader_path/'
@@ -398,14 +398,13 @@ jobs:
           echo "--- bundle contents ---"
           ls -la bundle/
 
+      # No `shell: bash` here — we want the job-level msys2 default
+      # because Git Bash's PATH doesn't include the `zip` utility
+      # we pacman-installed into /usr/bin. The MSYS2 shell does.
       - name: Package archive
-        shell: bash
         run: |
           set -euxo pipefail
           artifact="notcurses-${{ matrix.platform }}.zip"
-          # MSYS2 may not have zip; use tar --format with zip handler
-          # is NOT portable. Use native PowerShell Compress-Archive
-          # via a separate step? Actually MSYS2 ships zip in base.
           (cd bundle && zip -r "../$artifact" .)
           sha256sum "$artifact" | tee "${artifact}.sha256"
           mkdir -p artefacts
