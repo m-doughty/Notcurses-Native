@@ -220,12 +220,16 @@ jobs:
 
           process_deps() {
             local lib="$1"
-            # Same space-safe parser as the Windows job (see comment there).
+            # Same space-safe + absolute-path parser as the Windows
+            # job (see comment there). Strips any `(...)` trailing
+            # marker from ldd output and skips non-absolute paths
+            # (catches `not found`, bare filenames, etc.).
             ldd "$lib" 2>/dev/null \
-              | sed -n 's/ (0x[0-9a-fA-F]*)$//; s/^[[:space:]]*\([^ ]\+\) => \(.\+\)$/\1\t\2/p' \
+              | sed -n 's/ (.*)$//; s/^[[:space:]]*\([^ ]\+\) => \(.\+\)$/\1\t\2/p' \
               | while IFS=$'\t' read -r name path; do
                   is_system_lib "$name" && continue
-                  [[ "$path" == "not" || -z "$path" ]] && continue
+                  [[ -z "$path" ]] && continue
+                  [[ "$path" != /* && "$path" != ?:[/\\]* ]] && continue
                   if [[ ! -f "bundle/$name" ]]; then
                     cp "$path" "bundle/$name"
                     echo "Bundled: $name  (from $path)"
@@ -380,16 +384,24 @@ jobs:
 
           process_deps() {
             local dll="$1"
-            # ldd output: "name => /c/Program Files/.../foo.dll (0x...)"
-            # awk splits on spaces so `$3` loses everything after the
-            # first space in a path like C:\Program Files. Use sed with
-            # two regex substitutions instead:
-            #   1. strip trailing " (0x...)"
-            #   2. replace "name => path" with "name<TAB>path"
+            # ldd output examples across platforms:
+            #   name => /c/Program Files/.../foo.dll (0x...)     MSYS2 UCRT64
+            #   name => /clangarm64/bin/avcodec-62.dll (?)       MSYS2 CLANGARM64
+            #   name => not found                                dep missing
+            # Strip trailing (anything) with a single regex. Then
+            # require $path to be an absolute path (starts with `/`
+            # or Windows drive letter) to skip "not found" and friends.
             ldd "$dll" 2>/dev/null \
-              | sed -n 's/ (0x[0-9a-fA-F]*)$//; s/^[[:space:]]*\([^ ]\+\) => \(.\+\)$/\1\t\2/p' \
+              | sed -n 's/ (.*)$//; s/^[[:space:]]*\([^ ]\+\) => \(.\+\)$/\1\t\2/p' \
               | while IFS=$'\t' read -r name path; do
-                  [[ -z "$path" || "$path" == "not" ]] && continue
+                  [[ -z "$path" ]] && continue
+                  # Absolute path check: `/...` (POSIX / MSYS2) or
+                  # `C:/...` / `C:\...` (native Windows). Anything
+                  # else ("not found", bare filename, etc.) gets
+                  # skipped — usually a DLL the runner can't locate,
+                  # which'll surface as a later load failure we can
+                  # iterate on.
+                  [[ "$path" != /* && "$path" != ?:[/\\]* ]] && continue
                   if is_system_dll "$path"; then
                     continue
                   fi
