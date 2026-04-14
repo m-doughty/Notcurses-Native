@@ -75,61 +75,62 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p bundle
-          cd vendor/notcurses/build
 
-          # CMake produces three files per lib: the real versioned
-          # file (libnotcurses-core.3.0.17.dylib), a SONAME-style
-          # symlink (libnotcurses-core.3.dylib → real), and an
-          # unversioned symlink (libnotcurses-core.dylib → real).
-          # The install_name inside libnotcurses references the
-          # versioned SONAME-style name (@rpath/libnotcurses-core.3
-          # .dylib), which is what dylibbundler tries to resolve.
-          # Stage the real file then recreate both symlinks in
-          # bundle/ so references resolve AND Raku's unversioned
-          # %?RESOURCES lookup still finds the lib at load time.
-          for lib in libnotcurses libnotcurses-core libnotcurses-ffi; do
-            real=$(find . -name "${lib}.*.dylib" -type f ! -type l | sort | tail -1)
+          # Only stage the two ENTRY-POINT libs:
+          #   - libnotcurses        (full, with multimedia)
+          #   - libnotcurses-ffi    (static-inline C wrappers;
+          #                          NOT a dep of libnotcurses)
+          #
+          # libnotcurses-core gets auto-copied into bundle/ by
+          # dylibbundler as a dependency of libnotcurses. Pre-staging
+          # it here would cause dylibbundler to try `cp bundle/x.dylib
+          # bundle/x.dylib` and fail with "identical files not copied"
+          # because dylibbundler doesn't recognise already-bundled deps.
+          for lib in libnotcurses libnotcurses-ffi; do
+            real=$(find vendor/notcurses/build -name "${lib}.*.dylib" -type f ! -type l | sort | tail -1)
             if [[ -z "$real" ]]; then
               echo "❌ Could not find real file for $lib"
               exit 1
             fi
-            cp "$real" "../../../bundle/$(basename "$real")"
+            cp "$real" "bundle/$(basename "$real")"
           done
 
-          cd ../../../bundle
+          # Run dylibbundler. -s points at the cmake build dir so
+          # dylibbundler can resolve @rpath/libnotcurses-core.3.dylib
+          # (a symlink in build/) and copy the real file into bundle/.
+          # Both notcurses entry-points share the same ffmpeg tree, so
+          # the second invocation mostly skips already-bundled deps.
+          for lib in libnotcurses libnotcurses-ffi; do
+            real_in_bundle=$(ls bundle/${lib}.*.*.dylib | head -1)
+            dylibbundler -of -b -ns \
+              -x "$real_in_bundle" \
+              -s vendor/notcurses/build \
+              -d bundle/ \
+              -p '@loader_path/'
+          done
 
-          # Recreate SONAME + unversioned symlinks so dylibbundler's
-          # @rpath/libnotcurses-core.3.dylib resolves and NativeCall's
-          # unversioned lookup works too.
-          # E.g. libnotcurses-core.3.0.17.dylib → make:
-          #   libnotcurses-core.3.dylib  (SONAME-style, symlinked)
-          #   libnotcurses-core.dylib    (unversioned, symlinked)
+          # Create SONAME + unversioned symlinks AFTER dylibbundler
+          # finishes, for each of the three notcurses libs now in
+          # bundle/. NativeCall looks up the unversioned name
+          # (libnotcurses.dylib) via %?RESOURCES; dylibbundler's
+          # rewritten refs look for the SONAME-style name
+          # (libnotcurses-core.3.dylib). Both resolve to the real
+          # versioned file via these symlinks.
+          cd bundle
           for lib in libnotcurses libnotcurses-core libnotcurses-ffi; do
             real=$(ls ${lib}.*.*.dylib 2>/dev/null | head -1)
             if [[ -z "$real" ]]; then
-              echo "❌ Missing real file for $lib in bundle/"
+              echo "⚠️  No real file for $lib in bundle/ — dylibbundler may have used a different name."
+              ls ${lib}* 2>/dev/null || true
               exit 1
             fi
             major=$(echo "$real" | sed -E "s|^${lib}\.([0-9]+)\..*|\1|")
             ln -sf "$real" "${lib}.${major}.dylib"
             ln -sf "$real" "${lib}.dylib"
           done
-
           cd ..
 
-          # dylibbundler copies every transitively-referenced dylib
-          # into bundle/ and rewrites install_name to @loader_path/.
-          # Point it at the real versioned file (not the symlink)
-          # for each of the three notcurses libs.
-          for lib in libnotcurses libnotcurses-core libnotcurses-ffi; do
-            real_in_bundle=$(ls bundle/${lib}.*.*.dylib 2>/dev/null | head -1)
-            dylibbundler -of -b -ns \
-              -x "$real_in_bundle" \
-              -d bundle/ \
-              -p '@loader_path/'
-          done
-
-          # Strip debug symbols from every real dylib we ship.
+          # Strip debug symbols from every real dylib we ship (skip symlinks).
           find bundle -name '*.dylib' -type f ! -type l -exec strip -x {} \; 2>/dev/null || true
 
           echo "--- bundle contents ---"
