@@ -260,6 +260,24 @@ Fedora / RHEL equivalents:
     sudo dnf install cmake pkgconf-pkg-config \
         ncurses-devel libunistring-devel libdeflate-devel ffmpeg-devel
 
+Arch / Manjaro equivalents:
+
+    sudo pacman -S cmake pkgconf base-devel \
+        ncurses libunistring libdeflate ffmpeg
+
+Linux (openSUSE Tumbleweed)
+---------------------------
+
+openSUSE splits FFmpeg's libraries into per-component `ffmpeg-7-*` packages. With thanks to user feedback from the Hacker News thread, the verified minimum set is:
+
+    sudo zypper in cmake pkg-config gcc \
+        ncurses-devel libunistring-devel libdeflate-devel \
+        ffmpeg-7-libavcodec-devel ffmpeg-7-libavformat-devel \
+        ffmpeg-7-libavutil-devel ffmpeg-7-libavdevice-devel \
+        ffmpeg-7-libswscale-devel
+
+`libswresample`, `libavfilter`, and `libpostproc` devel packages are pulled in automatically as transitive dependencies; notcurses itself doesn't link them directly.
+
 macOS (Homebrew)
 ----------------
 

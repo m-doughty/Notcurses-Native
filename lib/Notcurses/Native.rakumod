@@ -4,16 +4,53 @@ use Notcurses::Native::Types;
 unit module Notcurses::Native;
 
 # === Library paths ===
-# We load from both libnotcurses (full, with multimedia) and libnotcurses-ffi
-# (C wrappers for static inline functions).
-# Uses %?RESOURCES for portable library resolution.
+# We load three notcurses libs: core (init, context, plane, channels),
+# full (adds multimedia/image via ffmpeg), and ffi (C wrappers for
+# static-inline functions). NativeCall picks the right one per binding.
+#
+# Lookup precedence (per library):
+#   1. $NOTCURSES_NATIVE_LIB_DIR env var — explicit override. Full
+#      path to a directory containing all three libs. Escape hatch
+#      for custom notcurses builds; you take responsibility for ABI.
+#   2. %?RESOURCES — staged at install time by Build.rakumod from
+#      either a prebuilt GitHub release or a local CMake compile.
 
 constant $os is export = $*KERNEL.name.lc;
-constant $ext is export = $os ~~ /darwin/ ?? 'dylib' !! $os ~~ /win/ ?? 'dll' !! 'so';
+constant $ext is export = $os ~~ /darwin/ ?? 'dylib'
+                       !! $*DISTRO.is-win ?? 'dll'
+                       !! 'so';
 
-sub _nc-lib   { %?RESOURCES{"lib/libnotcurses.{$ext}"}.IO.Str      }
-sub _ffi-lib  { %?RESOURCES{"lib/libnotcurses-ffi.{$ext}"}.IO.Str  }
-sub _core-lib { %?RESOURCES{"lib/libnotcurses-core.{$ext}"}.IO.Str }
+sub _lib-in-dir(Str $dir, Str $name --> Str) {
+    my $path = "$dir/$name.$ext".IO;
+    return $path.Str if $path.e;
+    # Some distros ship versioned sibling names (libnotcurses.3.dylib,
+    # libnotcurses.so.3). Walk the dir looking for any variant of
+    # <name>.<ext>; matches `name.ext`, `name-N.ext`, `name.N.ext`,
+    # `name.ext.N`, `name.ext.N.M.K`.
+    for $path.parent.dir -> $entry {
+        next unless $entry.f;
+        my $bn = $entry.basename;
+        return $entry.Str if $bn eq "$name.$ext";
+        return $entry.Str if $bn.starts-with("$name.") && $bn.contains(".$ext");
+        return $entry.Str if $bn.starts-with("$name-") && $bn.ends-with(".$ext");
+    }
+    Str;
+}
+
+sub _resolve-lib(Str $name --> Str) {
+    with %*ENV<NOTCURSES_NATIVE_LIB_DIR> -> $override-dir {
+        if $override-dir.chars && $override-dir.IO.d {
+            with _lib-in-dir($override-dir, $name) -> $path {
+                return $path;
+            }
+        }
+    }
+    %?RESOURCES{"lib/$name.{$ext}"}.IO.Str;
+}
+
+sub _nc-lib   { _resolve-lib('libnotcurses')      }
+sub _ffi-lib  { _resolve-lib('libnotcurses-ffi')  }
+sub _core-lib { _resolve-lib('libnotcurses-core') }
 
 constant $nc-lib is export   = _nc-lib();
 constant $ffi-lib is export  = _ffi-lib();

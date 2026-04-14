@@ -1,0 +1,433 @@
+# Build statically-linked (for ncurses/unistring/deflate) and
+# sibling-bundled (for ffmpeg) notcurses binaries for every supported
+# (OS, arch) pair and publish them as GitHub Release assets, so
+# `zef install Notcurses::Native` can grab prebuilts instead of
+# pulling a 5–15 minute CMake build from the user's machine.
+#
+# Each platform produces one archive (.tar.gz on Unix, .zip on
+# Windows) containing the three notcurses libs (libnotcurses,
+# libnotcurses-core, libnotcurses-ffi) plus the ffmpeg sibling
+# dylibs they dyn-link. Relocations:
+#   macOS:   install_name_tool via dylibbundler → @loader_path/
+#   Linux:   patchelf --set-rpath '$ORIGIN'
+#   Windows: sibling DLLs in the same directory (Windows loader
+#            searches there first)
+#
+# Triggers:
+#   - workflow_dispatch: manual run while iterating on the recipe.
+#   - push: tags matching `binaries-*` for production releases.
+#     BINARY_TAG file at repo root is the single source of truth
+#     for which tag this release should produce.
+
+name: build-binaries
+
+on:
+  workflow_dispatch:
+
+  push:
+    tags:
+      - 'binaries-*'
+
+permissions:
+  contents: write
+
+env:
+  # Shared across all runners so the CMake flags stay consistent
+  # with what Build.rakumod's compile-from-source fallback uses.
+  # Keeping them in env rather than duplicating in each step.
+  CMAKE_FLAGS: >-
+    -DUSE_MULTIMEDIA=ffmpeg
+    -DBUILD_FFI_LIBRARY=ON
+    -DUSE_CXX=OFF
+    -DBUILD_EXECUTABLES=OFF
+    -DUSE_PANDOC=OFF
+    -DUSE_DOCTEST=OFF
+    -DUSE_POC=OFF
+    -DUSE_STATIC=OFF
+    -DCMAKE_BUILD_TYPE=Release
+
+jobs:
+  build-macos:
+    name: build-macos-arm64
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build deps
+        run: |
+          brew install cmake pkg-config ffmpeg ncurses libunistring libdeflate dylibbundler
+
+      - name: Configure + build notcurses
+        run: |
+          set -euxo pipefail
+          cd vendor/notcurses
+          mkdir -p build
+
+          # Homebrew ncurses isn't in the default pkg-config path.
+          export PKG_CONFIG_PATH="$(brew --prefix)/opt/ncurses/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+
+          cmake -B build -S . $CMAKE_FLAGS
+          cmake --build build -j"$(sysctl -n hw.ncpu)"
+
+      - name: Stage + relocate libs
+        run: |
+          set -euxo pipefail
+          mkdir -p bundle
+          cd vendor/notcurses/build
+
+          # Copy the 3 notcurses libs, resolving the real file (not
+          # the versioned symlink) via readlink/find.
+          for lib in libnotcurses libnotcurses-core libnotcurses-ffi; do
+            found=$(find . -name "${lib}.*.dylib" -type f | sort | tail -1)
+            if [[ -z "$found" ]]; then
+              found=$(find . -name "${lib}.dylib" -type f | head -1)
+            fi
+            cp "$found" "../../../bundle/${lib}.dylib"
+          done
+
+          cd ../../..
+
+          # dylibbundler copies every transitively-referenced
+          # dylib into bundle/ and rewrites install_name to
+          # @loader_path/ on each. Run it for each of the three
+          # notcurses libs; dylibbundler skips already-bundled deps.
+          for lib in libnotcurses libnotcurses-core libnotcurses-ffi; do
+            dylibbundler \
+              -od -b -ns \
+              -x "bundle/${lib}.dylib" \
+              -d bundle/ \
+              -p '@loader_path/'
+          done
+
+          # Strip debug symbols from everything we ship.
+          find bundle -name '*.dylib' -exec strip -x {} \;
+
+          # Sanity: each shipped dylib should have NO absolute-path
+          # references — only @loader_path/ or system paths (/usr/lib,
+          # /System/Library).
+          echo "--- otool dump ---"
+          for f in bundle/*.dylib; do
+            echo ">> $f"
+            otool -L "$f"
+          done
+
+      - name: Package archive
+        id: pkg
+        run: |
+          set -euxo pipefail
+          artifact="notcurses-macos-arm64.tar.gz"
+          tar -czf "$artifact" -C bundle .
+          shasum -a 256 "$artifact" | tee "${artifact}.sha256"
+          mkdir -p artefacts
+          mv "$artifact" "${artifact}.sha256" artefacts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notcurses-macos-arm64
+          path: artefacts/
+          retention-days: 14
+
+  build-linux:
+    name: build-${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux-x86_64-glibc
+          - os: ubuntu-22.04-arm
+            platform: linux-aarch64-glibc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            cmake pkg-config patchelf \
+            libncurses-dev libunistring-dev libdeflate-dev \
+            libavformat-dev libavcodec-dev libavdevice-dev \
+            libavutil-dev libswscale-dev
+
+      - name: Configure + build notcurses
+        run: |
+          set -euxo pipefail
+          cd vendor/notcurses
+          mkdir -p build
+          cmake -B build -S . $CMAKE_FLAGS
+          cmake --build build -j"$(nproc)"
+
+      - name: Stage + relocate libs
+        run: |
+          set -euxo pipefail
+          mkdir -p bundle
+          cd vendor/notcurses/build
+
+          for lib in libnotcurses libnotcurses-core libnotcurses-ffi; do
+            found=$(find . -name "${lib}.so.*" -type f | sort | tail -1)
+            [[ -z "$found" ]] && found=$(find . -name "${lib}.so" -type f | head -1)
+            cp "$found" "../../../bundle/${lib}.so"
+          done
+
+          cd ../../..
+
+          # Bundle ffmpeg siblings + their transitive deps. Recursive
+          # ldd walk — each new lib we copy into bundle/ gets its own
+          # deps inspected until closure. Skip the system baseline
+          # (libc, libm, libpthread, libdl, librt, libstdc++,
+          # ld-linux, libgcc_s, libresolv) — those must stay dynamic
+          # to avoid crt clashes.
+          is_system_lib() {
+            case "$1" in
+              libc.so.*|libm.so.*|libpthread.so.*|libdl.so.*| \
+              librt.so.*|libstdc++.so.*|ld-linux*|libgcc_s.so.*| \
+              libresolv.so.*|libnsl.so.*|linux-vdso.so.*| \
+              libutil.so.*|libcrypt.so.*)
+                return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          process_deps() {
+            local lib="$1"
+            ldd "$lib" 2>/dev/null | awk '/=>/ {print $1, $3}' | \
+            while read name path; do
+              is_system_lib "$name" && continue
+              [[ "$path" == "not" || -z "$path" ]] && continue
+              if [[ ! -f "bundle/$name" ]]; then
+                cp "$path" "bundle/$name"
+                echo "Bundled: $name  (from $path)"
+                process_deps "bundle/$name"  # recurse
+              fi
+            done
+          }
+
+          for lib in bundle/libnotcurses.so bundle/libnotcurses-core.so bundle/libnotcurses-ffi.so; do
+            process_deps "$lib"
+          done
+
+          # Set rpath to $ORIGIN on every shipped .so so they find
+          # siblings in their own directory at load time.
+          find bundle -name '*.so*' -type f | while read f; do
+            patchelf --set-rpath '$ORIGIN' "$f" 2>/dev/null || true
+          done
+
+          find bundle -name '*.so*' -type f -exec strip --strip-unneeded {} \; 2>/dev/null || true
+
+          echo "--- bundle contents ---"
+          ls -la bundle/
+          echo "--- ldd libnotcurses.so ---"
+          ldd bundle/libnotcurses.so || true
+
+      - name: Package archive
+        run: |
+          set -euxo pipefail
+          artifact="notcurses-${{ matrix.platform }}.tar.gz"
+          tar -czf "$artifact" -C bundle .
+          sha256sum "$artifact" | tee "${artifact}.sha256"
+          mkdir -p artefacts
+          mv "$artifact" "${artifact}.sha256" artefacts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notcurses-${{ matrix.platform }}
+          path: artefacts/
+          retention-days: 14
+
+  build-windows:
+    name: build-${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: windows-x86_64
+            msystem: UCRT64
+            pkg-prefix: ucrt-x86_64
+          - os: windows-11-arm
+            platform: windows-arm64
+            msystem: CLANGARM64
+            pkg-prefix: clang-aarch64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: 'msys2 {0}'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          path-type: inherit
+          install: >-
+            mingw-w64-${{ matrix.pkg-prefix }}-cmake
+            mingw-w64-${{ matrix.pkg-prefix }}-ninja
+            mingw-w64-${{ matrix.pkg-prefix }}-toolchain
+            mingw-w64-${{ matrix.pkg-prefix }}-ffmpeg
+            mingw-w64-${{ matrix.pkg-prefix }}-libdeflate
+            mingw-w64-${{ matrix.pkg-prefix }}-libunistring
+            mingw-w64-${{ matrix.pkg-prefix }}-ncurses
+
+      - name: Configure + build notcurses
+        run: |
+          set -euxo pipefail
+          cd vendor/notcurses
+          mkdir -p build
+          cmake -B build -S . -G Ninja $CMAKE_FLAGS
+          ninja -C build
+
+      - name: Stage + bundle sibling DLLs
+        run: |
+          set -euxo pipefail
+          mkdir -p bundle
+          cd vendor/notcurses/build
+
+          # MinGW DLL naming varies: libfoo-N.dll, libfoo.dll, or foo.dll.
+          for lib in notcurses notcurses-core notcurses-ffi; do
+            found=$(find . -iname "*${lib}*.dll" -type f | head -1)
+            cp "$found" "../../../bundle/lib${lib}.dll"
+          done
+
+          cd ../../..
+
+          # On Windows, DLL search order finds siblings in the same
+          # directory as the DLL being loaded — no rpath needed.
+          # We just need to ensure every transitive dep is present
+          # in bundle/. MSYS2's `ldd` works on Windows DLLs.
+          is_system_dll() {
+            case "${1,,}" in
+              kernel32.dll|ntdll.dll|user32.dll|ws2_32.dll| \
+              advapi32.dll|msvcrt.dll|ucrtbase.dll| \
+              api-ms-*.dll|ext-ms-*.dll|shell32.dll|ole32.dll| \
+              oleaut32.dll|gdi32.dll|bcrypt.dll|crypt32.dll| \
+              secur32.dll|userenv.dll|dbghelp.dll|comctl32.dll| \
+              dnsapi.dll|iphlpapi.dll|mswsock.dll|powrprof.dll| \
+              rpcrt4.dll|winmm.dll|version.dll|comdlg32.dll| \
+              shlwapi.dll|psapi.dll)
+                return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          process_deps() {
+            local dll="$1"
+            ldd "$dll" 2>/dev/null | awk '/=>/ {print $1, $3}' | \
+            while read name path; do
+              is_system_dll "$name" && continue
+              [[ -z "$path" || "$path" == "not" ]] && continue
+              if [[ ! -f "bundle/$name" ]]; then
+                cp "$path" "bundle/$name"
+                echo "Bundled: $name  (from $path)"
+                process_deps "bundle/$name"
+              fi
+            done
+          }
+
+          for dll in bundle/libnotcurses.dll bundle/libnotcurses-core.dll bundle/libnotcurses-ffi.dll; do
+            process_deps "$dll"
+          done
+
+          echo "--- bundle contents ---"
+          ls -la bundle/
+
+      - name: Package archive
+        shell: bash
+        run: |
+          set -euxo pipefail
+          artifact="notcurses-${{ matrix.platform }}.zip"
+          # MSYS2 may not have zip; use tar --format with zip handler
+          # is NOT portable. Use native PowerShell Compress-Archive
+          # via a separate step? Actually MSYS2 ships zip in base.
+          (cd bundle && zip -r "../$artifact" .)
+          sha256sum "$artifact" | tee "${artifact}.sha256"
+          mkdir -p artefacts
+          mv "$artifact" "${artifact}.sha256" artefacts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notcurses-${{ matrix.platform }}
+          path: artefacts/
+          retention-days: 14
+
+  release:
+    name: release
+    needs: [build-macos, build-linux, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/binaries-') || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artefacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded/
+
+      - name: Flatten + generate combined checksums.txt + resolve tag
+        id: prep
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p release
+          find downloaded -type f \( -name 'notcurses-*.tar.gz' \
+                                 -o -name 'notcurses-*.zip'   \) \
+            -exec cp {} release/ \;
+
+          cd release
+          sha256sum * | sort > ../checksums.txt
+          cd ..
+          echo "--- checksums.txt ---"
+          cat checksums.txt
+
+          file_tag=$(cat BINARY_TAG | tr -d '[:space:]')
+          if [[ -z "$file_tag" ]]; then
+            echo "❌ BINARY_TAG empty / missing."
+            exit 1
+          fi
+
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            pushed=${GITHUB_REF#refs/tags/}
+            if [[ "$pushed" != "$file_tag" ]]; then
+              echo "❌ Pushed tag '$pushed' doesn't match BINARY_TAG '$file_tag'."
+              exit 1
+            fi
+          fi
+
+          echo "tag=$file_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Create / update GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.prep.outputs.tag }}
+          name: ${{ steps.prep.outputs.tag }}
+          files: |
+            release/*
+            checksums.txt
+          body: |
+            Prebuilt notcurses binaries for `${{ steps.prep.outputs.tag }}`.
+
+            Each archive contains `libnotcurses`, `libnotcurses-core`,
+            `libnotcurses-ffi`, plus ffmpeg sibling dylibs that
+            notcurses dyn-links — all with rpaths relocated so they
+            load siblings from the archive's own directory.
+
+            ## Verifying
+
+            ```
+            sha256sum -c checksums.txt
+            ```
+
+            ## After release
+
+            Copy `checksums.txt` contents into `resources/checksums.txt`
+            in the source tree + commit, then publish the next Raku
+            dist version.
+          draft: false
+          prerelease: false

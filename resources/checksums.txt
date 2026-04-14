@@ -1,0 +1,25 @@
+# Notcurses-Native prebuilt binary checksums.
+#
+# DO NOT hand-edit entries. After a binary release is published, CI
+# produces a checksums.txt as a release asset; copy its contents here:
+#
+#     gh release download "$(cat BINARY_TAG)" \
+#         --pattern checksums.txt --output /tmp/new.txt
+#     cp /tmp/new.txt resources/checksums.txt
+#     git add resources/checksums.txt
+#     git commit -m "Update binary checksums for $(cat BINARY_TAG)"
+#
+# Format: one entry per line
+#     <sha256-hex>  <artefact-filename>
+#
+# Lines starting with '#' and blank lines are ignored. When this file
+# is empty or doesn't list the expected artefact, every prebuilt
+# lookup fails SHA verify and Build.rakumod falls back to compiling
+# from source via CMake — safe default, just much slower (~5–15 min
+# because notcurses pulls in ffmpeg, ncurses, libunistring, libdeflate
+# from the system package manager at build time).
+#
+# Each platform's archive bundles three notcurses libs plus any
+# ffmpeg sibling dylibs that notcurses dyn-links; relocated with
+# @loader_path (macOS) / $ORIGIN (Linux) / sibling DLL layout
+# (Windows) so they load from the same resources/lib/ directory.
