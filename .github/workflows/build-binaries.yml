@@ -220,16 +220,18 @@ jobs:
 
           process_deps() {
             local lib="$1"
-            ldd "$lib" 2>/dev/null | awk '/=>/ {print $1, $3}' | \
-            while read name path; do
-              is_system_lib "$name" && continue
-              [[ "$path" == "not" || -z "$path" ]] && continue
-              if [[ ! -f "bundle/$name" ]]; then
-                cp "$path" "bundle/$name"
-                echo "Bundled: $name  (from $path)"
-                process_deps "bundle/$name"  # recurse
-              fi
-            done
+            # Same space-safe parser as the Windows job (see comment there).
+            ldd "$lib" 2>/dev/null \
+              | sed -n 's/ (0x[0-9a-fA-F]*)$//; s/^[[:space:]]*\([^ ]\+\) => \(.\+\)$/\1\t\2/p' \
+              | while IFS=$'\t' read -r name path; do
+                  is_system_lib "$name" && continue
+                  [[ "$path" == "not" || -z "$path" ]] && continue
+                  if [[ ! -f "bundle/$name" ]]; then
+                    cp "$path" "bundle/$name"
+                    echo "Bundled: $name  (from $path)"
+                    process_deps "bundle/$name"  # recurse
+                  fi
+                done
           }
 
           for lib in bundle/libnotcurses.so bundle/libnotcurses-core.so bundle/libnotcurses-ffi.so; do
@@ -378,18 +380,25 @@ jobs:
 
           process_deps() {
             local dll="$1"
-            ldd "$dll" 2>/dev/null | awk '/=>/ {print $1"\t"$3}' | \
-            while IFS=$'\t' read name path; do
-              [[ -z "$path" || "$path" == "not" ]] && continue
-              if is_system_dll "$path"; then
-                continue
-              fi
-              if [[ ! -f "bundle/$name" ]]; then
-                cp "$path" "bundle/$name"
-                echo "Bundled: $name  (from $path)"
-                process_deps "bundle/$name"
-              fi
-            done
+            # ldd output: "name => /c/Program Files/.../foo.dll (0x...)"
+            # awk splits on spaces so `$3` loses everything after the
+            # first space in a path like C:\Program Files. Use sed with
+            # two regex substitutions instead:
+            #   1. strip trailing " (0x...)"
+            #   2. replace "name => path" with "name<TAB>path"
+            ldd "$dll" 2>/dev/null \
+              | sed -n 's/ (0x[0-9a-fA-F]*)$//; s/^[[:space:]]*\([^ ]\+\) => \(.\+\)$/\1\t\2/p' \
+              | while IFS=$'\t' read -r name path; do
+                  [[ -z "$path" || "$path" == "not" ]] && continue
+                  if is_system_dll "$path"; then
+                    continue
+                  fi
+                  if [[ ! -f "bundle/$name" ]]; then
+                    cp "$path" "bundle/$name"
+                    echo "Bundled: $name  (from $path)"
+                    process_deps "bundle/$name"
+                  fi
+                done
           }
 
           for dll in bundle/libnotcurses.dll bundle/libnotcurses-core.dll bundle/libnotcurses-ffi.dll; do
