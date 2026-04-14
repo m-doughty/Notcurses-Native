@@ -77,41 +77,65 @@ jobs:
           mkdir -p bundle
           cd vendor/notcurses/build
 
-          # Copy the 3 notcurses libs, resolving the real file (not
-          # the versioned symlink) via readlink/find.
+          # CMake produces three files per lib: the real versioned
+          # file (libnotcurses-core.3.0.17.dylib), a SONAME-style
+          # symlink (libnotcurses-core.3.dylib → real), and an
+          # unversioned symlink (libnotcurses-core.dylib → real).
+          # The install_name inside libnotcurses references the
+          # versioned SONAME-style name (@rpath/libnotcurses-core.3
+          # .dylib), which is what dylibbundler tries to resolve.
+          # Stage the real file then recreate both symlinks in
+          # bundle/ so references resolve AND Raku's unversioned
+          # %?RESOURCES lookup still finds the lib at load time.
           for lib in libnotcurses libnotcurses-core libnotcurses-ffi; do
-            found=$(find . -name "${lib}.*.dylib" -type f | sort | tail -1)
-            if [[ -z "$found" ]]; then
-              found=$(find . -name "${lib}.dylib" -type f | head -1)
+            real=$(find . -name "${lib}.*.dylib" -type f ! -type l | sort | tail -1)
+            if [[ -z "$real" ]]; then
+              echo "❌ Could not find real file for $lib"
+              exit 1
             fi
-            cp "$found" "../../../bundle/${lib}.dylib"
+            cp "$real" "../../../bundle/$(basename "$real")"
           done
 
-          cd ../../..
+          cd ../../../bundle
 
-          # dylibbundler copies every transitively-referenced
-          # dylib into bundle/ and rewrites install_name to
-          # @loader_path/ on each. Run it for each of the three
-          # notcurses libs; dylibbundler skips already-bundled deps.
+          # Recreate SONAME + unversioned symlinks so dylibbundler's
+          # @rpath/libnotcurses-core.3.dylib resolves and NativeCall's
+          # unversioned lookup works too.
+          # E.g. libnotcurses-core.3.0.17.dylib → make:
+          #   libnotcurses-core.3.dylib  (SONAME-style, symlinked)
+          #   libnotcurses-core.dylib    (unversioned, symlinked)
           for lib in libnotcurses libnotcurses-core libnotcurses-ffi; do
-            dylibbundler \
-              -od -b -ns \
-              -x "bundle/${lib}.dylib" \
+            real=$(ls ${lib}.*.*.dylib 2>/dev/null | head -1)
+            if [[ -z "$real" ]]; then
+              echo "❌ Missing real file for $lib in bundle/"
+              exit 1
+            fi
+            major=$(echo "$real" | sed -E "s|^${lib}\.([0-9]+)\..*|\1|")
+            ln -sf "$real" "${lib}.${major}.dylib"
+            ln -sf "$real" "${lib}.dylib"
+          done
+
+          cd ..
+
+          # dylibbundler copies every transitively-referenced dylib
+          # into bundle/ and rewrites install_name to @loader_path/.
+          # Point it at the real versioned file (not the symlink)
+          # for each of the three notcurses libs.
+          for lib in libnotcurses libnotcurses-core libnotcurses-ffi; do
+            real_in_bundle=$(ls bundle/${lib}.*.*.dylib 2>/dev/null | head -1)
+            dylibbundler -od -b -ns \
+              -x "$real_in_bundle" \
               -d bundle/ \
               -p '@loader_path/'
           done
 
-          # Strip debug symbols from everything we ship.
-          find bundle -name '*.dylib' -exec strip -x {} \;
+          # Strip debug symbols from every real dylib we ship.
+          find bundle -name '*.dylib' -type f ! -type l -exec strip -x {} \; 2>/dev/null || true
 
-          # Sanity: each shipped dylib should have NO absolute-path
-          # references — only @loader_path/ or system paths (/usr/lib,
-          # /System/Library).
-          echo "--- otool dump ---"
-          for f in bundle/*.dylib; do
-            echo ">> $f"
-            otool -L "$f"
-          done
+          echo "--- bundle contents ---"
+          ls -la bundle/
+          echo "--- otool dump (libnotcurses) ---"
+          otool -L bundle/libnotcurses.dylib
 
       - name: Package archive
         id: pkg
@@ -268,6 +292,7 @@ jobs:
           update: true
           path-type: inherit
           install: >-
+            zip
             mingw-w64-${{ matrix.pkg-prefix }}-cmake
             mingw-w64-${{ matrix.pkg-prefix }}-ninja
             mingw-w64-${{ matrix.pkg-prefix }}-toolchain
@@ -275,6 +300,7 @@ jobs:
             mingw-w64-${{ matrix.pkg-prefix }}-libdeflate
             mingw-w64-${{ matrix.pkg-prefix }}-libunistring
             mingw-w64-${{ matrix.pkg-prefix }}-ncurses
+            mingw-w64-${{ matrix.pkg-prefix }}-pkgconf
 
       - name: Configure + build notcurses
         run: |
@@ -282,6 +308,17 @@ jobs:
           cd vendor/notcurses
           mkdir -p build
           cmake -B build -S . -G Ninja $CMAKE_FLAGS
+
+          # Fail loudly if cmake silently downgraded USE_MULTIMEDIA=ffmpeg
+          # to none — that'd produce a stripped notcurses with no image
+          # support, defeating half the point of shipping it.
+          if ! grep -q 'USE_MULTIMEDIA:STRING=ffmpeg' build/CMakeCache.txt; then
+            echo "❌ USE_MULTIMEDIA did not land as 'ffmpeg' in CMakeCache."
+            echo "--- relevant cache entries ---"
+            grep -E '(USE_MULTIMEDIA|FFMPEG|AVCODEC)' build/CMakeCache.txt || true
+            exit 1
+          fi
+
           ninja -C build
 
       - name: Stage + bundle sibling DLLs
@@ -290,10 +327,25 @@ jobs:
           mkdir -p bundle
           cd vendor/notcurses/build
 
-          # MinGW DLL naming varies: libfoo-N.dll, libfoo.dll, or foo.dll.
+          # MinGW DLL naming varies: libfoo-N.dll, libfoo.dll, foo.dll.
+          # BUT: `notcurses` is a prefix of `notcurses-core` and
+          # `notcurses-ffi`, so a loose *notcurses*.dll glob matches
+          # all three and head -1 picks the same file every iteration.
+          # Restrict: only allow `.` or `-<digits>` after the name.
           for lib in notcurses notcurses-core notcurses-ffi; do
-            found=$(find . -iname "*${lib}*.dll" -type f | head -1)
+            found=$(find . -type f \( \
+                -iname "${lib}.dll" -o \
+                -iname "lib${lib}.dll" -o \
+                -iname "${lib}-[0-9]*.dll" -o \
+                -iname "lib${lib}-[0-9]*.dll" \
+              \) | head -1)
+            if [[ -z "$found" ]]; then
+              echo "❌ Could not locate built DLL for $lib"
+              find . -iname "*${lib}*" -type f
+              exit 1
+            fi
             cp "$found" "../../../bundle/lib${lib}.dll"
+            echo "Staged lib${lib}.dll (from $(basename $found))"
           done
 
           cd ../../..
@@ -302,27 +354,35 @@ jobs:
           # directory as the DLL being loaded — no rpath needed.
           # We just need to ensure every transitive dep is present
           # in bundle/. MSYS2's `ldd` works on Windows DLLs.
+          #
+          # Filter by PATH not by name: anything under C:\Windows\ is
+          # a system DLL shipped with Windows itself and must stay
+          # dynamic (bundling them would crash on newer Windows).
+          # Also skip MSVC/UCRT runtime DLLs — these are always
+          # available on any Windows machine modern enough to run
+          # Rakudo.
           is_system_dll() {
-            case "${1,,}" in
-              kernel32.dll|ntdll.dll|user32.dll|ws2_32.dll| \
-              advapi32.dll|msvcrt.dll|ucrtbase.dll| \
-              api-ms-*.dll|ext-ms-*.dll|shell32.dll|ole32.dll| \
-              oleaut32.dll|gdi32.dll|bcrypt.dll|crypt32.dll| \
-              secur32.dll|userenv.dll|dbghelp.dll|comctl32.dll| \
-              dnsapi.dll|iphlpapi.dll|mswsock.dll|powrprof.dll| \
-              rpcrt4.dll|winmm.dll|version.dll|comdlg32.dll| \
-              shlwapi.dll|psapi.dll)
+            local path="$1"
+            # Normalise case for comparison. MSYS2 ldd emits either
+            # /c/Windows/... or C:\Windows\... depending on version.
+            local lc="${path,,}"
+            case "$lc" in
+              /c/windows/*|c:/windows/*|c:\\windows\\*)
                 return 0 ;;
-              *) return 1 ;;
+              /c/program\ files/windows*|c:/program\ files/windows*)
+                return 0 ;;
             esac
+            return 1
           }
 
           process_deps() {
             local dll="$1"
-            ldd "$dll" 2>/dev/null | awk '/=>/ {print $1, $3}' | \
-            while read name path; do
-              is_system_dll "$name" && continue
+            ldd "$dll" 2>/dev/null | awk '/=>/ {print $1"\t"$3}' | \
+            while IFS=$'\t' read name path; do
               [[ -z "$path" || "$path" == "not" ]] && continue
+              if is_system_dll "$path"; then
+                continue
+              fi
               if [[ ! -f "bundle/$name" ]]; then
                 cp "$path" "bundle/$name"
                 echo "Bundled: $name  (from $path)"
