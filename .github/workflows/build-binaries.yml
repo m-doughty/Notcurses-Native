@@ -298,6 +298,14 @@ jobs:
           msystem: ${{ matrix.msystem }}
           update: true
           path-type: inherit
+          # Restore MSYS2 install state between runs — first run
+          # still pays the big download (~6 GB for UCRT64 x86_64,
+          # ~9 GB for CLANGARM64 — most of it ffmpeg's codec tree +
+          # the toolchain). Retries hit cache and finish in seconds.
+          # Cache is keyed per-msystem + install list, so changes
+          # to the package list correctly invalidate it, and the
+          # two matrix entries don't step on each other's caches.
+          cache: true
           install: >-
             zip
             mingw-w64-${{ matrix.pkg-prefix }}-cmake
@@ -390,32 +398,47 @@ jobs:
             return 1
           }
 
+          # Fallback: search known msystem bin dirs by name when ldd
+          # gives us a bogus path. CLANGARM64's ldd is unreliable —
+          # often reports directories or partial paths instead of
+          # the actual DLL location. Silently skipping those would
+          # lose ~100 legit ffmpeg codec / text-rendering DLLs.
+          find_dll_by_name() {
+            local name="$1"
+            for search in /clangarm64/bin /ucrt64/bin /mingw64/bin /usr/bin; do
+              if [[ -f "$search/$name" ]]; then
+                echo "$search/$name"
+                return 0
+              fi
+            done
+            return 1
+          }
+
           process_deps() {
             local dll="$1"
             # ldd output examples across platforms:
             #   name => /c/Program Files/.../foo.dll (0x...)     MSYS2 UCRT64
-            #   name => /clangarm64/bin/avcodec-62.dll (?)       MSYS2 CLANGARM64
+            #   name => /clangarm64/bin/avcodec-62.dll (?)       MSYS2 CLANGARM64 (good)
+            #   name => /c/Program Files (?)                     CLANGARM64 (bad, truncated)
             #   name => not found                                dep missing
-            #   name => /c/Program Files (?)                     ARM64 partial path
-            # Strip trailing (anything) with a single regex. Then
-            # require $path to be an absolute path (starts with `/`
-            # or Windows drive letter) to skip "not found" and friends.
             ldd "$dll" 2>/dev/null \
               | sed -n 's/ (.*)$//; s/^[[:space:]]*\([^ ]\+\) => \(.\+\)$/\1\t\2/p' \
               | while IFS=$'\t' read -r name path; do
                   [[ -z "$path" ]] && continue
-                  [[ "$path" != /* && "$path" != ?:[/\\]* ]] && continue
                   if is_system_dll "$name" "$path"; then
                     continue
                   fi
-                  # ARM64 ldd sometimes reports a directory (e.g.
-                  # "/c/Program Files") when it can't actually locate
-                  # the DLL. Require the resolved path to be a real
-                  # file before copying — otherwise cp complains
-                  # about directories and the whole job tanks.
+                  # If ldd's resolved path isn't a real file (ARM64
+                  # often reports garbled paths), fall back to
+                  # searching by name in known msystem bin dirs.
                   if [[ ! -f "$path" ]]; then
-                    echo "Skipping $name: path '$path' is not a regular file"
-                    continue
+                    if resolved=$(find_dll_by_name "$name"); then
+                      path="$resolved"
+                      echo "Resolved $name via fallback: $path"
+                    else
+                      echo "Skipping $name: unresolvable (ldd path='$path', not in known bin dirs)"
+                      continue
+                    fi
                   fi
                   if [[ ! -f "bundle/$name" ]]; then
                     cp "$path" "bundle/$name"
@@ -427,6 +450,47 @@ jobs:
 
           for dll in bundle/libnotcurses.dll bundle/libnotcurses-core.dll bundle/libnotcurses-ffi.dll; do
             process_deps "$dll"
+          done
+
+          # Belt-and-braces sweep: some msystem variants (notably
+          # CLANGARM64) have ldd failures that cause ffmpeg's codec
+          # + text-rendering deps to be silently missed. If the DLLs
+          # exist in the msystem bin dir, copy them anyway —
+          # can't hurt (they're already dynamic deps somewhere in
+          # the graph), and catches the cases where ldd lies.
+          # Process each copied lib through process_deps for its own
+          # transitive deps.
+          echo "--- belt-and-braces sweep ---"
+          for name in \
+              libncursesw6.dll libncurses6.dll \
+              libunistring-5.dll libunistring-2.dll \
+              libdeflate.dll \
+              libpng16-16.dll libjpeg-8.dll libwebp-7.dll libwebpmux-3.dll \
+              libsharpyuv-0.dll libgif-7.dll libtiff-6.dll \
+              libiconv-2.dll libintl-8.dll \
+              libstdc++-6.dll libgcc_s_seh-1.dll libgcc_s_1.dll \
+              libssp-0.dll libgomp-1.dll \
+              zlib1.dll liblzma-5.dll libbz2-1.dll \
+              libexpat-1.dll libxml2-16.dll libxml2-2.dll \
+              libx264-165.dll libx265-215.dll libvpx-1.dll libdav1d-7.dll \
+              libSvtAv1Enc-4.dll libopus-0.dll libmp3lame-0.dll \
+              libvorbis-0.dll libvorbisenc-2.dll libogg-0.dll \
+              libfreetype-6.dll libfontconfig-1.dll \
+              libharfbuzz-0.dll libgraphite2.dll \
+              libbrotlidec.dll libbrotlicommon.dll \
+              swresample-6.dll \
+              libopenjp2-7.dll \
+          ; do
+            if [[ ! -f "bundle/$name" ]]; then
+              if resolved=$(find_dll_by_name "$name"); then
+                cp "$resolved" "bundle/$name"
+                echo "Swept in: $name  (from $resolved)"
+                process_deps "bundle/$name"
+              fi
+              # If not found, silently skip — this variant's ffmpeg
+              # simply doesn't ship it, either statically baked in
+              # or unsupported on this platform.
+            fi
           done
 
           echo "--- bundle contents ---"
