@@ -8,38 +8,58 @@ unit module Notcurses::Native;
 # full (adds multimedia/image via ffmpeg), and ffi (C wrappers for
 # static-inline functions). NativeCall picks the right one per binding.
 #
+# We deliberately do NOT use %?RESOURCES for the libs themselves. zef
+# stages every resource under a SHA-keyed filename, which breaks the
+# inter-dylib references baked into notcurses (@loader_path/libnotcurses
+# -core.3.0.17.dylib etc) — the loader can't find sibling libs by their
+# real names because they've all been renamed to opaque hashes.
+#
+# Instead, Build.rakumod stages the libs to a stable XDG-style data
+# dir at install time, under their real filenames. The dir is versioned
+# by BINARY_TAG (which is small enough to survive %?RESOURCES intact)
+# so a downgrade lines up with the right libs.
+#
 # Lookup precedence (per library):
 #   1. $NOTCURSES_NATIVE_LIB_DIR env var — explicit override. Full
 #      path to a directory containing all three libs. Escape hatch
 #      for custom notcurses builds; you take responsibility for ABI.
-#   2. %?RESOURCES — staged at install time by Build.rakumod from
-#      either a prebuilt GitHub release or a local CMake compile.
+#   2. $NOTCURSES_NATIVE_DATA_DIR — base dir for the staged install
+#      (defaults to $XDG_DATA_HOME, falling back to platform-typical).
+#      Combined with BINARY_TAG to pick the version-matched libs.
 
 constant $os is export = $*KERNEL.name.lc;
 constant $ext is export = $os ~~ /darwin/ ?? 'dylib'
                        !! $*DISTRO.is-win ?? 'dll'
                        !! 'so';
 
-# Env-override check. Returns a resolved path if
-# NOTCURSES_NATIVE_LIB_DIR is set and the file exists there,
-# otherwise the Str type object — callers use `//` to fall
-# through to %?RESOURCES. Keeping the %?RESOURCES lookup in the
-# per-lib subs below (not here) because the twigil only resolves
-# correctly when accessed from the sub that's directly evaluated
-# by the `constant` at module load time.
-sub _env-lib(Str $name --> Str) {
-    my $dir = %*ENV<NOTCURSES_NATIVE_LIB_DIR> // '';
-    return Str unless $dir.chars && $dir.IO.d;
+# Where Build.rakumod staged the libs at install time. Must mirror
+# Build.rakumod's !staged-lib-dir exactly — both compute the same path
+# from the same env vars + the same BINARY_TAG (read from %?RESOURCES,
+# the one resource that survives zef's hashing intact since it's a
+# plain text file with no inter-file refs).
+sub _staged-lib-dir(--> IO::Path) {
+    my $res = %?RESOURCES<BINARY_TAG>;
+    my Str $tag = ($res.defined && $res.IO.e) ?? $res.IO.slurp.trim !! '';
+    my Str $base = %*ENV<NOTCURSES_NATIVE_DATA_DIR>
+        // %*ENV<XDG_DATA_HOME>
+        // ($*DISTRO.is-win
+                ?? (%*ENV<LOCALAPPDATA>
+                        // "{%*ENV<USERPROFILE> // '.'}\\AppData\\Local")
+                !! "{%*ENV<HOME> // '.'}/.local/share");
+    "$base/Notcurses-Native/$tag/lib".IO;
+}
 
-    # Exact match wins. Some distros ship versioned sibling names
-    # (libnotcurses.3.dylib, libnotcurses.so.3) — scan for the
-    # first plausible variant so the escape hatch accepts a Homebrew
-    # install dir or similar.
-    my $exact = "$dir/$name.$ext".IO;
+# Resolve a single lib by basename (without extension) within a given
+# directory. Tries exact `lib.$ext` first, then versioned variants
+# (libfoo.3.dylib, libfoo.so.3, libfoo-3.dll, etc) so we accept whatever
+# the prebuilt archive shipped — symlinks, versioned files, both.
+sub _find-in(IO::Path $dir, Str $name --> Str) {
+    return Str unless $dir.d;
+    my $exact = $dir.add("$name.$ext");
     return $exact.Str if $exact.e;
 
-    for $exact.parent.dir -> $entry {
-        next unless $entry.f;
+    for $dir.dir -> $entry {
+        next unless $entry.e;  # accept symlinks + regular files
         my $bn = $entry.basename;
         return $entry.Str if $bn.starts-with("$name.") && $bn.contains(".$ext");
         return $entry.Str if $bn.starts-with("$name-") && $bn.ends-with(".$ext");
@@ -47,22 +67,23 @@ sub _env-lib(Str $name --> Str) {
     Str;
 }
 
-sub _nc-lib {
-    _env-lib('libnotcurses')
-        // %?RESOURCES{"lib/libnotcurses.{$ext}"}.IO.Str;
-}
-sub _ffi-lib {
-    _env-lib('libnotcurses-ffi')
-        // %?RESOURCES{"lib/libnotcurses-ffi.{$ext}"}.IO.Str;
-}
-sub _core-lib {
-    _env-lib('libnotcurses-core')
-        // %?RESOURCES{"lib/libnotcurses-core.{$ext}"}.IO.Str;
+sub _resolve-lib(Str $name --> Str) {
+    # 1. Env-override wins outright.
+    if (my $override = %*ENV<NOTCURSES_NATIVE_LIB_DIR>) && $override.IO.d {
+        with _find-in($override.IO, $name) { return $_ }
+    }
+    # 2. Staged install dir.
+    with _find-in(_staged-lib-dir(), $name) { return $_ }
+
+    # Nothing worked. Return the staged path as a hint for the
+    # NativeCall error message — the user will see it in the
+    # "Cannot locate native library 'X'" failure.
+    "{ _staged-lib-dir() }/$name.$ext";
 }
 
-constant $nc-lib is export   = _nc-lib();
-constant $ffi-lib is export  = _ffi-lib();
-constant $core-lib is export = _core-lib();
+constant $nc-lib   is export = _resolve-lib('libnotcurses');
+constant $ffi-lib  is export = _resolve-lib('libnotcurses-ffi');
+constant $core-lib is export = _resolve-lib('libnotcurses-core');
 
 # === Version ===
 

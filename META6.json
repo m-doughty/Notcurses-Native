@@ -26,15 +26,7 @@
   },
   "resources": [
     "checksums.txt",
-    "lib/libnotcurses.dylib",
-    "lib/libnotcurses.so",
-    "lib/libnotcurses.dll",
-    "lib/libnotcurses-core.dylib",
-    "lib/libnotcurses-core.so",
-    "lib/libnotcurses-core.dll",
-    "lib/libnotcurses-ffi.dylib",
-    "lib/libnotcurses-ffi.so",
-    "lib/libnotcurses-ffi.dll"
+    "BINARY_TAG"
   ],
   "source-url": "https://github.com/m-doughty/Notcurses-Native.git",
   "tags": [
@@ -46,5 +38,5 @@
   ],
   "test-depends": [
   ],
-  "version": "0.2.1"
+  "version": "0.2.2"
 }

@@ -17,14 +17,30 @@
 #|      depending on platform. See docs/Readme.rakudoc for per-distro
 #|      install instructions.
 #|
+#| Why we don't use META6 resources for the libs:
+#|
+#|   zef hashes every staged resource filename to a SHA-keyed name in
+#|   .../resources/. notcurses dylibs/sos/dlls have inter-dep references
+#|   baked in via @loader_path / $ORIGIN / sibling-DLL load
+#|   (e.g. libnotcurses.dylib needs libnotcurses-core.3.0.17.dylib next
+#|   to it on disk by that exact name). Renamed-to-hash files break
+#|   those refs and the loader fails at first dlopen with cryptic
+#|   "Library not loaded" errors. So instead Build.rakumod stages the
+#|   libs to a stable XDG data dir under their real filenames, and
+#|   Native.rakumod reads from there. Only BINARY_TAG (a tiny text
+#|   file, no inter-file refs) goes through %?RESOURCES.
+#|
 #| Env-var knobs:
 #|
 #|   NOTCURSES_NATIVE_BUILD_FROM_SOURCE=1  skip prebuilt, always compile
 #|   NOTCURSES_NATIVE_BINARY_ONLY=1        refuse to fall back to compile
 #|   NOTCURSES_NATIVE_BINARY_URL=<url>     override GH release base URL
-#|   NOTCURSES_NATIVE_CACHE_DIR=<path>     override cache directory
+#|   NOTCURSES_NATIVE_CACHE_DIR=<path>     override download cache dir
+#|   NOTCURSES_NATIVE_DATA_DIR=<path>      override staged-libs dir
+#|                                         (defaults to XDG_DATA_HOME)
 #|   NOTCURSES_NATIVE_LIB_DIR=<path>       (runtime) load libs from this
-#|                                         dir instead of %?RESOURCES
+#|                                         dir instead of the staged
+#|                                         data dir
 
 class Build {
 
@@ -59,18 +75,27 @@ class Build {
         my Str $binary-tag = self!binary-tag($dist-path);
         my Str $plat = self!detect-platform;
 
+        # Make BINARY_TAG available via %?RESOURCES so Native.rakumod
+        # can find the corresponding staged-libs dir at runtime. This
+        # is a tiny text file so it survives zef's resource-hashing
+        # rename intact (we only ever read its contents).
+        self!stage-binary-tag($dist-path);
+
+        # Where the libs actually go. Stable XDG-style location, NOT
+        # under the dist's resources/ — see header comment for why.
+        my IO::Path $stage = self!staged-lib-dir($binary-tag);
+
         without $plat {
             note "⚠️  Unknown platform ({$*KERNEL.name}-{$*KERNEL.hardware}); "
                 ~ "falling back to source build.";
-            self!compile-from-source($dist-path);
-            self!stage-stubs($dist-path);
+            self!compile-from-source($dist-path, $stage);
             return True;
         }
 
         unless $force-source {
-            if self!try-prebuilt($dist-path, $plat, $binary-tag) {
-                self!stage-stubs($dist-path);
-                say "✅ Installed prebuilt Notcurses binaries ($plat) for $binary-tag.";
+            if self!try-prebuilt($dist-path, $plat, $binary-tag, $stage) {
+                say "✅ Installed prebuilt Notcurses binaries ($plat) for "
+                  ~ "$binary-tag → $stage.";
                 return True;
             }
             if $binary-only {
@@ -81,15 +106,34 @@ class Build {
                ~ "— compiling from source via CMake.";
         }
 
-        self!compile-from-source($dist-path);
-        self!stage-stubs($dist-path);
-        say "✅ Compiled Notcurses from vendored source.";
+        self!compile-from-source($dist-path, $stage);
+        say "✅ Compiled Notcurses from vendored source → $stage.";
         True;
+    }
+
+    # The XDG-style staged-libs dir for a given binary-tag. Versioned
+    # so a downgrade lines up with the right libs and parallel-installed
+    # versions (mid-upgrade etc.) don't trample each other.
+    method !staged-lib-dir(Str $binary-tag --> IO::Path) {
+        my Str $base = %*ENV<NOTCURSES_NATIVE_DATA_DIR>
+            // %*ENV<XDG_DATA_HOME>
+            // ($*DISTRO.is-win
+                    ?? (%*ENV<LOCALAPPDATA>
+                            // "{%*ENV<USERPROFILE> // '.'}\\AppData\\Local")
+                    !! "{%*ENV<HOME> // '.'}/.local/share");
+        "$base/Notcurses-Native/$binary-tag/lib".IO;
+    }
+
+    method !stage-binary-tag($dist-path) {
+        my IO::Path $src = "$dist-path/BINARY_TAG".IO;
+        my IO::Path $dst = "$dist-path/resources/BINARY_TAG".IO;
+        $dst.parent.mkdir;
+        copy $src, $dst;
     }
 
     # --- Prebuilt binary path -------------------------------------------
 
-    method !try-prebuilt($dist-path, Str $plat, Str $binary-tag --> Bool) {
+    method !try-prebuilt($dist-path, Str $plat, Str $binary-tag, IO::Path $stage --> Bool) {
         my Str $artifact = self!artifact-name($plat);
         my IO::Path $cache-dir = self!cache-dir($binary-tag);
         my IO::Path $cached = $cache-dir.add($artifact);
@@ -122,7 +166,7 @@ class Build {
             return False;
         }
 
-        self!extract-archive($cached, $dist-path);
+        self!extract-archive($cached, $stage);
         True;
     }
 
@@ -131,8 +175,13 @@ class Build {
         "notcurses-$plat.$archive-ext";
     }
 
-    method !extract-archive(IO::Path $archive, $dist-path) {
-        my IO::Path $dest = "$dist-path/resources/lib".IO;
+    method !extract-archive(IO::Path $archive, IO::Path $dest) {
+        # Wipe + recreate: avoid mixing files from a prior install of
+        # the same tag (eg if the user manually swapped archives). Tag
+        # dir is versioned so other versions are unaffected.
+        if $dest.d {
+            for $dest.dir { .unlink if .f || .l }
+        }
         $dest.mkdir;
 
         if $archive.Str.ends-with('.zip') {
@@ -155,13 +204,23 @@ class Build {
         }
 
         # Sanity-check: the three notcurses libs must be present post-extract.
+        # Allow either the unversioned name or any versioned variant
+        # (e.g. libnotcurses.3.dylib, libnotcurses.so.3) since the
+        # archive is allowed to ship versioned files alongside the
+        # unversioned symlinks. The runtime resolver in Native.rakumod
+        # knows how to pick the right one.
         my Str $ext = $*KERNEL.name.lc ~~ /darwin/ ?? 'dylib'
                    !! $*DISTRO.is-win ?? 'dll'
                    !! 'so';
         for <libnotcurses libnotcurses-core libnotcurses-ffi> -> Str $lib {
-            my IO::Path $f = $dest.add("$lib.$ext");
+            my @found = $dest.dir.grep({
+                my $bn = .basename;
+                $bn eq "$lib.$ext"
+                    || ($bn.starts-with("$lib.") && $bn.contains(".$ext"))
+                    || ($bn.starts-with("$lib-") && $bn.ends-with(".$ext"));
+            });
             die "❌ Prebuilt archive missing expected lib: $lib.$ext"
-                unless $f.e;
+                unless @found;
         }
     }
 
@@ -222,18 +281,17 @@ class Build {
     #| cmake + a C toolchain + system ffmpeg / ncurses / libunistring
     #| / libdeflate dev headers (see docs/Readme.rakudoc for distro-
     #| specific install commands).
-    method !compile-from-source($dist-path) {
+    method !compile-from-source($dist-path, IO::Path $stage) {
         self!check-toolchain;
 
         my Str $vendor = "$dist-path/vendor/notcurses";
         my Str $build-dir = "$vendor/build";
-        my Str $resources = "$dist-path/resources/lib";
         my Str $os = $*KERNEL.name.lc;
         my Str $ext = $os ~~ /darwin/ ?? 'dylib'
                    !! $*DISTRO.is-win ?? 'dll'
                    !! 'so';
 
-        $resources.IO.mkdir;
+        $stage.mkdir;
 
         my @cmake-args = (
             'cmake', '-B', $build-dir, '-S', $vendor,
@@ -299,11 +357,12 @@ class Build {
             die "CMake build failed:\n$build-err";
         }
 
-        # Stage the three libs. Upstream naming varies — recursive
-        # find-lib walks the build tree and matches each library's
-        # expected prefix + extension.
+        # Stage the three libs into the XDG-style staged-libs dir.
+        # Upstream naming varies per platform — recursive find-lib
+        # walks the build tree and matches each library's expected
+        # prefix + extension.
         for <libnotcurses libnotcurses-core libnotcurses-ffi> -> Str $lib {
-            my IO::Path $target = "$resources/$lib.$ext".IO;
+            my IO::Path $target = $stage.add("$lib.$ext");
             self!find-lib($build-dir.IO, $lib, $ext, $target);
             die "❌ Could not stage $lib.$ext from build tree"
                 unless $target.e;
@@ -378,18 +437,4 @@ class Build {
         %PLATFORM-SLUGS{$key};
     }
 
-    #| Empty placeholders for non-target platforms so META6.json's
-    #| resources list stays satisfiable. We have three libs × three
-    #| extensions = nine potential files; whichever extension matches
-    #| this platform gets real content, the other six get zero-byte
-    #| stubs.
-    method !stage-stubs($dist-path) {
-        my Str $resources = "$dist-path/resources/lib";
-        for <libnotcurses libnotcurses-core libnotcurses-ffi> -> Str $lib {
-            for <dylib so dll> -> Str $ext {
-                my IO::Path $path = "$resources/$lib.$ext".IO;
-                $path.spurt('') unless $path.e;
-            }
-        }
-    }
 }

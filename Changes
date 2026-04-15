@@ -2,6 +2,30 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.2.2  2026-04-15T02:46:26+01:00
+    - Stage native libs to an XDG-style data dir
+      ($XDG_DATA_HOME/Notcurses-Native/<binary-tag>/lib/, or
+      $LOCALAPPDATA on Windows, ~/.local/share fallback) instead of
+      the dist's resources/. Reason: zef hashes every staged resource
+      filename to a SHA-keyed name, which silently breaks the inter-
+      dylib references baked into notcurses (libnotcurses.dylib loads
+      libnotcurses-core.3.0.17.dylib via @loader_path; same on Linux
+      with $ORIGIN, same on Windows with sibling-DLL search). Hashed
+      filenames meant the loader couldn't find any sibling lib by its
+      real name, and `Notcurses::Native` died at first dlopen with a
+      cryptic "Library not loaded" error post-install. Tests passed at
+      install time (pre-staging) so the bug only surfaced when
+      consumers like Selkie tried to actually use the module.
+    - META6.json no longer lists the 9 dylib/.so/.dll entries; only
+      checksums.txt and a new BINARY_TAG resource (a tiny text file
+      immune to the hash-renaming problem, used by Native.rakumod to
+      locate the staged-libs directory at runtime).
+    - Native.rakumod resolver: env override
+      (NOTCURSES_NATIVE_LIB_DIR) → XDG-staged dir → fail with the
+      staged path in the error message for actionable debug.
+    - New env knob: NOTCURSES_NATIVE_DATA_DIR to override the XDG base
+      directory (e.g. for system-wide installs or sandboxed envs).
+
 0.2.1  2026-04-15T02:23:12+01:00
     - Build: extract Windows .zip prebuilts via PowerShell's
       Expand-Archive instead of `tar`. GNU tar (which is first on
