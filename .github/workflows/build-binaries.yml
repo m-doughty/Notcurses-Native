@@ -304,6 +304,11 @@ jobs:
             msystem: CLANGARM64
             pkg-prefix: clang-aarch64
     runs-on: ${{ matrix.os }}
+    # ARM Windows runners are flaky — ldd subprocesses periodically
+    # hang indefinitely (likely xtajit64 emulation deadlocks). Cap
+    # the whole job so a stuck runner fails in an hour instead of
+    # eating GitHub's 6h default and forcing a manual restart.
+    timeout-minutes: 60
     defaults:
       run:
         shell: 'msys2 {0}'
@@ -315,15 +320,19 @@ jobs:
       - uses: msys2/setup-msys2@v2
         with:
           msystem: ${{ matrix.msystem }}
-          update: true
           path-type: inherit
+          # NOTE: deliberately no `update: true`. That flag runs
+          # `pacman -Syuu` which pulls whatever's newest off the
+          # mirrors, shifting installed package versions on nearly
+          # every run. setup-msys2 keys its cache on installed
+          # package state, so `update: true` invalidates the cache
+          # almost every time — defeating the point. Without it,
+          # we install whatever versions the base MSYS2 image ships
+          # with, and the cache actually sticks across runs.
           # Restore MSYS2 install state between runs — first run
           # still pays the big download (~6 GB for UCRT64 x86_64,
           # ~9 GB for CLANGARM64 — most of it ffmpeg's codec tree +
           # the toolchain). Retries hit cache and finish in seconds.
-          # Cache is keyed per-msystem + install list, so changes
-          # to the package list correctly invalidate it, and the
-          # two matrix entries don't step on each other's caches.
           cache: true
           install: >-
             zip
@@ -432,39 +441,74 @@ jobs:
             done
             return 1
           }
+          # Track DLLs we've already inspected so a cyclic ldd graph
+          # (or one that lies the same way twice) can't loop forever.
+          declare -A SEEN_DEPS=()
 
           process_deps() {
             local dll="$1"
-            # ldd output examples across platforms:
-            #   name => /c/Program Files/.../foo.dll (0x...)     MSYS2 UCRT64
-            #   name => /clangarm64/bin/avcodec-62.dll (?)       MSYS2 CLANGARM64 (good)
-            #   name => /c/Program Files (?)                     CLANGARM64 (bad, truncated)
-            #   name => not found                                dep missing
-            ldd "$dll" 2>/dev/null \
-              | sed -n 's/ (.*)$//; s/^[[:space:]]*\([^ ]\+\) => \(.\+\)$/\1\t\2/p' \
-              | while IFS=$'\t' read -r name path; do
-                  [[ -z "$path" ]] && continue
-                  if is_system_dll "$name" "$path"; then
-                    continue
-                  fi
-                  # If ldd's resolved path isn't a real file (ARM64
-                  # often reports garbled paths), fall back to
-                  # searching by name in known msystem bin dirs.
-                  if [[ ! -f "$path" ]]; then
-                    if resolved=$(find_dll_by_name "$name"); then
-                      path="$resolved"
-                      echo "Resolved $name via fallback: $path"
-                    else
-                      echo "Skipping $name: unresolvable (ldd path='$path', not in known bin dirs)"
-                      continue
-                    fi
-                  fi
-                  if [[ ! -f "bundle/$name" ]]; then
-                    cp "$path" "bundle/$name"
-                    echo "Bundled: $name  (from $path)"
-                    process_deps "bundle/$name"
-                  fi
-                done
+            local depth="${2:-0}"
+            # Hard recursion cap. The real DLL graph is ~3 deep;
+            # anything past 12 is a cycle or a buggy ldd, not real.
+            if (( depth > 12 )); then
+              echo "process_deps: depth cap hit at $dll, stopping"
+              return 0
+            fi
+            local key="$(basename "$dll")"
+            [[ -n "${SEEN_DEPS[$key]:-}" ]] && return 0
+            SEEN_DEPS[$key]=1
+
+            # Wrap ldd in `timeout` — on Windows ARM, ldd
+            # subprocesses periodically wedge inside xtajit64
+            # emulation and never return. 30s is generous; a healthy
+            # ldd call on these DLLs finishes in well under a second.
+            # Retry a few times: most xtajit64 deadlocks clear on a
+            # fresh process. If it stays stuck after 4 tries, fail
+            # the job — silently skipping would ship a bundle missing
+            # this DLL's transitive deps, which then explodes at
+            # runtime on a user's machine. A failed CI job is much
+            # cheaper than a broken release.
+            local ldd_out=""
+            local attempt
+            for attempt in 1 2 3 4; do
+              if ldd_out="$(timeout 30s ldd "$dll" 2>/dev/null)"; then
+                break
+              fi
+              echo "process_deps: ldd attempt $attempt timed out on $dll, retrying..."
+              sleep 2
+              ldd_out=""
+            done
+            if [[ -z "$ldd_out" ]]; then
+              echo "❌ ldd permanently wedged on $dll after 4 attempts."
+              echo "   Almost certainly a xtajit64 deadlock on Windows ARM —"
+              echo "   restart the workflow run. If it keeps failing on the"
+              echo "   same DLL, that DLL itself is broken or the runner is"
+              echo "   in a bad state."
+              exit 1
+            fi
+
+            local line name path
+            while IFS=$'\t' read -r name path; do
+              [[ -z "$path" ]] && continue
+              if is_system_dll "$name" "$path"; then
+                continue
+              fi
+              if [[ ! -f "$path" ]]; then
+                if resolved=$(find_dll_by_name "$name"); then
+                  path="$resolved"
+                  echo "Resolved $name via fallback: $path"
+                else
+                  echo "Skipping $name: unresolvable (ldd path='$path', not in known bin dirs)"
+                  continue
+                fi
+              fi
+              if [[ ! -f "bundle/$name" ]]; then
+                cp "$path" "bundle/$name"
+                echo "Bundled: $name  (from $path)"
+                process_deps "bundle/$name" $((depth + 1))
+              fi
+            done < <(printf '%s\n' "$ldd_out" \
+                       | sed -n 's/ (.*)$//; s/^[[:space:]]*\([^ ]\+\) => \(.\+\)$/\1\t\2/p')
           }
 
           for dll in bundle/libnotcurses.dll bundle/libnotcurses-core.dll bundle/libnotcurses-ffi.dll; do
