@@ -2,6 +2,19 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.2.3  2026-04-15T02:52:48+01:00
+    - CI: rework test.yml to install via zef (which runs Build.rakumod
+      → downloads prebuilt → SHA-verifies → stages libs to the XDG
+      data dir) instead of building notcurses by hand and dropping
+      libs into resources/lib/. The hand-build step was a vestige of
+      the pre-XDG-staging layout and stopped working when META6.json
+      dropped the lib resource entries in 0.2.2 — tests started
+      failing with "cannot open shared object file" because nothing
+      was actually staging libs to where Native.rakumod now looks.
+      Workflow now also re-installs with NOTCURSES_NATIVE_BUILD_FROM_
+      SOURCE=1 as a second pass to keep the CMake fallback path
+      covered on every CI run.
+
 0.2.2  2026-04-15T02:46:26+01:00
     - Stage native libs to an XDG-style data dir
       ($XDG_DATA_HOME/Notcurses-Native/<binary-tag>/lib/, or

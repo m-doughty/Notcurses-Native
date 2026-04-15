@@ -23,7 +23,7 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install system dependencies
+      - name: Install system dependencies (for source-build fallback)
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
@@ -42,43 +42,35 @@ jobs:
         with:
           raku-version: 'latest'
 
-      - name: Build notcurses
-        run: |
-          mkdir -p resources/lib
-          cd vendor/notcurses
-          mkdir -p build && cd build
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DUSE_MULTIMEDIA=ffmpeg \
-            -DBUILD_FFI_LIBRARY=ON \
-            -DUSE_CXX=OFF \
-            -DBUILD_EXECUTABLES=OFF \
-            -DUSE_PANDOC=OFF \
-            -DUSE_DOCTEST=OFF \
-            -DUSE_POC=OFF \
-            -DUSE_STATIC=OFF
-          make -j$(nproc)
-          cd ../../..
-          for lib in libnotcurses libnotcurses-core libnotcurses-ffi; do
-            found=$(find vendor/notcurses/build -name "${lib}.so*" -type f | head -1)
-            if [ -n "$found" ]; then
-              cp "$found" "resources/lib/${lib}.so"
-              echo "Staged ${lib}.so"
-            fi
-          done
-          touch resources/lib/libnotcurses.dylib resources/lib/libnotcurses-core.dylib resources/lib/libnotcurses-ffi.dylib
-          touch resources/lib/libnotcurses.dll resources/lib/libnotcurses-core.dll resources/lib/libnotcurses-ffi.dll
+      # Install the dist itself — this runs Build.rakumod which downloads
+      # the prebuilt archive from GitHub Releases, SHA-verifies it, and
+      # stages libs to ~/.local/share/Notcurses-Native/<tag>/lib/ where
+      # Native.rakumod looks for them at runtime. Testing through the real
+      # install path catches breakage in Build.rakumod itself, the
+      # resolver, and the prebuilt archive layout.
+      - name: Install Notcurses::Native via prebuilt path
+        run: zef install --/test .
 
-      - name: Install Raku dependencies
-        run: zef install --/test --test-depends --deps-only .
+      - name: Install Raku test deps
+        run: zef install --/test App::Prove6
 
-      - name: Run unit tests (prove6)
-        run: |
-          zef install --/test App::Prove6
-          prove6 --verbose -I lib -I t/lib t
+      - name: Run unit tests (prove6) — prebuilt path
+        run: prove6 --verbose -I lib -I t/lib t
 
       - name: Run extended tests (prove — terminal-dependent)
         run: prove -e 'raku -I lib -I t/lib' --verbose xt/*.rakutest
+
+      # Re-install with NOTCURSES_NATIVE_BUILD_FROM_SOURCE=1 to cover
+      # the CMake fallback (the path users without a supported prebuilt
+      # platform end up on). This is the slow one — keeping it as a
+      # second pass means a broken prebuilt path fails fast.
+      - name: Install Notcurses::Native via source-build path
+        env:
+          NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1'
+        run: zef install --/test --force-install .
+
+      - name: Run unit tests (prove6) — source-build path
+        run: prove6 --verbose -I lib -I t/lib t
 
   test-macos:
     name: macOS
@@ -88,7 +80,7 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install system dependencies
+      - name: Install system dependencies (for source-build fallback)
         run: |
           brew install \
             cmake \
@@ -102,45 +94,25 @@ jobs:
         with:
           raku-version: 'latest'
 
-      - name: Build notcurses
-        run: |
-          mkdir -p resources/lib
-          BREW_PREFIX=$(brew --prefix)
-          cd vendor/notcurses
-          mkdir -p build && cd build
-          PKG_CONFIG_PATH="${BREW_PREFIX}/opt/ncurses/lib/pkgconfig:${PKG_CONFIG_PATH}" \
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DUSE_MULTIMEDIA=ffmpeg \
-            -DBUILD_FFI_LIBRARY=ON \
-            -DUSE_CXX=OFF \
-            -DBUILD_EXECUTABLES=OFF \
-            -DUSE_PANDOC=OFF \
-            -DUSE_DOCTEST=OFF \
-            -DUSE_POC=OFF \
-            -DUSE_STATIC=OFF
-          make -j$(sysctl -n hw.ncpu)
-          cd ../../..
-          for lib in libnotcurses libnotcurses-core libnotcurses-ffi; do
-            found=$(find vendor/notcurses/build -name "${lib}*.dylib" -type f | sort | tail -1)
-            if [ -n "$found" ]; then
-              cp "$found" "resources/lib/${lib}.dylib"
-              echo "Staged ${lib}.dylib"
-            fi
-          done
-          touch resources/lib/libnotcurses.so resources/lib/libnotcurses-core.so resources/lib/libnotcurses-ffi.so
-          touch resources/lib/libnotcurses.dll resources/lib/libnotcurses-core.dll resources/lib/libnotcurses-ffi.dll
+      - name: Install Notcurses::Native via prebuilt path
+        run: zef install --/test .
 
-      - name: Install Raku dependencies
-        run: zef install --/test --test-depends --deps-only .
+      - name: Install Raku test deps
+        run: zef install --/test App::Prove6
 
-      - name: Run unit tests (prove6)
-        run: |
-          zef install --/test App::Prove6
-          prove6 --verbose -I lib -I t/lib t
+      - name: Run unit tests (prove6) — prebuilt path
+        run: prove6 --verbose -I lib -I t/lib t
 
       - name: Run extended tests (prove — terminal-dependent)
         run: prove -e 'raku -I lib -I t/lib' --verbose xt/*.rakutest
+
+      - name: Install Notcurses::Native via source-build path
+        env:
+          NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1'
+        run: zef install --/test --force-install .
+
+      - name: Run unit tests (prove6) — source-build path
+        run: prove6 --verbose -I lib -I t/lib t
 
   test-windows:
     name: Windows
@@ -178,51 +150,20 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-toolchain
 
-      # Windows build uses ffmpeg for multimedia. Upstream notcurses docs
-      # recommend OpenImageIO on Windows, but MSYS2 ships only the latest
-      # OIIO which has ABI drift vs notcurses 3.0.17's oiio.cpp. ffmpeg's
-      # media path is the same well-tested one used on Linux/macOS. No
-      # pandoc, no doctest (notcurses-tester doesn't build on Windows),
-      # no static (we want a DLL).
-      - name: Build notcurses
-        run: |
-          mkdir -p resources/lib
-          cd vendor/notcurses
-          mkdir -p build && cd build
-          cmake .. -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DUSE_MULTIMEDIA=ffmpeg \
-            -DBUILD_FFI_LIBRARY=ON \
-            -DUSE_CXX=OFF \
-            -DBUILD_EXECUTABLES=OFF \
-            -DUSE_PANDOC=OFF \
-            -DUSE_DOCTEST=OFF \
-            -DUSE_POC=OFF \
-            -DUSE_STATIC=OFF
-          ninja
-          cd ../../..
-          # Stage built DLLs into resources/lib as *.dll. Names vary
-          # slightly under mingw (usually libfoo-N.dll or foo.dll).
-          for lib in notcurses notcurses-core notcurses-ffi; do
-            found=$(find vendor/notcurses/build -iname "*${lib}*.dll" -type f | head -1)
-            if [ -n "$found" ]; then
-              cp "$found" "resources/lib/lib${lib}.dll"
-              echo "Staged lib${lib}.dll"
-            fi
-          done
-          # Placeholder files for the other platforms' suffixes so
-          # META6's install pass doesn't choke on missing artefacts.
-          touch resources/lib/libnotcurses.dylib \
-                resources/lib/libnotcurses-core.dylib \
-                resources/lib/libnotcurses-ffi.dylib
-          touch resources/lib/libnotcurses.so \
-                resources/lib/libnotcurses-core.so \
-                resources/lib/libnotcurses-ffi.so
-
       # Upstream explicitly notes that notcurses-tester does not work on
       # Windows (see doc/notcurses.md, 'Microsoft Windows' section).
-      # Our goal is to prove the build, install, and load path works —
-      # not to run the full unit-test suite here. A successful build +
-      # zef install with --/test demonstrates the artifact is usable.
-      - name: Verify zef can install the module
+      # Our goal here is to prove the install + load path works — not to
+      # run the full unit-test suite. A successful zef install (which
+      # runs Build.rakumod, downloads the prebuilt, SHA-verifies it,
+      # stages to %LOCALAPPDATA%) demonstrates the artifact is usable.
+      - name: Verify zef can install the module (prebuilt path)
         run: zef install --/test .
+
+      # Source-build pass: forces the CMake fallback so we catch
+      # regressions in the Windows source-build branch too. MSYS2
+      # toolchain + ffmpeg/ncurses/libdeflate/libunistring are
+      # available from the setup-msys2 step above.
+      - name: Verify zef can install the module (source-build path)
+        env:
+          NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1'
+        run: zef install --/test --force-install .
