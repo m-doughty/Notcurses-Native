@@ -24,8 +24,8 @@
 # @loader_path (macOS) / $ORIGIN (Linux) / sibling DLL layout
 # (Windows) so they load from the same resources/lib/ directory.
 
-# Pending r2 rebuild — checksums will be filled in after CI publishes
-# the resigned macOS artifact and the corresponding fresh builds for
-# all five platforms. Empty entries here mean Build.rakumod's prebuilt
-# path will fail SHA verify and fall through to source compile, which
-# is the safe fallback while we wait.
+9871e87b38f7e7756e8bd7aa41fc8911bb0d9da8beade11b16d941ac47274308  notcurses-linux-x86_64-glibc.tar.gz
+bf1bce748d061506c6bd77791755c14dd392ca57d600b0c4e6e47bd8fb548aec  notcurses-windows-arm64.zip
+ca526e7170d1f71be4b545a18c1256804cf6e32d04acfcc969e5a43d5d0c51f2  notcurses-macos-arm64.tar.gz
+d89c9284f17ae598c39c0215670a351ecdb4da61089610c5affdbd4ae62be65f  notcurses-windows-x86_64.zip
+e6713b09be705c73f4d4b9f1be62bdc6cb74047ca576472bc04b6010577ed8bd  notcurses-linux-aarch64-glibc.tar.gz

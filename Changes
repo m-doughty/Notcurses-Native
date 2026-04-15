@@ -2,6 +2,51 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.2.0  2026-04-15T02:17:17+01:00
+    - Prebuilt-binary-first install path. Build.rakumod now attempts
+      to download a per-platform archive from the repo's GitHub
+      Releases containing all three notcurses libs (libnotcurses,
+      libnotcurses-core, libnotcurses-ffi) plus the ffmpeg sibling
+      dylibs notcurses dyn-links, before falling back to the existing
+      CMake source compilation. Saves the 5–15 minute CMake build +
+      sidesteps the "install these 10 -dev packages first" pain
+      that the HN thread surfaced.
+    - ffmpeg sibling bundling with rpath relocation: @loader_path/
+      on macOS via dylibbundler, $ORIGIN on Linux via patchelf,
+      sibling-DLL layout on Windows. Archive self-contained — no
+      system ffmpeg/ncurses/libunistring/libdeflate needed at
+      runtime.
+    - SHA256 verification against bundled resources/checksums.txt;
+      refuses any prebuilt whose hash isn't recorded (hard security
+      boundary).
+    - Cache downloaded archives in $XDG_CACHE_HOME/Notcurses-Native-
+      binaries/ (or $HOME/.cache/ fallback).
+    - New env knobs: NOTCURSES_NATIVE_BUILD_FROM_SOURCE=1 to skip
+      prebuilts; NOTCURSES_NATIVE_BINARY_ONLY=1 to refuse fallback;
+      NOTCURSES_NATIVE_BINARY_URL to override release base URL;
+      NOTCURSES_NATIVE_CACHE_DIR to override cache dir;
+      NOTCURSES_NATIVE_LIB_DIR for runtime lib-dir override.
+    - New BINARY_TAG file at repo root as single source of truth for
+      the pinned binary release tag (binaries-notcurses-<upstream>-
+      r<recipe-rev>), read by both Build.rakumod and the CI
+      workflow.
+    - New .github/workflows/build-binaries.yml: builds + publishes
+      prebuilt archives for five platforms (macOS arm64, Linux
+      x86_64/aarch64 glibc, Windows x86_64/arm64) on manual dispatch
+      or binaries-* tag push. macOS uses dylibbundler, Linux uses
+      recursive ldd walk + patchelf, Windows uses recursive ldd on
+      MSYS2 + sibling DLL layout.
+    - macOS is arm64-only for v1. Intel Macs fall through to the
+      compile fallback; universal builds need cross-arch brew
+      setup that isn't worth the CI complexity for initial ship.
+      Can revisit if Intel Mac users complain.
+    - FFI lookup in Notcurses::Native now respects the
+      NOTCURSES_NATIVE_LIB_DIR env override before falling back to
+      %?RESOURCES. Escape hatch for custom notcurses builds.
+    - Fixed $os.contains('win') bug in FFI lookup: "darwin" matches
+      "/win/", causing file-extension detection to pick 'dll' on
+      macOS. Now uses $*DISTRO.is-win.
+
 0.1.5  2026-04-12T21:17:32+01:00
     - Build: tighten library-matching regex in Build.rakumod so that
       staging `libnotcurses` doesn't accidentally pick up
