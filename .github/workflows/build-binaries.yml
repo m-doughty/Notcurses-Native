@@ -369,14 +369,22 @@ jobs:
           # available on any Windows machine modern enough to run
           # Rakudo.
           is_system_dll() {
-            local path="$1"
-            # Normalise case for comparison. MSYS2 ldd emits either
-            # /c/Windows/... or C:\Windows\... depending on version.
+            local name="$1"
+            local path="$2"
+            # Name-based skip: Windows API Set forwarders are ALWAYS
+            # system DLLs and ALWAYS present on any supported Windows
+            # version. ldd on ARM64 sometimes reports their paths
+            # truncated or pointing at a directory; the name match
+            # catches them regardless of what ldd says.
+            case "${name,,}" in
+              api-ms-*|ext-ms-*|ms-win-*)
+                return 0 ;;
+            esac
+            # Path-based skip: anything under C:\Windows is a system
+            # DLL and must stay dynamic.
             local lc="${path,,}"
             case "$lc" in
               /c/windows/*|c:/windows/*|c:\\windows\\*)
-                return 0 ;;
-              /c/program\ files/windows*|c:/program\ files/windows*)
                 return 0 ;;
             esac
             return 1
@@ -388,6 +396,7 @@ jobs:
             #   name => /c/Program Files/.../foo.dll (0x...)     MSYS2 UCRT64
             #   name => /clangarm64/bin/avcodec-62.dll (?)       MSYS2 CLANGARM64
             #   name => not found                                dep missing
+            #   name => /c/Program Files (?)                     ARM64 partial path
             # Strip trailing (anything) with a single regex. Then
             # require $path to be an absolute path (starts with `/`
             # or Windows drive letter) to skip "not found" and friends.
@@ -395,14 +404,17 @@ jobs:
               | sed -n 's/ (.*)$//; s/^[[:space:]]*\([^ ]\+\) => \(.\+\)$/\1\t\2/p' \
               | while IFS=$'\t' read -r name path; do
                   [[ -z "$path" ]] && continue
-                  # Absolute path check: `/...` (POSIX / MSYS2) or
-                  # `C:/...` / `C:\...` (native Windows). Anything
-                  # else ("not found", bare filename, etc.) gets
-                  # skipped — usually a DLL the runner can't locate,
-                  # which'll surface as a later load failure we can
-                  # iterate on.
                   [[ "$path" != /* && "$path" != ?:[/\\]* ]] && continue
-                  if is_system_dll "$path"; then
+                  if is_system_dll "$name" "$path"; then
+                    continue
+                  fi
+                  # ARM64 ldd sometimes reports a directory (e.g.
+                  # "/c/Program Files") when it can't actually locate
+                  # the DLL. Require the resolved path to be a real
+                  # file before copying — otherwise cp complains
+                  # about directories and the whole job tanks.
+                  if [[ ! -f "$path" ]]; then
+                    echo "Skipping $name: path '$path' is not a regular file"
                     continue
                   fi
                   if [[ ! -f "bundle/$name" ]]; then
