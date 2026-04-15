@@ -23,3 +23,9 @@
 # ffmpeg sibling dylibs that notcurses dyn-links; relocated with
 # @loader_path (macOS) / $ORIGIN (Linux) / sibling DLL layout
 # (Windows) so they load from the same resources/lib/ directory.
+
+# Pending r2 rebuild — checksums will be filled in after CI publishes
+# the resigned macOS artifact and the corresponding fresh builds for
+# all five platforms. Empty entries here mean Build.rakumod's prebuilt
+# path will fail SHA verify and fall through to source compile, which
+# is the safe fallback while we wait.

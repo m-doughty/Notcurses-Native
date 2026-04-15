@@ -133,6 +133,25 @@ jobs:
           # Strip debug symbols from every real dylib we ship (skip symlinks).
           find bundle -name '*.dylib' -type f ! -type l -exec strip -x {} \; 2>/dev/null || true
 
+          # Re-sign every modified dylib. dylibbundler's
+          # install_name_tool calls invalidate the linker-emitted
+          # ad-hoc signature; strip invalidates it again. macOS
+          # Sequoia (14+) hard-rejects dylibs with stale signatures
+          # via SIGKILL at first page access — load looks like it
+          # succeeds via dyld, then the kernel kills the process
+          # the moment any code from the bad page executes. Ad-hoc
+          # resign produces a fresh signature matching the modified
+          # bytes; no developer cert needed.
+          find bundle -name '*.dylib' -type f ! -type l \
+            -exec codesign --force --sign - --timestamp=none {} \;
+
+          # Sanity-check: every dylib should now verify cleanly.
+          # Loud failure here = wrong arch / corrupt artifact / etc.
+          for f in bundle/*.dylib; do
+            [[ -L "$f" ]] && continue
+            codesign --verify "$f" || { echo "❌ $f failed verify"; exit 1; }
+          done
+
           echo "--- bundle contents ---"
           ls -la bundle/
           echo "--- otool dump (libnotcurses) ---"
