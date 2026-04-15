@@ -136,10 +136,16 @@ class Build {
         $dest.mkdir;
 
         if $archive.Str.ends-with('.zip') {
-            # Windows: `tar` ships with Windows 10+ and handles zips.
-            # PowerShell's Expand-Archive also works but has path issues
-            # with long names on some setups; tar is more reliable.
-            my $rc = run 'tar', '-xf', $archive.Str, '-C', $dest.Str;
+            # Windows zip extraction via PowerShell. We deliberately
+            # avoid `tar` here even though Win10+ ships bsdtar that
+            # handles zips: if the user (or the install env, like
+            # msys2 under CI) has GNU tar first on PATH, GNU tar
+            # parses `D:\...` as a remote host (`host:path` syntax)
+            # and bombs with "Cannot connect to D: resolve failed".
+            # Expand-Archive has no such quirk and is available on
+            # every Windows we support.
+            my $rc = run 'powershell', '-NoProfile', '-Command',
+                "Expand-Archive -LiteralPath '$archive' -DestinationPath '$dest' -Force";
             die "❌ Failed to extract $archive." unless $rc.exitcode == 0;
         }
         else {

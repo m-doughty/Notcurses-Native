@@ -2,6 +2,14 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.2.1  2026-04-15T02:23:12+01:00
+    - Build: extract Windows .zip prebuilts via PowerShell's
+      Expand-Archive instead of `tar`. GNU tar (which is first on
+      PATH inside MSYS2 install environments) parses `D:\...` as a
+      remote `host:path` and bombs with "Cannot connect to D:
+      resolve failed". Expand-Archive ships on every supported
+      Windows and has no such quirk. macOS / Linux still use `tar`.
+
 0.2.0  2026-04-15T02:17:17+01:00
     - Prebuilt-binary-first install path. Build.rakumod now attempts
       to download a per-platform archive from the repo's GitHub
