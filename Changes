@@ -2,6 +2,26 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.2.5  2026-04-16T03:16:51+01:00
+    - Native.rakumod: set TERMINFO_DIRS at module load via libc
+      setenv(3) so ncurses finds terminal definitions on systems
+      without Homebrew ncurses installed. Our bundled libncursesw
+      was compiled against Homebrew's ncurses, which bakes the
+      terminfo search path to the Homebrew cellar — on a fresh
+      Mac without `brew install ncurses`, that path doesn't exist
+      and notcurses_core_init fails with "No terminal available"
+      even though the libraries loaded fine. The fix points
+      TERMINFO_DIRS at macOS's system /usr/share/terminfo/ (always
+      present) plus common Linux paths. Uses the same _setenv-c
+      pattern as Vips-Native (Raku's %*ENV doesn't propagate to C
+      getenv on macOS). Respects user-set TERMINFO_DIRS.
+    - test.yml: run prebuilt-path t/ tests before installing
+      system deps (brew/apt) so the self-contained bundle is
+      exercised with no system notcurses present. xt/ tests
+      (terminal-dependent) run after system deps install since
+      they need terminfo data on macOS. Saves several minutes per
+      failed run.
+
 0.2.4  2026-04-16T02:58:01+01:00
     - Build.rakumod: detect system glibc via `ldd --version` and
       fall back to CMake source compile when it's older than the
