@@ -9,11 +9,10 @@ name: glibc-fallback
 # a container on ubuntu-latest instead. The ubuntu:20.04 container
 # ships glibc 2.31 — comfortably below the 2.35 floor.
 #
-# Focal's ffmpeg dev packages are old enough to give notcurses's
-# CMake fits; Build.rakumod already handles this by retrying with
-# -DUSE_MULTIMEDIA=none, which produces a core-only build (no
-# image/video support, but the FFI surface loads). We rely on that
-# retry here so the workflow doesn't need a full ffmpeg stack.
+# Focal's ffmpeg 4.2 (libavcodec 58.x) satisfies notcurses's >=57.0
+# requirement, so the source build gets full multimedia support —
+# important because Selkie/Cantina depend on notcurses's image
+# rendering for avatars.
 
 on:
   push:
@@ -49,16 +48,16 @@ jobs:
               | gpg --dearmor -o /etc/apt/trusted.gpg.d/kitware.gpg
           apt-add-repository 'deb https://apt.kitware.com/ubuntu/ focal main'
           apt-get update
-          # Minimum set to let notcurses's CMake configure + build:
-          #   cmake + pkg-config + C toolchain
-          #   libncurses-dev / libunistring-dev / libdeflate-dev
-          # We intentionally skip the ffmpeg dev packages — notcurses's
-          # configure probe retries with -DUSE_MULTIMEDIA=none when
-          # ffmpeg isn't found, producing a core-only build that's
-          # sufficient for proving the FFI surface loads on old glibc.
+          # Full dep set for notcurses with ffmpeg multimedia support.
+          # Focal's ffmpeg 4.2 ships libavcodec 58.x which satisfies
+          # notcurses's >=57.0 requirement. Multimedia is required —
+          # Selkie/Cantina use notcurses's image rendering for avatars;
+          # building with -DUSE_MULTIMEDIA=none would break downstream.
           apt-get install -y --no-install-recommends \
               build-essential cmake pkg-config curl git \
-              libncurses-dev libunistring-dev libdeflate-dev
+              libncurses-dev libunistring-dev libdeflate-dev \
+              libavformat-dev libavcodec-dev libavdevice-dev \
+              libavutil-dev libswscale-dev
           cmake --version
           ldd --version
 

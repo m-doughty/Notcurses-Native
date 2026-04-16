@@ -101,11 +101,13 @@ jobs:
       - name: Run unit tests (prove6) — prebuilt path
         run: prove6 --verbose -I lib -I t/lib t
 
+      - name: Run extended tests (prove — terminal-dependent)
+        run: prove -e 'raku -I lib -I t/lib' --verbose xt/*.rakutest
+
       # ---------------------------------------------------------
-      # System deps — needed for xt/ tests (terminfo) and for the
-      # source-build fallback (cmake + dev headers).
+      # Source-build path — needs system deps (cmake + dev headers).
       # ---------------------------------------------------------
-      - name: Install system dependencies
+      - name: Install system dependencies (for source-build fallback)
         run: |
           brew install \
             cmake \
@@ -114,9 +116,6 @@ jobs:
             ncurses \
             libunistring \
             libdeflate
-
-      - name: Run extended tests (prove — terminal-dependent)
-        run: prove -e 'raku -I lib -I t/lib' --verbose xt/*.rakutest
 
       - name: Install Notcurses::Native via source-build path
         env:

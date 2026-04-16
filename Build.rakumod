@@ -366,7 +366,7 @@ class Build {
             # won't work, but core TUI still does).
             note "⚠️  FFmpeg not found — retrying core-only build "
                ~ "(no image/video support).";
-            @cmake-args[3] = '-DUSE_MULTIMEDIA=none';
+            @cmake-args[5] = '-DUSE_MULTIMEDIA=none';
             $configure = run |@cmake-args, :out, :err, :%env;
             $cfg-out = $configure.out.slurp(:close);
             $cfg-err = $configure.err.slurp(:close);
