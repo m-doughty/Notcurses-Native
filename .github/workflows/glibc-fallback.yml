@@ -39,6 +39,16 @@ jobs:
       - name: Install system deps
         run: |
           apt-get update
+          # Focal's cmake (3.16.3) is too old — notcurses needs 3.21+.
+          # Install from Kitware's official APT repo which backports
+          # current cmake to older Ubuntu LTS releases.
+          apt-get install -y --no-install-recommends \
+              apt-transport-https ca-certificates gnupg \
+              software-properties-common wget
+          wget -qO - https://apt.kitware.com/keys/kitware-archive-latest.asc \
+              | gpg --dearmor -o /etc/apt/trusted.gpg.d/kitware.gpg
+          apt-add-repository 'deb https://apt.kitware.com/ubuntu/ focal main'
+          apt-get update
           # Minimum set to let notcurses's CMake configure + build:
           #   cmake + pkg-config + C toolchain
           #   libncurses-dev / libunistring-dev / libdeflate-dev
@@ -47,8 +57,9 @@ jobs:
           # ffmpeg isn't found, producing a core-only build that's
           # sufficient for proving the FFI surface loads on old glibc.
           apt-get install -y --no-install-recommends \
-              build-essential cmake pkg-config curl ca-certificates git \
+              build-essential cmake pkg-config curl git \
               libncurses-dev libunistring-dev libdeflate-dev
+          cmake --version
           ldd --version
 
       - uses: actions/checkout@v4

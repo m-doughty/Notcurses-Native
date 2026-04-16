@@ -81,6 +81,58 @@ sub _resolve-lib(Str $name --> Str) {
     "{ _staged-lib-dir() }/$name.$ext";
 }
 
+# --- Runtime env setup ---
+#
+# Our bundled libncursesw was compiled against Homebrew's ncurses,
+# which bakes the terminfo search path to the Homebrew cellar
+# (e.g. /opt/homebrew/opt/ncurses/share/terminfo/). On a system
+# without Homebrew ncurses installed, that path doesn't exist and
+# ncurses can't find terminal definitions — notcurses_core_init
+# fails with "No terminal available" even though the libraries
+# loaded fine.
+#
+# macOS ships a system terminfo at /usr/share/terminfo/ with
+# standard entries (xterm, screen, etc.). Set TERMINFO_DIRS so
+# ncurses searches the system dir regardless of what's baked in.
+# Linux has /usr/share/terminfo/ (or /lib/terminfo/ on some
+# distros) and typically doesn't need the override (ncurses's
+# compiled-in default already points there), but including it
+# doesn't hurt. Respects a user-set TERMINFO_DIRS.
+#
+# Same Raku-%*ENV-doesn't-reach-C-getenv issue as Vips-Native:
+# ncurses reads TERMINFO_DIRS via getenv(3), so we call setenv(3)
+# directly via NativeCall.
+sub _setenv-c(Str $name, Str $value) {
+    %*ENV{$name} = $value;
+    return if $*DISTRO.is-win;
+    use NativeCall;
+    my sub mac_setenv(Str, Str, int32 --> int32)
+        is native('c') is symbol('setenv') { * };
+    my sub linux_setenv(Str, Str, int32 --> int32)
+        is native('libc.so.6') is symbol('setenv') { * };
+    if $*KERNEL.name.lc ~~ /darwin/ {
+        mac_setenv($name, $value, 1);
+    }
+    else {
+        linux_setenv($name, $value, 1);
+    }
+}
+
+sub _configure-runtime-env() {
+    return if %*ENV<NOTCURSES_NATIVE_LIB_DIR>;  # user override
+
+    unless %*ENV<TERMINFO_DIRS> {
+        # Colon-separated list. Include both common system paths so
+        # ncurses finds entries regardless of distro layout. Empty
+        # trailing component means "the compiled-in default" — if
+        # Homebrew IS installed, ncurses still searches its own
+        # cellar path too.
+        my $system-dirs = '/usr/share/terminfo:/usr/lib/terminfo:/lib/terminfo:';
+        _setenv-c('TERMINFO_DIRS', $system-dirs);
+    }
+}
+_configure-runtime-env();
+
 constant $nc-lib   is export = _resolve-lib('libnotcurses');
 constant $ffi-lib  is export = _resolve-lib('libnotcurses-ffi');
 constant $core-lib is export = _resolve-lib('libnotcurses-core');
