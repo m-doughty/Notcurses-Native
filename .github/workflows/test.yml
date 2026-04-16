@@ -23,6 +23,32 @@ jobs:
         with:
           submodules: recursive
 
+      - uses: Raku/setup-raku@v1
+        with:
+          raku-version: 'latest'
+
+      # ---------------------------------------------------------
+      # Prebuilt path — run BEFORE installing system deps so the
+      # bundle is exercised with no system notcurses present.
+      # Proves the staged libs are fully self-contained.
+      # ---------------------------------------------------------
+      - name: Install Notcurses::Native via prebuilt path
+        run: zef install --/test .
+
+      - name: Install Raku test deps
+        run: zef install --/test App::Prove6
+
+      - name: Run unit tests (prove6) — prebuilt path
+        run: prove6 --verbose -I lib -I t/lib t
+
+      - name: Run extended tests (prove — terminal-dependent)
+        run: prove -e 'raku -I lib -I t/lib' --verbose xt/*.rakutest
+
+      # ---------------------------------------------------------
+      # Source-build path — needs system deps (cmake + dev headers)
+      # for the CMake fallback. Install them now, after the prebuilt
+      # pass has already validated the self-contained bundle.
+      # ---------------------------------------------------------
       - name: Install system dependencies (for source-build fallback)
         run: |
           sudo apt-get update -qq
@@ -38,32 +64,6 @@ jobs:
             libavutil-dev \
             libswscale-dev
 
-      - uses: Raku/setup-raku@v1
-        with:
-          raku-version: 'latest'
-
-      # Install the dist itself — this runs Build.rakumod which downloads
-      # the prebuilt archive from GitHub Releases, SHA-verifies it, and
-      # stages libs to ~/.local/share/Notcurses-Native/<tag>/lib/ where
-      # Native.rakumod looks for them at runtime. Testing through the real
-      # install path catches breakage in Build.rakumod itself, the
-      # resolver, and the prebuilt archive layout.
-      - name: Install Notcurses::Native via prebuilt path
-        run: zef install --/test .
-
-      - name: Install Raku test deps
-        run: zef install --/test App::Prove6
-
-      - name: Run unit tests (prove6) — prebuilt path
-        run: prove6 --verbose -I lib -I t/lib t
-
-      - name: Run extended tests (prove — terminal-dependent)
-        run: prove -e 'raku -I lib -I t/lib' --verbose xt/*.rakutest
-
-      # Re-install with NOTCURSES_NATIVE_BUILD_FROM_SOURCE=1 to cover
-      # the CMake fallback (the path users without a supported prebuilt
-      # platform end up on). This is the slow one — keeping it as a
-      # second pass means a broken prebuilt path fails fast.
       - name: Install Notcurses::Native via source-build path
         env:
           NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1'
@@ -80,20 +80,13 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install system dependencies (for source-build fallback)
-        run: |
-          brew install \
-            cmake \
-            pkg-config \
-            ffmpeg \
-            ncurses \
-            libunistring \
-            libdeflate
-
       - uses: Raku/setup-raku@v1
         with:
           raku-version: 'latest'
 
+      # ---------------------------------------------------------
+      # Prebuilt path — no system deps installed yet.
+      # ---------------------------------------------------------
       - name: Install Notcurses::Native via prebuilt path
         run: zef install --/test .
 
@@ -105,6 +98,19 @@ jobs:
 
       - name: Run extended tests (prove — terminal-dependent)
         run: prove -e 'raku -I lib -I t/lib' --verbose xt/*.rakutest
+
+      # ---------------------------------------------------------
+      # Source-build path — install system deps now.
+      # ---------------------------------------------------------
+      - name: Install system dependencies (for source-build fallback)
+        run: |
+          brew install \
+            cmake \
+            pkg-config \
+            ffmpeg \
+            ncurses \
+            libunistring \
+            libdeflate
 
       - name: Install Notcurses::Native via source-build path
         env:

@@ -1,0 +1,86 @@
+name: glibc-fallback
+
+# Verifies that Build.rakumod correctly detects a system glibc older
+# than the prebuilt target ($MIN-GLIBC = 2.35, matching ubuntu-22.04)
+# and short-circuits to the CMake source-compile path instead of
+# downloading a prebuilt archive that would fail to load at runtime.
+#
+# GitHub dropped ubuntu-20.04 hosted runners in April 2025, so we use
+# a container on ubuntu-latest instead. The ubuntu:20.04 container
+# ships glibc 2.31 — comfortably below the 2.35 floor.
+#
+# Focal's ffmpeg dev packages are old enough to give notcurses's
+# CMake fits; Build.rakumod already handles this by retrying with
+# -DUSE_MULTIMEDIA=none, which produces a core-only build (no
+# image/video support, but the FFI surface loads). We rely on that
+# retry here so the workflow doesn't need a full ffmpeg stack.
+
+on:
+  push:
+    branches:
+      - '*'
+    tags-ignore:
+      - '*'
+  pull_request:
+
+jobs:
+  ubuntu-20-04-fallback:
+    name: Ubuntu 20.04 (glibc 2.31) → CMake source fallback
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:20.04
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      NO_COLOR: '1'
+    steps:
+      - name: Install system deps
+        run: |
+          apt-get update
+          # Minimum set to let notcurses's CMake configure + build:
+          #   cmake + pkg-config + C toolchain
+          #   libncurses-dev / libunistring-dev / libdeflate-dev
+          # We intentionally skip the ffmpeg dev packages — notcurses's
+          # configure probe retries with -DUSE_MULTIMEDIA=none when
+          # ffmpeg isn't found, producing a core-only build that's
+          # sufficient for proving the FFI surface loads on old glibc.
+          apt-get install -y --no-install-recommends \
+              build-essential cmake pkg-config curl ca-certificates git \
+              libncurses-dev libunistring-dev libdeflate-dev
+          ldd --version
+
+      - uses: actions/checkout@v4
+
+      - uses: Raku/setup-raku@v1
+        with:
+          raku-version: 'latest'
+
+      - name: Install module (capture build log)
+        run: |
+          set -eo pipefail
+          # Source build here is heavier (CMake + C compile of notcurses);
+          # expect ~3–5 min.
+          zef install --/test --verbose . 2>&1 | tee build.log
+
+      - name: Assert fallback message appeared
+        run: |
+          if ! grep -F 'falling back to source build to avoid runtime loader errors' build.log; then
+              echo "❌ Expected glibc-fallback message not found in build log."
+              echo "---- build.log tail ----"
+              tail -100 build.log
+              exit 1
+          fi
+          echo "✅ Build.rakumod correctly fell back to source compile on old glibc."
+
+      - name: Install App::Prove6
+        run: zef install --/test App::Prove6
+
+      - name: Run unit tests
+        # Same invocation as test.yml — exercises the full suite
+        # against the CMake source-compiled libnotcurses libs from
+        # the XDG data dir. Most TTY-dependent tests skip cleanly in
+        # headless CI; the FFI-surface / type tests do run and
+        # validate the fallback path end-to-end.
+        run: prove6 --verbose -I lib t

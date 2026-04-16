@@ -41,6 +41,13 @@
 #|   NOTCURSES_NATIVE_LIB_DIR=<path>       (runtime) load libs from this
 #|                                         dir instead of the staged
 #|                                         data dir
+#|
+#| Linux prebuilts are built on ubuntu-22.04 (glibc 2.35 — see the
+#| $MIN-GLIBC constant). On systems with older glibc (Ubuntu 20.04 /
+#| Debian 11 / RHEL 8 / etc.) the prebuilt libnotcurses / ffmpeg libs
+#| load but die at first symbol use with "GLIBC_2.xx not found".
+#| Build detects this via `ldd --version` and short-circuits to the
+#| CMake source build before the download even happens.
 
 class Build {
 
@@ -48,6 +55,13 @@ class Build {
 
     constant $DEFAULT-BASE-URL =
         'https://github.com/m-doughty/Notcurses-Native/releases/download';
+
+    # Minimum glibc the prebuilt Linux archives are compatible with.
+    # The CI workflow builds on ubuntu-22.04 (glibc 2.35); libnotcurses
+    # + the sibling ffmpeg dylibs reference GLIBC_2.3x versioned
+    # symbols so loading on older systems fails with "GLIBC_2.xx not
+    # found". Bump in lockstep with the CI runner OS.
+    constant $MIN-GLIBC = v2.35;
 
     # Map (OS, hardware) → platform slug used in release artefact
     # filenames + cache paths. macOS ships as arm64-only for v1 —
@@ -90,6 +104,28 @@ class Build {
                 ~ "falling back to source build.";
             self!compile-from-source($dist-path, $stage);
             return True;
+        }
+
+        # Guard: prebuilt Linux archives are built on ubuntu-22.04
+        # (glibc $MIN-GLIBC). On older glibc the downloaded libs load
+        # but die at first symbol use with "GLIBC_2.xx not found".
+        # Detect here and fall back to CMake source build before the
+        # download even happens.
+        if !$force-source && $plat.ends-with('-glibc') {
+            my Version $have = self!detect-glibc-version;
+            if $have.defined && $have cmp $MIN-GLIBC == Less {
+                if $binary-only {
+                    die "NOTCURSES_NATIVE_BINARY_ONLY=1 set but system "
+                      ~ "glibc $have is older than prebuilt target "
+                      ~ "$MIN-GLIBC ($plat / $binary-tag).";
+                }
+                note "⚠️  System glibc $have is older than prebuilt "
+                   ~ "target $MIN-GLIBC — falling back to source build "
+                   ~ "to avoid runtime loader errors.";
+                self!compile-from-source($dist-path, $stage);
+                say "✅ Compiled Notcurses from vendored source → $stage.";
+                return True;
+            }
         }
 
         unless $force-source {
@@ -435,6 +471,23 @@ class Build {
     method !detect-platform(--> Str) {
         my Str $key = "{$*KERNEL.name.lc}-{$*KERNEL.hardware.lc}";
         %PLATFORM-SLUGS{$key};
+    }
+
+    #| Parse `ldd --version` for the system's glibc version. Returns a
+    #| Version on glibc systems, undefined Version on musl (ldd --version
+    #| exits non-zero) or when ldd is absent / unparseable. Only
+    #| meaningful on Linux — don't call on other OSes.
+    method !detect-glibc-version(--> Version) {
+        my $proc = try { run 'ldd', '--version', :out, :err };
+        return Version without $proc;
+        my $out = $proc.out.slurp(:close);
+        $proc.err.slurp(:close);
+        return Version unless $proc.exitcode == 0;
+        my $first = $out.lines.head // '';
+        if $first ~~ / (\d+ '.' \d+ [ '.' \d+ ]?) \s* $ / {
+            return Version.new(~$0);
+        }
+        Version;
     }
 
 }
