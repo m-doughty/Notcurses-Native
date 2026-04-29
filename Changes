@@ -2,6 +2,17 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.2.6  2026-04-29T23:53:41+01:00
+    - Bump Github actions to use node 24+
+    - `Build.rakumod` now garbage-collects sibling staged dirs for
+      older BINARY_TAGs after each successful install. Without this,
+      every release accumulated another `binaries-notcurses-*` dir
+      under `~/.local/share/Notcurses-Native/`, where stale Raku
+      precomp could load the older libs alongside the new ones —
+      cf. the Vips::Native r7→r8 incident that revealed this class
+      of bug. Set `NOTCURSES_NATIVE_KEEP_OLD_STAGES=1` to opt out
+      (e.g. when intentionally pinning multiple versions for testing).
+
 0.2.5  2026-04-16T03:16:51+01:00
     - Native.rakumod: set TERMINFO_DIRS at module load via libc
       setenv(3) so ncurses finds terminal definitions on systems

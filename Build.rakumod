@@ -132,6 +132,7 @@ class Build {
             if self!try-prebuilt($dist-path, $plat, $binary-tag, $stage) {
                 say "✅ Installed prebuilt Notcurses binaries ($plat) for "
                   ~ "$binary-tag → $stage.";
+                self!cleanup-old-stages($stage);
                 return True;
             }
             if $binary-only {
@@ -144,7 +145,45 @@ class Build {
 
         self!compile-from-source($dist-path, $stage);
         say "✅ Compiled Notcurses from vendored source → $stage.";
+        self!cleanup-old-stages($stage);
         True;
+    }
+
+    #|( Remove sibling staged dirs for older BINARY_TAGs. zef has no
+        uninstall hook, and Build.rakumod is the only place we can
+        garbage-collect obsolete staged bundles, so we do it here on
+        every install: any sibling under the staged-libs root that
+        looks like one of our `binaries-notcurses-*` dirs and isn't
+        the currently-active one gets removed. Without this, an
+        upgrade leaves the prior tag's libs on disk where stale
+        Raku precomp can still load them, producing duplicate-load
+        warnings (and worse on macOS — cf. the Vips::Native r7→r8
+        upgrade where two libgio.dylibs got registered side-by-side).
+
+        Set NOTCURSES_NATIVE_KEEP_OLD_STAGES=1 to disable. )
+    method !cleanup-old-stages(IO::Path $current-stage --> Nil) {
+        return if %*ENV<NOTCURSES_NATIVE_KEEP_OLD_STAGES>;
+
+        # $current-stage layout is …/Notcurses-Native/<binary-tag>/lib.
+        # The *tag* dir is one level up, the *root* (where sibling
+        # tag dirs live) is two levels up.
+        my $current-tag-dir = $current-stage.parent;
+        my $root            = $current-tag-dir.parent;
+        return unless $root.d;
+        return unless $root.basename eq 'Notcurses-Native';
+
+        my Str $current-abs = $current-tag-dir.absolute;
+
+        for $root.dir -> $entry {
+            next unless $entry.d;
+            next unless $entry.basename.starts-with('binaries-notcurses-');
+            next if $entry.absolute eq $current-abs;
+            say "🧹 Removing orphaned staged dir: { $entry }";
+            try {
+                run 'rm', '-rf', $entry.Str;
+                CATCH { default { note "  (failed to remove: { .message })" } }
+            };
+        }
     }
 
     # The XDG-style staged-libs dir for a given binary-tag. Versioned

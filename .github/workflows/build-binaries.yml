@@ -51,7 +51,7 @@ jobs:
     name: build-macos-arm64
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
@@ -167,7 +167,7 @@ jobs:
           mkdir -p artefacts
           mv "$artifact" "${artifact}.sha256" artefacts/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: notcurses-macos-arm64
           path: artefacts/
@@ -185,7 +185,7 @@ jobs:
             platform: linux-aarch64-glibc
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
@@ -283,7 +283,7 @@ jobs:
           mkdir -p artefacts
           mv "$artifact" "${artifact}.sha256" artefacts/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: notcurses-${{ matrix.platform }}
           path: artefacts/
@@ -313,7 +313,7 @@ jobs:
       run:
         shell: 'msys2 {0}'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
@@ -571,7 +571,7 @@ jobs:
           mkdir -p artefacts
           mv "$artifact" "${artifact}.sha256" artefacts/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: notcurses-${{ matrix.platform }}
           path: artefacts/
@@ -583,10 +583,10 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/binaries-') || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download all artefacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: downloaded/
 
@@ -623,7 +623,7 @@ jobs:
           echo "tag=$file_tag" >> "$GITHUB_OUTPUT"
 
       - name: Create / update GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.prep.outputs.tag }}
           name: ${{ steps.prep.outputs.tag }}
