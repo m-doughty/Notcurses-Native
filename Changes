@@ -2,6 +2,48 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.3.0  2026-05-12T00:11:57+01:00
+    - vendor/notcurses (src/lib/visual.c): patch ncvisual_blit_internal
+      to honor ncvisual_options.begy/begx/leny/lenx for all blit paths
+      (generic resize, FFmpeg, OIIO, all sprixel and cell blitters).
+      Upstream notcurses 3.0.17 silently drops these fields whenever
+      the source needs resizing — sprixel blitters take only
+      (data, leny, lenx) with no begy/begx parameter and consume from
+      data[0], so a cropped blit shows the top of the source instead
+      of the requested sub-region. Cell blitters reference begy/begx
+      but index the resized buffer with the input-space offset, which
+      is a latent out-of-bounds read for begy > 0.
+      The fix introduces a static ncvisual_subregion_internal helper
+      that materializes the requested source region once at the entry
+      of ncvisual_blit_internal (single alloc + single row-loop
+      memcpy, honoring source rowstride padding and re-padding the
+      destination via pad_for_image). Downstream backends then see a
+      "full source" and consume normally, with begy/begx/leny/lenx
+      zeroed in a local blitterargs copy.
+      Fixes Selkie's ViewportedCardList rendering the wrong rows when
+      an image is partially clipped at the top of the viewport, and
+      incidentally addresses the FIXMEs at upstream
+      src/lib/internal.h (blitterargs comment) and src/media/oiio.cpp.
+    - Build.rakumod: rewrite macOS install-names to absolute staged
+      paths via install_name_tool after staging the dylibs. Without
+      this, dyld resolves `@rpath/libnotcurses-core.3.dylib` (and
+      siblings) through the LOADER CHAIN'S rpaths, which on a typical
+      Homebrew-Raku setup means `raku`'s `@executable_path/../lib`
+      (= `/opt/homebrew/lib`) is searched first — and if Homebrew's
+      notcurses is also installed there, dyld silently loads
+      Homebrew's unpatched library instead of ours. Tests and the
+      module load succeed (path resolution at the Raku level still
+      reports our staged path) but the actual symbol resolution
+      runs the wrong code. Baking the absolute path into the
+      install-name eliminates dyld's discretion.
+      Also expanded find-lib to stage every version variant
+      (`libfoo.dylib`, `libfoo.3.dylib`, `libfoo.3.0.17.dylib`)
+      because the rewritten install-names point to the
+      `.3.dylib` symlinks, which must exist at the staged path.
+    - BINARY_TAG bumped to binaries-notcurses-3.0.17-r3 to invalidate
+      prebuilt binary caches and force consumers to pick up the
+      patched library.
+
 0.2.6  2026-04-29T23:53:41+01:00
     - Bump Github actions to use node 24+
     - `Build.rakumod` now garbage-collects sibling staged dirs for
