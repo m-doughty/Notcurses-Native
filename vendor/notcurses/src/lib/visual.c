@@ -81,29 +81,83 @@ ncplane* ncvisual_subtitle_plane(ncplane* parent, const ncvisual* ncv){
   return visual_implementation->visual_subtitle(parent, ncv);
 }
 
+// Defined below alongside pad_for_image / ncvisual_from_rgba (it needs
+// pad_for_image in scope). Pre-crops a source ncvisual to a rectangular
+// sub-region in pixel space and returns a freshly-allocated owned copy,
+// suitable for passing through the rest of the blit pipeline as if it
+// were the full source. Callers must ncvisual_destroy() the returned
+// ncvisual when done. Returns NULL on bad geometry or allocation failure.
+static ncvisual* ncvisual_subregion_internal(const ncvisual* src,
+                                             unsigned begy, unsigned begx,
+                                             unsigned leny, unsigned lenx);
+
 int ncvisual_blit_internal(const ncvisual* ncv, int rows, int cols, ncplane* n,
                            const struct blitset* bset, const blitterargs* barg){
+  // Honor barg->begy/begx/leny/lenx by pre-cropping the source. Upstream
+  // ncvisual_geom_inner already expands lenx/leny==0 sentinels to full
+  // extent for public callers, but the fallback below keeps direct
+  // callers of ncvisual_blit_internal safe. Downstream backends (generic
+  // resize_bitmap+rgba_blit_dispatch, ffmpeg_blit, oiio_blit) and the
+  // sprixel blitters all consume their input as if it were the full
+  // source — pre-cropping here is the single canonical point where the
+  // source region offset is materialized.
+  unsigned crop_begy = barg->begy;
+  unsigned crop_begx = barg->begx;
+  unsigned crop_leny = barg->leny ? barg->leny
+                                  : (unsigned)((int)ncv->pixy - (int)crop_begy);
+  unsigned crop_lenx = barg->lenx ? barg->lenx
+                                  : (unsigned)((int)ncv->pixx - (int)crop_begx);
+  const bool needs_crop = (crop_begy != 0) || (crop_begx != 0)
+                       || (crop_leny != (unsigned)ncv->pixy)
+                       || (crop_lenx != (unsigned)ncv->pixx);
+  ncvisual* tmp = NULL;
+  const ncvisual* src = ncv;
+  if(needs_crop){
+    tmp = ncvisual_subregion_internal(ncv, crop_begy, crop_begx,
+                                      crop_leny, crop_lenx);
+    if(tmp == NULL){
+      return -1;
+    }
+    src = tmp;
+  }
+  // After the source is materialized at exactly the requested region,
+  // the rest of the pipeline must not crop again. Clear the offsets in
+  // a local copy so the original barg is preserved for callers.
+  blitterargs local_bargs = *barg;
+  local_bargs.begy = 0;
+  local_bargs.begx = 0;
+  local_bargs.leny = (unsigned)src->pixy;
+  local_bargs.lenx = (unsigned)src->pixx;
+
+  int ret = -1;
   if(!(barg->flags & NCVISUAL_OPTION_NOINTERPOLATE)){
     if(visual_implementation->visual_blit){
-      if(visual_implementation->visual_blit(ncv, rows, cols, n, bset, barg) < 0){
-        return -1;
+      if(visual_implementation->visual_blit(src, rows, cols, n, bset,
+                                            &local_bargs) >= 0){
+        ret = 0;
       }
-      return 0;
+      goto done;
     }
   }
   // generic implementation
-  int stride = 4 * cols;
-  uint32_t* data = resize_bitmap(ncv->data, ncv->pixy, ncv->pixx,
-                                 ncv->rowstride, rows, cols, stride);
-  if(data == NULL){
-    return -1;
+  {
+    int stride = 4 * cols;
+    uint32_t* data = resize_bitmap(src->data, src->pixy, src->pixx,
+                                   src->rowstride, rows, cols, stride);
+    if(data == NULL){
+      goto done;
+    }
+    if(rgba_blit_dispatch(n, bset, stride, data, rows, cols, &local_bargs) >= 0){
+      ret = 0;
+    }
+    if(data != src->data){
+      free(data);
+    }
   }
-  int ret = -1;
-  if(rgba_blit_dispatch(n, bset, stride, data, rows, cols, barg) >= 0){
-    ret = 0;
-  }
-  if(data != ncv->data){
-    free(data);
+
+done:
+  if(tmp){
+    ncvisual_destroy(tmp);
   }
   return ret;
 }
@@ -774,6 +828,64 @@ pad_for_image(size_t stride, int cols){
   }
   return (stride + visual_implementation->rowalign) /
           visual_implementation->rowalign * visual_implementation->rowalign;
+}
+
+// Copy a rectangular sub-region of |src| into a freshly-allocated
+// ncvisual. Pixel coordinates; |begy|+|leny| must fit within src->pixy
+// and likewise for x. The new visual carries the impl-aware details
+// (FFmpeg AVFrame / OIIO ImageBuf seeded against the cropped buffer) so
+// it can be fed into the same blit pipeline as the original.
+//
+// Single alloc + single row-loop memcpy. ncvisual_from_rgba would
+// double-copy (caller buffer -> from_rgba's internal padded buffer);
+// avoiding that matters for hot scroll paths where this runs every
+// frame.
+static ncvisual* ncvisual_subregion_internal(const ncvisual* src,
+                                             unsigned begy, unsigned begx,
+                                             unsigned leny, unsigned lenx){
+  if(src == NULL || src->data == NULL){
+    return NULL;
+  }
+  if(leny == 0 || lenx == 0){
+    return NULL;
+  }
+  if(begy + leny > (unsigned)src->pixy || begx + lenx > (unsigned)src->pixx){
+    return NULL;
+  }
+  // Every public constructor of ncvisual produces a rowstride aligned
+  // to at least 4 bytes (ncvisual_from_rgba rejects rowstride % 4 != 0;
+  // FFmpeg's AV_PIX_FMT_RGBA pixel is 4 bytes wide; pad_for_image
+  // returns multiples of rowalign which is >= 4 for every backend
+  // we link). If we ever break that invariant we want to know.
+  if(src->rowstride % 4 != 0){
+    logerror("source rowstride %u not a multiple of 4", src->rowstride);
+    return NULL;
+  }
+  ncvisual* sub = ncvisual_create();
+  if(sub == NULL){
+    return NULL;
+  }
+  size_t dstride = pad_for_image((size_t)lenx * 4, (int)lenx);
+  size_t buf_size = dstride * leny;
+  uint32_t* buf = (uint32_t*)malloc(buf_size);
+  if(buf == NULL){
+    ncvisual_destroy(sub);
+    return NULL;
+  }
+  size_t src_stride_px = src->rowstride / sizeof(uint32_t);
+  size_t dst_stride_px = dstride / sizeof(uint32_t);
+  const size_t row_bytes = (size_t)lenx * 4;
+  for(unsigned y = 0; y < leny; ++y){
+    memcpy(buf + y * dst_stride_px,
+           src->data + (size_t)(begy + y) * src_stride_px + begx,
+           row_bytes);
+  }
+  ncvisual_set_data(sub, buf, true);
+  sub->pixx = lenx;
+  sub->pixy = leny;
+  sub->rowstride = (unsigned)dstride;
+  ncvisual_details_seed(sub);
+  return sub;
 }
 
 ncvisual* ncvisual_from_rgba(const void* rgba, int rows, int rowstride, int cols){

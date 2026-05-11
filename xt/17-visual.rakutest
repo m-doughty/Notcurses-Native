@@ -5,10 +5,12 @@ use TestHelper;
 use NativeCall;
 use Notcurses::Native;
 use Notcurses::Native::Types;
+use Notcurses::Native::Cell;
 use Notcurses::Native::Plane;
+use Notcurses::Native::Channel;
 use Notcurses::Native::Visual;
 
-plan 8;
+plan 15;
 
 
 my $opts = NotcursesOptions.new(
@@ -147,6 +149,212 @@ subtest 'ncvisual_media_defblitter and polyfill' => {
 	my $filled = ncvisual_polyfill_yx($v, 0, 0, $white);
 	# polyfill returns number of pixels changed (should be 1 since only (0,0) is red)
 	ok $filled >= 1, "Polyfill changed $filled pixels";
+	ncvisual_destroy($v);
+};
+
+# ---------------------------------------------------------------------------
+# ncvisual_options.begy/begx/leny/lenx cropping coverage
+# ---------------------------------------------------------------------------
+# These subtests prove that the source-region offsets land through
+# ncvisual_blit_internal correctly. Upstream notcurses 3.0.17 silently
+# dropped begy/begx for any path that resized the source (sprixel
+# blitters consume from data[0]; cell blitters mixed input-space
+# offsets with output-space buffers — see vendor/notcurses/src/lib/
+# internal.h FIXME on `blitterargs`). Our patched ncvisual_blit_internal
+# pre-crops the source so every downstream path sees an exact-region
+# buffer.
+#
+# Strategy: build an 8x8 ncvisual via ncvisual_from_rgba where each
+# pixel carries a unique colour `(y*32, x*32, 64)`. Blit with NCBLIT_1x1
+# + NCSCALE_NONE — one output cell per source pixel, with the cell's
+# bg painted to the source pixel colour by tria_blit_ascii. Reading
+# the cell's bg back via ncchannels_bg_rgb8 yields the source pixel's
+# (R, G, B), so a mismatch between expected and actual source row/col
+# is directly observable.
+
+sub make-gradient-visual(--> NcvisualHandle) {
+	# 8x8 RGBA buffer with pixel (y, x) = (y*32, x*32, 64, 255).
+	# Stored as little-endian uint32 = (a<<24) | (b<<16) | (g<<8) | r,
+	# matching the byte-order ncvisual_from_rgba expects.
+	my $pixels = CArray[uint32].allocate(64);
+	for ^8 -> $y {
+		for ^8 -> $x {
+			my uint32 $r = $y * 32;
+			my uint32 $g = $x * 32;
+			my uint32 $b = 64;
+			my uint32 $a = 255;
+			$pixels[$y * 8 + $x] =
+				($a +< 24) +| ($b +< 16) +| ($g +< 8) +| $r;
+		}
+	}
+	my $ptr = nativecast(Pointer, $pixels);
+	# rowstride = 8 cols * 4 bytes = 32. ncvisual_from_rgba copies the
+	# data internally, so $pixels can go out of scope after this call.
+	ncvisual_from_rgba($ptr, 8, 32, 8);
+}
+
+sub cell-bg-rgb($plane, Int $y, Int $x) {
+	# Use ncplane_at_yx_cell rather than ncplane_at_yx because the
+	# latter returns a malloc'd char* marshalled as Str — that path
+	# leaks the buffer per call and corrupts the heap on re-encode,
+	# per the project's NativeCall Str/free trap memo. The _cell
+	# variant copies fields into a caller-provided Nccell with no
+	# string round-trip.
+	my $cell = Nccell.new;
+	ncplane_at_yx_cell($plane, $y, $x, $cell);
+	my uint32 $r; my uint32 $g; my uint32 $b;
+	ncchannels_bg_rgb8($cell.channels, $r, $g, $b);
+	nccell_release($plane, $cell);
+	($r.Int, $g.Int, $b.Int);
+}
+
+sub expected-pixel(Int $src-y, Int $src-x) {
+	($src-y * 32, $src-x * 32, 64);
+}
+
+subtest 'cropped blit honors begy (top crop)' => {
+	plan 5;
+	my $v = make-gradient-visual();
+	# begy=3, leny=5 → 5x8 output, cell (0, x) shows source pixel (3, x).
+	my $vopts = NcvisualOptions.new(
+		:scaling(NCSCALE_NONE),
+		:blitter(NCBLIT_1x1),
+		:begy(3), :leny(5),
+	);
+	my $plane = ncvisual_blit($nc, $v, $vopts);
+	ok $plane.defined, 'blit returned a plane';
+	is ncplane_dim_y($plane), 5, 'output plane is 5 cells tall';
+	is ncplane_dim_x($plane), 8, 'output plane is 8 cells wide';
+	is-deeply cell-bg-rgb($plane, 0, 0), expected-pixel(3, 0),
+		'cell (0, 0) shows source pixel (3, 0)';
+	is-deeply cell-bg-rgb($plane, 4, 7), expected-pixel(7, 7),
+		'cell (4, 7) shows source pixel (7, 7)';
+	ncplane_destroy($plane);
+	ncvisual_destroy($v);
+};
+
+subtest 'cropped blit honors begx (left crop)' => {
+	plan 5;
+	my $v = make-gradient-visual();
+	# begx=2, lenx=6 → 8x6 output, cell (y, 0) shows source pixel (y, 2).
+	my $vopts = NcvisualOptions.new(
+		:scaling(NCSCALE_NONE),
+		:blitter(NCBLIT_1x1),
+		:begx(2), :lenx(6),
+	);
+	my $plane = ncvisual_blit($nc, $v, $vopts);
+	ok $plane.defined, 'blit returned a plane';
+	is ncplane_dim_y($plane), 8, 'output plane is 8 cells tall';
+	is ncplane_dim_x($plane), 6, 'output plane is 6 cells wide';
+	is-deeply cell-bg-rgb($plane, 0, 0), expected-pixel(0, 2),
+		'cell (0, 0) shows source pixel (0, 2)';
+	is-deeply cell-bg-rgb($plane, 7, 5), expected-pixel(7, 7),
+		'cell (7, 5) shows source pixel (7, 7)';
+	ncplane_destroy($plane);
+	ncvisual_destroy($v);
+};
+
+subtest 'cropped blit honors both begy and begx' => {
+	plan 5;
+	my $v = make-gradient-visual();
+	# begy=2, leny=4, begx=1, lenx=5 → 4x5 output.
+	my $vopts = NcvisualOptions.new(
+		:scaling(NCSCALE_NONE),
+		:blitter(NCBLIT_1x1),
+		:begy(2), :leny(4),
+		:begx(1), :lenx(5),
+	);
+	my $plane = ncvisual_blit($nc, $v, $vopts);
+	ok $plane.defined, 'blit returned a plane';
+	is ncplane_dim_y($plane), 4, 'output plane is 4 cells tall';
+	is ncplane_dim_x($plane), 5, 'output plane is 5 cells wide';
+	is-deeply cell-bg-rgb($plane, 0, 0), expected-pixel(2, 1),
+		'cell (0, 0) shows source pixel (2, 1)';
+	is-deeply cell-bg-rgb($plane, 3, 4), expected-pixel(5, 5),
+		'cell (3, 4) shows source pixel (5, 5) — bottom-right of crop';
+	ncplane_destroy($plane);
+	ncvisual_destroy($v);
+};
+
+subtest 'cropped blit baseline (no crop, regression guard)' => {
+	plan 4;
+	my $v = make-gradient-visual();
+	# Default crop fields (all 0): full source.
+	my $vopts = NcvisualOptions.new(
+		:scaling(NCSCALE_NONE),
+		:blitter(NCBLIT_1x1),
+	);
+	my $plane = ncvisual_blit($nc, $v, $vopts);
+	ok $plane.defined, 'blit returned a plane';
+	is ncplane_dim_y($plane), 8, 'output plane is 8 cells tall';
+	is-deeply cell-bg-rgb($plane, 0, 0), expected-pixel(0, 0),
+		'cell (0, 0) shows source pixel (0, 0)';
+	is-deeply cell-bg-rgb($plane, 7, 7), expected-pixel(7, 7),
+		'cell (7, 7) shows source pixel (7, 7)';
+	ncplane_destroy($plane);
+	ncvisual_destroy($v);
+};
+
+subtest 'cropped blit honors edge slice (one-row)' => {
+	plan 3;
+	my $v = make-gradient-visual();
+	# begy=7, leny=1 → 1x8 output showing only the last source row.
+	my $vopts = NcvisualOptions.new(
+		:scaling(NCSCALE_NONE),
+		:blitter(NCBLIT_1x1),
+		:begy(7), :leny(1),
+	);
+	my $plane = ncvisual_blit($nc, $v, $vopts);
+	ok $plane.defined, 'blit returned a plane';
+	is ncplane_dim_y($plane), 1, 'output plane is 1 cell tall';
+	is-deeply cell-bg-rgb($plane, 0, 3), expected-pixel(7, 3),
+		'cell (0, 3) shows source pixel (7, 3)';
+	ncplane_destroy($plane);
+	ncvisual_destroy($v);
+};
+
+subtest 'cropped blit rejects out-of-bounds region' => {
+	plan 2;
+	my $v = make-gradient-visual();
+	# begy=8 == pixy → fully out of bounds, rejected at
+	# ncvisual_geom_inner before any blit pipeline work happens.
+	my $vopts = NcvisualOptions.new(
+		:scaling(NCSCALE_NONE),
+		:blitter(NCBLIT_1x1),
+		:begy(8),
+	);
+	my $plane = ncvisual_blit($nc, $v, $vopts);
+	nok $plane.defined, 'out-of-bounds begy fails the blit';
+
+	# begy+leny exceeds pixy: also rejected.
+	my $vopts2 = NcvisualOptions.new(
+		:scaling(NCSCALE_NONE),
+		:blitter(NCBLIT_1x1),
+		:begy(6), :leny(5),
+	);
+	my $plane2 = ncvisual_blit($nc, $v, $vopts2);
+	nok $plane2.defined, 'begy+leny > pixy fails the blit';
+	ncvisual_destroy($v);
+};
+
+subtest 'cropped blit with NOINTERPOLATE flag' => {
+	plan 3;
+	my $v = make-gradient-visual();
+	# NOINTERPOLATE forces the generic (non-impl-backed) resize path.
+	# Our fix lives upstream of that branch, so the crop must hold here too.
+	my $vopts = NcvisualOptions.new(
+		:scaling(NCSCALE_NONE),
+		:blitter(NCBLIT_1x1),
+		:begy(3), :leny(5),
+		:flags(NCVISUAL_OPTION_NOINTERPOLATE),
+	);
+	my $plane = ncvisual_blit($nc, $v, $vopts);
+	ok $plane.defined, 'NOINTERPOLATE blit returned a plane';
+	is-deeply cell-bg-rgb($plane, 0, 0), expected-pixel(3, 0),
+		'NOINTERPOLATE path honors begy';
+	is-deeply cell-bg-rgb($plane, 4, 7), expected-pixel(7, 7),
+		'NOINTERPOLATE path renders correct bottom-right of crop';
+	ncplane_destroy($plane);
 	ncvisual_destroy($v);
 };
 

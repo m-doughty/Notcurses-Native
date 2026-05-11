@@ -435,16 +435,107 @@ class Build {
         # Stage the three libs into the XDG-style staged-libs dir.
         # Upstream naming varies per platform — recursive find-lib
         # walks the build tree and matches each library's expected
-        # prefix + extension.
+        # prefix + extension. We stage every version variant
+        # (`libfoo.dylib`, `libfoo.3.dylib`, `libfoo.3.0.17.dylib` on
+        # macOS) because the rewritten install-names below point to
+        # the canonical `.3.dylib` variant — if that file isn't
+        # present at the staged path, dyld errors with "Library not
+        # loaded" at the first NativeCall.
         for <libnotcurses libnotcurses-core libnotcurses-ffi> -> Str $lib {
             my IO::Path $target = $stage.add("$lib.$ext");
-            self!find-lib($build-dir.IO, $lib, $ext, $target);
+            self!find-lib($build-dir.IO, $lib, $ext, $stage);
             die "❌ Could not stage $lib.$ext from build tree"
                 unless $target.e;
         }
+
+        # On macOS, rewrite each staged dylib's install-name (LC_ID_DYLIB)
+        # and inter-library dependency references to absolute staged
+        # paths. Without this, dyld resolves the `@rpath/libnotcurses*.dylib`
+        # dependencies via the executable's RPATH chain — and on a
+        # Homebrew-Raku setup (`raku` has LC_RPATH = `@executable_path/../lib`
+        # which is `/opt/homebrew/lib`, where Homebrew typically installs
+        # an unpatched notcurses), dyld picks Homebrew's library before
+        # ours and our vendored code (including any local patches) is
+        # silently shadowed. Baking the absolute paths in eliminates
+        # dyld's discretion. Linux/glibc has no equivalent RPATH-vs-path
+        # conflict so this is macOS-only.
+        if $os ~~ /darwin/ {
+            self!rewrite-macos-install-names($stage, $build-dir);
+        }
     }
 
-    method !find-lib(IO::Path $dir, Str $lib, Str $ext, IO::Path $target) {
+    #| For each staged dylib (and its version symlinks copied as real
+    #| files by `!find-lib`), set its install-name to the absolute staged
+    #| path and rewrite every `@rpath/libnotcurses*.dylib` dependency
+    #| reference to the matching absolute staged path. Runs
+    #| `install_name_tool` once per file — no-ops for entries that don't
+    #| match the rewrite pattern. macOS-only.
+    method !rewrite-macos-install-names(IO::Path $stage, Str $build-dir) {
+        # Variant filenames the staging step produced (find-lib copies
+        # each version-suffixed dylib it can locate in the build tree,
+        # so we may have e.g. libnotcurses-core.dylib +
+        # libnotcurses-core.3.dylib + libnotcurses-core.3.0.17.dylib).
+        my @all-files = $stage.dir.grep({
+            .basename ~~ /^ 'libnotcurses' \S* '.dylib' $ /
+        });
+
+        # Make sure files are writable; CMake sometimes installs 0444.
+        for @all-files -> $f {
+            $f.chmod(0o644);
+        }
+
+        # The 3-component install-name is what other libs declare as
+        # their dependency (`@rpath/libnotcurses-core.3.dylib`), so this
+        # is the path we want every staged variant to advertise.
+        my %canonical-id =
+            'libnotcurses'      => $stage.add('libnotcurses.3.dylib').absolute,
+            'libnotcurses-core' => $stage.add('libnotcurses-core.3.dylib').absolute,
+            'libnotcurses-ffi'  => $stage.add('libnotcurses-ffi.3.dylib').absolute,
+        ;
+
+        # Map each `@rpath/...` reference to its canonical absolute
+        # staged path.
+        my %dep-rewrite =
+            '@rpath/libnotcurses.3.dylib'      => %canonical-id<libnotcurses>,
+            '@rpath/libnotcurses-core.3.dylib' => %canonical-id<libnotcurses-core>,
+            '@rpath/libnotcurses-ffi.3.dylib'  => %canonical-id<libnotcurses-ffi>,
+        ;
+
+        for @all-files -> $f {
+            # Set this file's own install-name. Match by basename
+            # prefix so every variant of the same logical library
+            # (`.dylib`, `.3.dylib`, `.3.0.17.dylib`) gets the same
+            # canonical ID.
+            my Str $base = do given $f.basename {
+                when /^ 'libnotcurses-core' / { 'libnotcurses-core' }
+                when /^ 'libnotcurses-ffi'  / { 'libnotcurses-ffi'  }
+                default                       { 'libnotcurses'      }
+            };
+            my Str $new-id = %canonical-id{$base};
+            my $rc = run 'install_name_tool', '-id', $new-id, $f.absolute,
+                         :out, :err;
+            $rc.out.slurp(:close);
+            my $err = $rc.err.slurp(:close);
+            die "install_name_tool -id failed on {$f.basename}:\n$err"
+                unless $rc.exitcode == 0;
+
+            # Rewrite every `@rpath/libnotcurses*.dylib` dep to its
+            # absolute staged path. Skip silently when the dep isn't
+            # present (install_name_tool errors loudly on no-match,
+            # which is fine for the libs that *do* declare it).
+            for %dep-rewrite.kv -> $old, $new {
+                my $rc2 = run 'install_name_tool', '-change', $old, $new,
+                              $f.absolute, :out, :err;
+                $rc2.out.slurp(:close);
+                $rc2.err.slurp(:close);
+            }
+        }
+
+        say "  Rewrote macOS install-names to absolute staged paths "
+          ~ "({+@all-files} files)";
+    }
+
+    method !find-lib(IO::Path $dir, Str $lib, Str $ext, IO::Path $stage) {
         # Each platform names the produced library differently:
         #   Linux:   libnotcurses-core.so[.3[.0.17]]
         #   macOS:   libnotcurses-core[.3[.0.17]].dylib
@@ -454,22 +545,33 @@ class Build {
         # and `libnotcurses-ffi`. Only match separator `.` after the
         # name, never `-`, so `libnotcurses` doesn't claim
         # `libnotcurses-ffi.so`.
+        #
+        # Stages every matching variant into $stage rather than
+        # stopping at the first hit. macOS dyld follows version
+        # suffixes in install-names (e.g., `libnotcurses-core.3.dylib`)
+        # at load time, so the corresponding files must all be present
+        # at the staged location.
         my Str $nolib = $lib.subst(/^ 'lib'/, '');
         my @patterns = ($lib, $nolib);
 
         for $dir.dir -> IO::Path $entry {
             if $entry.d {
-                self!find-lib($entry, $lib, $ext, $target);
-                return if $target.e;
+                self!find-lib($entry, $lib, $ext, $stage);
+                next;
             }
             next unless $entry.f;
             my Str $name = $entry.basename;
             for @patterns -> Str $pat {
                 if $name eq "$pat.$ext"
                    || $name ~~ /^ $pat '.' .* $ext $/ {
-                    copy $entry, $target;
-                    say "  Staged: {$target.basename} (from $name)";
-                    return;
+                    my IO::Path $dest = $stage.add($name);
+                    # Skip if we already staged a copy this run (the
+                    # build tree may surface the same file at multiple
+                    # paths via symlinks; first wins).
+                    next if $dest.e && $dest.s == $entry.s;
+                    copy $entry, $dest;
+                    say "  Staged: {$dest.basename} (from $name)";
+                    last;
                 }
             }
         }
