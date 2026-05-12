@@ -327,7 +327,13 @@ jobs:
             src/notcurses_native_shim.c \
             -Lbundle -lnotcurses-core
           patchelf --set-rpath '$ORIGIN' bundle/libnotcurses_native_shim.so
-          strip --strip-unneeded bundle/libnotcurses_native_shim.so 2>/dev/null || true
+          # No `strip` on the shim — matches Vips-Native's pattern.
+          # The shim is a few KB; the strip saves nothing meaningful
+          # and removes the regular .symtab, leaving `nm -g` reading
+          # an empty table (it doesn't auto-fall-back to .dynsym).
+          # Verifying before-strip would also work but adds an order
+          # dependency; not stripping at all is simpler and matches
+          # how Vips's shim is shipped.
           echo "--- shim symbols ---"
           nm -g --defined-only bundle/libnotcurses_native_shim.so \
             | grep -E 'T (_)?notcurses_native_' || {
@@ -644,8 +650,13 @@ jobs:
             -o bundle/libnotcurses_native_shim.dll \
             src/notcurses_native_shim.c \
             "$import_lib"
-          strip --strip-unneeded bundle/libnotcurses_native_shim.dll \
-            2>/dev/null || true
+          # No `strip` on the shim — matches Vips-Native's Windows
+          # pattern. `strip --strip-unneeded` removes PE's COFF
+          # symbol table; `nm -g` reads from there too, not from
+          # the export directory, so a stripped DLL reports "no
+          # symbols" even though the exports are still in the
+          # export directory and the DLL is fully functional. The
+          # shim is a few KB so stripping saves nothing meaningful.
           echo "--- shim symbols ---"
           # Use `nm -g --defined-only` like Vips-Native does — its
           # output format is stable across MinGW/UCRT/CLANGARM64

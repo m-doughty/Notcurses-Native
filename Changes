@@ -1,6 +1,53 @@
 Revision history for Notcurses::Native
 
 {{$NEXT}}
+    - src/notcurses_native_shim.c: new C-side perf-shim module with
+      batched primitives that are unaffordable to express call-per-
+      cell over Raku's NativeCall boundary. Initial export
+      `notcurses_native_copy_cells`, a direct port of
+      Selkie::Widget::ViewportedCardList's per-cell read+write loop
+      (copies a rows × cols slice from one ncplane to another with
+      base-cell substitution for empty source cells, matching
+      ncplane_at_yx semantics). Selkie's VCL!copy-cells used to spend
+      ~75,000 NativeCall trips per render on a chat with five visible
+      cards × five widget planes × ~3000 cells; the shim collapses
+      that to one. Linked with -undefined dynamic_lookup (macOS) or
+      -Wl,--unresolved-symbols=ignore-in-shared-libs (Linux) so it
+      has no link-time dependency on libnotcurses — symbols resolve
+      at runtime against the host process's already-loaded
+      libnotcurses.
+    - Build.rakumod: !try-compile-shim stages a compiled
+      libnotcurses_native_shim alongside the existing notcurses libs
+      on every install path (prebuilt, source build, fallback).
+      Non-fatal when no C toolchain is available — Selkie's binding
+      flips an internal latch and falls back to the per-cell Raku
+      merge with a one-shot user-visible warning so the perf cost is
+      attributable.
+    - lib/Notcurses/Native.rakumod: $shim-lib constant exported,
+      resolved by the same _resolve-lib lookup as the core libs.
+    - lib/Notcurses/Native/Plane.rakumod: notcurses_native_copy_cells
+      Raku binding bound to $shim-lib.
+    - .github/workflows/build-binaries.yml: CI builds + ships the
+      shim binary in the prebuilt archives so users on supported
+      platforms don't need a C toolchain at install time.
+    - BINARY_TAG bumped to binaries-notcurses-3.0.17-r4 so prebuilt
+      caches invalidate and consumers pick up archives that include
+      the shim.
+    - t/15-shim-presence.rakutest: assert libnotcurses_native_shim
+      is staged. Gated on NOTCURSES_NATIVE_REQUIRE_SHIM=1 — set in
+      both test.yml and glibc-fallback.yml workflows so CI fails
+      loudly if either the prebuilt archive drops the shim or
+      Build.rakumod's !try-compile-shim silently failed on the
+      source-build path. End-user installs without the env var skip
+      the test cleanly so a missing toolchain doesn't break the
+      install.
+    - lib/Notcurses/Native.rakumod: $NOTCURSES_NATIVE_LIB_DIR
+      override doc tightened to spell out that the patched
+      libnotcurses we ship (0.3.0's ncvisual_blit_internal begy/begx
+      fix) is ABI-compatible at the C symbol level but BEHAVIOURALLY
+      incompatible — pointing the override at vanilla system
+      notcurses 3.0.17 silently misrenders any clipped sprixel (chat
+      avatars at the top of the scroll, for example).
 
 0.3.0  2026-05-12T00:11:57+01:00
     - vendor/notcurses (src/lib/visual.c): patch ncvisual_blit_internal
