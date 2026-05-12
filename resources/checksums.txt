@@ -24,9 +24,8 @@
 # @loader_path (macOS) / $ORIGIN (Linux) / sibling DLL layout
 # (Windows) so they load from the same resources/lib/ directory.
 
-485948b839d922db19c2be8f0dbb5a0d9c69b79b087512b0abdabea52074bf5e  notcurses-windows-x86_64.zip
-7c1728fa7c850ed05f826ca2a4e9ea225220391f70de96d081ba8760ce9b24ec  notcurses-macos-arm64.tar.gz
-af028e53560269fb67c8fbb5890328043a96c014c8732ca1d4b68cd5d4064bb1  notcurses-linux-x86_64-glibc.tar.gz
-c8c3282bb642fedcc243392e0a21778a8663334105ee7d76469467b2cbb05a45  notcurses-linux-aarch64-glibc.tar.gz
-cb8a42ea5515c89812bfe3ed6e3f8e0ad4033c6a1590048a689d6333056f8de0  notcurses-windows-arm64.zip
-
+5a2ee1dbb6ce1e76799900e50a98a97a41752adb01c647d958d4c747779b33b2  notcurses-windows-arm64.zip
+7a0ad58e61a7df31ced5c83c7c9e981a0ba494922f55d1235d202a427a77f838  notcurses-macos-arm64.tar.gz
+8a7854b9901208c25c1e86b7d23902193abe798d417d97e9152654172ef010dd  notcurses-windows-x86_64.zip
+d00fe947cfefea440c638be16f699e33b50a39452cd3452a6177b6997d28a164  notcurses-linux-x86_64-glibc.tar.gz
+f423fcd5a98d2975baa262ca4c442eb97d5bf5e45dd614112da6e8dacfe1a312  notcurses-linux-aarch64-glibc.tar.gz
