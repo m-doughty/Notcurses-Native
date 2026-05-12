@@ -157,6 +157,31 @@ jobs:
           echo "--- otool dump (libnotcurses) ---"
           otool -L bundle/libnotcurses.dylib
 
+      # Compile the perf shim into the bundle so users installing the
+      # prebuilt archive don't need a C toolchain to get the fast path.
+      # See src/notcurses_native_shim.c for what's in it; mirrors
+      # Build.rakumod's !try-compile-shim flags. -undefined dynamic_lookup
+      # defers the notcurses symbols to runtime (resolved against the
+      # libnotcurses-core.dylib already in this same bundle, loaded by
+      # Notcurses::Native at startup).
+      - name: Compile perf shim
+        run: |
+          set -euxo pipefail
+          cc -O2 -dynamiclib -fPIC \
+            -install_name '@loader_path/libnotcurses_native_shim.dylib' \
+            -undefined dynamic_lookup \
+            -I vendor/notcurses/include \
+            -o bundle/libnotcurses_native_shim.dylib \
+            src/notcurses_native_shim.c
+          # Sequoia hard-rejects unsigned dylibs at first page access —
+          # ad-hoc sign matches what we do for the notcurses libs above.
+          codesign --force --sign - --timestamp=none \
+            bundle/libnotcurses_native_shim.dylib
+          codesign --verify bundle/libnotcurses_native_shim.dylib
+          echo "--- shim symbols ---"
+          nm -gU bundle/libnotcurses_native_shim.dylib \
+            | grep notcurses_native_copy_cells
+
       - name: Package archive
         id: pkg
         run: |
@@ -273,6 +298,28 @@ jobs:
           ls -la bundle/
           echo "--- ldd libnotcurses.so ---"
           ldd bundle/libnotcurses.so || true
+
+      # Compile the perf shim into the bundle so users installing the
+      # prebuilt archive don't need a C toolchain to get the fast path.
+      # See src/notcurses_native_shim.c for what's in it; mirrors
+      # Build.rakumod's !try-compile-shim flags.
+      # --unresolved-symbols=ignore-in-shared-libs is the GNU-ld
+      # equivalent of macOS's -undefined dynamic_lookup: defer the
+      # notcurses symbols to runtime, where they resolve against the
+      # libnotcurses-core.so already in this same bundle (loaded by
+      # Notcurses::Native at startup, lazy-bound on first call).
+      - name: Compile perf shim
+        run: |
+          set -euxo pipefail
+          cc -O2 -shared -fPIC \
+            -I vendor/notcurses/include \
+            -Wl,--unresolved-symbols=ignore-in-shared-libs \
+            -o bundle/libnotcurses_native_shim.so \
+            src/notcurses_native_shim.c
+          strip --strip-unneeded bundle/libnotcurses_native_shim.so 2>/dev/null || true
+          echo "--- shim symbols ---"
+          nm -gD bundle/libnotcurses_native_shim.so \
+            | grep notcurses_native_copy_cells
 
       - name: Package archive
         run: |
@@ -558,6 +605,40 @@ jobs:
 
           echo "--- bundle contents ---"
           ls -la bundle/
+
+      # Compile the perf shim into the bundle so users installing the
+      # prebuilt archive don't need a C toolchain to get the fast path.
+      # Windows is different from macOS/Linux: MinGW (and MSVC) require
+      # every symbol resolved at link time — no equivalent of macOS's
+      # -undefined dynamic_lookup or GNU ld's --unresolved-symbols.
+      # We link against vendor/notcurses/build's libnotcurses-core.dll.a
+      # import lib instead. At runtime the shim's import table resolves
+      # to the libnotcurses-core.dll sibling in the same archive
+      # directory (Windows DLL search order finds same-dir DLLs first).
+      - name: Compile perf shim
+        run: |
+          set -euxo pipefail
+          import_lib=$(find vendor/notcurses/build \
+                         -name 'libnotcurses-core.dll.a' -type f | head -1)
+          if [[ -z "$import_lib" ]]; then
+            echo "❌ Couldn't find libnotcurses-core.dll.a import lib"
+            find vendor/notcurses/build -name '*.dll.a' -type f
+            exit 1
+          fi
+          cc -O2 -shared \
+            -I vendor/notcurses/include \
+            -o bundle/libnotcurses_native_shim.dll \
+            src/notcurses_native_shim.c \
+            "$import_lib"
+          strip --strip-unneeded bundle/libnotcurses_native_shim.dll \
+            2>/dev/null || true
+          echo "--- shim symbols ---"
+          # objdump on Windows DLLs lists exports. Filter for the one
+          # we expect; if it's missing the bundle is broken.
+          objdump -p bundle/libnotcurses_native_shim.dll \
+            | grep -E '^\s+\[[[:space:]]*[0-9]+\]\s+notcurses_native_copy_cells' \
+            || { echo "❌ shim DLL missing notcurses_native_copy_cells export"; \
+                 exit 1; }
 
       # No `shell: bash` here — we want the job-level msys2 default
       # because Git Bash's PATH doesn't include the `zip` utility

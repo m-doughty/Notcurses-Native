@@ -6,6 +6,37 @@ unit module Notcurses::Native::Plane;
 
 # 128 bindings, 12 skipped (variadic)
 
+#|( Batched per-cell copy from C<$src> to C<$dst>: copies a
+    C<$rows × $cols> rectangle starting at (src-y, src-x) in the
+    source plane to (dst-y, dst-x) in the destination, substituting
+    the source plane's base cell when the source cell has an empty
+    glyph (matches notcurses's own C<ncplane_at_yx> behaviour).
+
+    This is the C-side port of Selkie::Widget::ViewportedCardList's
+    historical Raku per-cell merge loop. ncplane_mergedown looks
+    like a one-call replacement but composites at absolute pile
+    coordinates (not at the scroll-translated dst we need), so the
+    actual loop has to live somewhere — putting it in C avoids
+    paying the Raku NativeCall tax 5+ times per cell. For a typical
+    chat with 5 visible cards × 5 widget planes × ~3000 cells, that
+    drops ~75,000 NativeCall trips per render to one.
+
+    Lives in C<libnotcurses_native_shim>, compiled by
+    Build.rakumod's !try-compile-shim (see that method's docs for
+    when this lib exists vs. when callers must fall back). Returns
+    0 on success; negative results from C<ncplane_at_yx_cell>
+    (cells out of bounds) are skipped silently same as the Raku
+    loop did. )
+sub notcurses_native_copy_cells(
+    NcplaneHandle $src,
+    NcplaneHandle $dst,
+    int32 $src-y, int32 $src-x,
+    int32 $dst-y, int32 $dst-x,
+    uint32 $rows, uint32 $cols
+    --> int32
+)
+    is native($shim-lib) is export { * }
+
 sub ncplane_notcurses(NcplaneHandle $n --> NotcursesHandle)
 	is native($core-lib) is export { * }
 

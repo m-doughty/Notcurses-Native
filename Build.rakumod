@@ -103,6 +103,7 @@ class Build {
             note "⚠️  Unknown platform ({$*KERNEL.name}-{$*KERNEL.hardware}); "
                 ~ "falling back to source build.";
             self!compile-from-source($dist-path, $stage);
+            self!try-compile-shim($dist-path, $stage);
             return True;
         }
 
@@ -124,6 +125,7 @@ class Build {
                    ~ "to avoid runtime loader errors.";
                 self!compile-from-source($dist-path, $stage);
                 say "✅ Compiled Notcurses from vendored source → $stage.";
+                self!try-compile-shim($dist-path, $stage);
                 return True;
             }
         }
@@ -132,6 +134,7 @@ class Build {
             if self!try-prebuilt($dist-path, $plat, $binary-tag, $stage) {
                 say "✅ Installed prebuilt Notcurses binaries ($plat) for "
                   ~ "$binary-tag → $stage.";
+                self!try-compile-shim($dist-path, $stage);
                 self!cleanup-old-stages($stage);
                 return True;
             }
@@ -145,6 +148,7 @@ class Build {
 
         self!compile-from-source($dist-path, $stage);
         say "✅ Compiled Notcurses from vendored source → $stage.";
+        self!try-compile-shim($dist-path, $stage);
         self!cleanup-old-stages($stage);
         True;
     }
@@ -629,6 +633,134 @@ class Build {
             return Version.new(~$0);
         }
         Version;
+    }
+
+    #|( Compile the perf shim alongside the staged libnotcurses libs.
+        See src/notcurses_native_shim.c for what it contains and why
+        — short version: a couple of hot loops (currently just the
+        per-cell plane copy used by Selkie::Widget::ViewportedCardList)
+        that are unaffordable to express call-per-cell over the Raku
+        NativeCall boundary.
+
+        Linked with -undefined dynamic_lookup (macOS) or
+        -Wl,--unresolved-symbols=ignore-in-shared-libs (Linux) so the
+        shim doesn't need libnotcurses at link time. The notcurses
+        symbols it calls resolve at runtime via the host process's
+        already-loaded libnotcurses (which Notcurses::Native loaded
+        via NativeCall before the shim is ever invoked).
+
+        EXPECTED CI BEHAVIOUR: the prebuilt release archives should
+        ship libnotcurses_native_shim.{dylib,so,dll} pre-compiled
+        alongside the libnotcurses libs. The CI workflow that
+        produces those archives (m-doughty/Notcurses-Native repo,
+        not in-tree) needs a step that compiles src/notcurses_
+        native_shim.c with the same flags this method uses. When
+        the staged-libs dir already contains a shim at least as
+        new as the source, this method short-circuits — so users
+        installing a prebuilt never hit the compile path and don't
+        need a C toolchain.
+
+        FALLBACK: when a prebuilt is unavailable (unknown platform
+        / source-build path), or when this Build.rakumod is shipping
+        a newer src/notcurses_native_shim.c than the prebuilt
+        archive contains, we compile here at install time. Non-fatal
+        if no C compiler is available — Selkie's bindings fall back
+        to a per-cell Raku merge (the pre-shim behaviour). The
+        warning explains the perf cost so the user notices. )
+    method !try-compile-shim($dist-path, IO::Path $stage --> Nil) {
+        my Str $os = $*KERNEL.name.lc;
+        my Str $ext = $os ~~ /darwin/ ?? 'dylib'
+                   !! $*DISTRO.is-win ?? 'dll'
+                   !! 'so';
+        my IO::Path $shim = $stage.add("libnotcurses_native_shim.$ext");
+        my Str $src = "$dist-path/src/notcurses_native_shim.c";
+
+        return unless $src.IO.e;
+
+        # Skip rebuild when staged shim is already at least as new as
+        # the source. Mirror Vips-Native's same-named method.
+        if $shim.e {
+            my $src-mtime  = $src.IO.modified // 0;
+            my $shim-mtime = $shim.modified  // 0;
+            return if $shim-mtime >= $src-mtime;
+            say "🔁 Source newer than staged shim — recompiling.";
+        }
+
+        $stage.mkdir;
+
+        my $inc = "$dist-path/vendor/notcurses/include";
+
+        # Windows needs an import lib to satisfy link-time symbol
+        # resolution (no equivalent of -undefined dynamic_lookup).
+        # Look for one in the source-build dir — present when the
+        # current install came via compile-from-source (CMake produces
+        # libnotcurses-core.dll.a alongside the DLL). Prebuilt-only
+        # installs don't ship the import lib, so we can't compile
+        # here; the shim has to come from CI via the prebuilt archive.
+        # In that fallback case Selkie's binding fails to load and
+        # !merge-widget-plane uses its Raku-side fallback path.
+        my $import-lib;
+        if $*DISTRO.is-win {
+            my $build-dir = "$dist-path/vendor/notcurses/build";
+            with $build-dir.IO.&{ .e ?? .dir(test => /'libnotcurses-core.dll.a'$/) !! () }.first {
+                $import-lib = .Str;
+            }
+            without $import-lib {
+                note "⚠️  Skipping Windows shim compile — no "
+                   ~ "libnotcurses-core.dll.a in vendor/notcurses/build "
+                   ~ "(only present after a from-source build). The "
+                   ~ "shim normally ships pre-compiled in the prebuilt "
+                   ~ "archive; if the prebuilt didn't include it, "
+                   ~ "Selkie's ViewportedCardList falls back to a "
+                   ~ "Raku per-cell merge (correct, slower).";
+                return;
+            }
+        }
+
+        my @cmd = do given $os {
+            when /darwin/ {
+                'cc', '-O2', '-dynamiclib', '-fPIC',
+                '-install_name', "\@loader_path/libnotcurses_native_shim.dylib",
+                '-undefined', 'dynamic_lookup',
+                "-I$inc",
+                '-o', $shim.Str, $src;
+            }
+            when /win/ {
+                # Link against the import lib found above. Windows DLL
+                # search at runtime finds libnotcurses-core.dll as a
+                # sibling in the same staged dir.
+                'cc', '-O2', '-shared',
+                "-I$inc",
+                '-o', $shim.Str, $src,
+                $import-lib;
+            }
+            default {
+                # Linux: -Wl,--unresolved-symbols=ignore-in-shared-libs
+                # is the GNU ld equivalent of -undefined dynamic_lookup.
+                # Lets us link without naming a libnotcurses to resolve
+                # against — the symbols come from the host process at
+                # runtime.
+                'cc', '-O2', '-shared', '-fPIC',
+                "-I$inc",
+                '-Wl,--unresolved-symbols=ignore-in-shared-libs',
+                '-o', $shim.Str, $src;
+            }
+        };
+
+        my $rc = run |@cmd, :out, :err;
+        my $err = $rc.err.slurp(:close);
+        $rc.out.slurp(:close);
+        if $rc.exitcode == 0 {
+            say "✅ Compiled Notcurses perf shim → $shim.";
+        }
+        else {
+            note "⚠️  Could not compile Notcurses perf shim ($shim): $err";
+            note "    Non-fatal — Selkie::Widget::ViewportedCardList "
+               ~ "will fall back to its per-cell Raku merge loop. "
+               ~ "Install a C toolchain (xcode-select --install / "
+               ~ "apt install build-essential) and reinstall to get "
+               ~ "the fast path.";
+        }
     }
 
 }
