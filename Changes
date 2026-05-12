@@ -2,6 +2,75 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.3.2  2026-05-12T16:55:21+01:00
+    - lib/Notcurses/Native.rakumod: convert the `$nc-lib`,
+      `$ffi-lib`, `$core-lib`, `$shim-lib` library-path bindings
+      from `constant` to state-cached subs (`sub nc-lib { state $r =
+      _resolve-lib(...); $r }`). `constant X = _resolve-lib(...)`
+      ran at compile time and baked the resolved path into the
+      precompiled bytecode — and Rakudo doesn't track
+      `resources/BINARY_TAG` as a precomp dependency. A BINARY_TAG
+      bump (which moves staged libs to a new versioned directory
+      and may GC the previous one) would leave the precomp pointing
+      at the old path, producing "Cannot locate native library"
+      errors on freshly installed packages until the user manually
+      ran `rm -rf ~/.raku/precomp/`. Deferring resolution to first
+      sub-call means each process picks up the current tag,
+      regardless of when the precomp was built. NativeCall accepts
+      a Callable for `is native()` and invokes it lazily on first
+      use of each bound sub. All 600+ bindings in `lib/Notcurses/
+      Native/*.rakumod` updated from `is native($X-lib)` to
+      `is native(&X-lib)` to match.
+    - t/15-shim-presence.rakutest: updated to call `shim-lib()`
+      instead of treating `$shim-lib` as a Str — the constant is
+      now a state-cached sub.
+    - BINARY_TAG bumped to binaries-notcurses-3.0.17-r5. The r4 tag
+      was never published — the workflow that produces its archives
+      failed before the release step on Linux (the
+      --unresolved-symbols=ignore-in-shared-libs flag was misnamed
+      and left object-file unresolved refs intact) and on Windows
+      (the objdump-based export check matched the wrong format).
+      The shim binary's runtime contract changed as part of fixing
+      those builds — Linux now links directly against
+      libnotcurses-core with DT_NEEDED + DT_RUNPATH=$ORIGIN
+      instead of deferring resolution to the host process's flat
+      symbol namespace; macOS now reserves -Wl,-headerpad_max_-
+      install_names so any future install_name_tool relocation
+      doesn't overflow the Mach-O header — so the new artifact
+      isn't bit-identical to the r4 spec even though the API is
+      the same. Bumping the tag avoids any ambiguity about which
+      shim build downstream consumers are running against.
+    - .github/workflows/build-binaries.yml: Linux shim step now
+      links the shim explicitly against bundle's libnotcurses-core
+      (-Lbundle -lnotcurses-core) and sets DT_RUNPATH=$ORIGIN via
+      patchelf. Mirrors Vips-Native's working pattern. Drops the
+      strip --strip-unneeded step that was clearing the regular
+      symtab and breaking the post-strip nm -g check.
+    - .github/workflows/build-binaries.yml: Windows shim step
+      replaces the objdump -p export-table regex with
+      nm -g --defined-only (matches Vips-Native; stable across
+      MinGW/UCRT/CLANGARM64 binutils versions where the objdump
+      output format differs). Drops the strip --strip-unneeded
+      step too — same regular-symtab issue manifests on PE.
+    - .github/workflows/build-binaries.yml: macOS shim step adds
+      -Wl,-headerpad_max_install_names so any future
+      install_name_tool relocation has the load-command padding
+      it needs (defensive — Build.rakumod's
+      !rewrite-macos-install-names explicitly skips the shim
+      today, but this is belt-and-braces against future relocators).
+    - Build.rakumod: !try-compile-shim mirrors the workflow
+      changes — Linux links explicitly, macOS adds the
+      headerpad option. Source-build path now matches the
+      prebuilt path in every meaningful way.
+    - Build.rakumod: !rewrite-macos-install-names glob now
+      excludes `libnotcurses_native_shim.dylib` via
+      `!~~ /'_shim'/`. The shim has no @rpath/libnotcurses*.dylib
+      dependencies to rewrite (it's compiled -undefined dynamic_-
+      lookup) and its short @loader_path install-name can't be
+      replaced with the absolute staged path without headerpad
+      space — on a force-install the previous run's shim was
+      already on disk and the rewrite pass loudly refused it.
+
 0.3.1  2026-05-12T16:01:23+01:00
     - CI/CD republish binaries
     - src/notcurses_native_shim.c: new C-side perf-shim module with

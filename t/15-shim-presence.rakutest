@@ -21,9 +21,11 @@ use Notcurses::Native;
 
 my Bool $require-shim = (%*ENV<NOTCURSES_NATIVE_REQUIRE_SHIM> // '').chars > 0;
 my Str  $shim-name    = "libnotcurses_native_shim.$ext";
-my Str  $resolved     = $shim-lib // '(unresolved)';
+# shim-lib() is a state-cached resolver sub (not a constant) —
+# evaluate it once and capture for the rest of the file.
+my Str  $resolved     = shim-lib() // '(unresolved)';
 
-unless $shim-lib.defined && $shim-lib.chars > 0 && $shim-lib.IO.e {
+unless $resolved.defined && $resolved.chars > 0 && $resolved.IO.e {
     if $require-shim {
         plan 1;
         flunk "perf shim '$shim-name' not staged at '$resolved' — "
@@ -42,10 +44,10 @@ unless $shim-lib.defined && $shim-lib.chars > 0 && $shim-lib.IO.e {
 
 plan 2;
 
-ok $shim-lib.defined && $shim-lib.chars > 0,
-    "\$shim-lib constant resolved (got '$shim-lib')";
+ok $resolved.defined && $resolved.chars > 0,
+    "shim-lib() resolver returned a path (got '$resolved')";
 
-ok $shim-lib.IO.e,
-    "shim binary '$shim-name' is on disk at '$shim-lib'";
+ok $resolved.IO.e,
+    "shim binary '$shim-name' is on disk at '$resolved'";
 
 done-testing;
