@@ -1,6 +1,9 @@
 Revision history for Notcurses::Native
 
 {{$NEXT}}
+
+0.3.1  2026-05-12T16:01:23+01:00
+    - CI/CD republish binaries
     - src/notcurses_native_shim.c: new C-side perf-shim module with
       batched primitives that are unaffordable to express call-per-
       cell over Raku's NativeCall boundary. Initial export
