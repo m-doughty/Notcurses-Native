@@ -1,0 +1,51 @@
+use Test;
+use lib 'lib';
+
+use Notcurses::Native;
+
+# Shim-presence test. Selkie::Widget::ViewportedCardList's merge
+# fast-path goes through notcurses_native_copy_cells in
+# libnotcurses_native_shim (compiled by Build.rakumod's
+# !try-compile-shim or shipped pre-built in CI's bundle). Without
+# it, Selkie falls back to a per-cell Raku merge that's ~5000×
+# more NativeCall trips per render — visibly laggy on a busy
+# chat scroll. That fallback is correct and intentional for end
+# users on a machine without a C toolchain, so we don't want to
+# fail outright there. But on CI a missing shim means the build
+# pipeline silently dropped the binary — that needs to fail
+# loudly.
+#
+# Gate:
+#   * NOTCURSES_NATIVE_REQUIRE_SHIM=1 (set in test.yml)         → enforce
+#   * unset (local dev / end-user install without toolchain)   → skip
+
+my Bool $require-shim = (%*ENV<NOTCURSES_NATIVE_REQUIRE_SHIM> // '').chars > 0;
+my Str  $shim-name    = "libnotcurses_native_shim.$ext";
+my Str  $resolved     = $shim-lib // '(unresolved)';
+
+unless $shim-lib.defined && $shim-lib.chars > 0 && $shim-lib.IO.e {
+    if $require-shim {
+        plan 1;
+        flunk "perf shim '$shim-name' not staged at '$resolved' — "
+            ~ "NOTCURSES_NATIVE_REQUIRE_SHIM=1 enforced. Either the "
+            ~ "prebuilt archive shipped without it, or Build.rakumod's "
+            ~ "!try-compile-shim silently failed.";
+        done-testing;
+        exit 0;
+    }
+    plan 1;
+    skip "perf shim not present at '$resolved' — install with a C toolchain "
+       ~ "or set NOTCURSES_NATIVE_REQUIRE_SHIM=1 to enforce", 1;
+    done-testing;
+    exit 0;
+}
+
+plan 2;
+
+ok $shim-lib.defined && $shim-lib.chars > 0,
+    "\$shim-lib constant resolved (got '$shim-lib')";
+
+ok $shim-lib.IO.e,
+    "shim binary '$shim-name' is on disk at '$shim-lib'";
+
+done-testing;

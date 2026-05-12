@@ -34,6 +34,13 @@ jobs:
     env:
       DEBIAN_FRONTEND: noninteractive
       NO_COLOR: '1'
+      # Enforce shim presence — this workflow specifically validates
+      # the from-source build path, which compiles the shim via
+      # Build.rakumod's !try-compile-shim. If that step silently
+      # fails, Selkie's ViewportedCardList drops to its slow per-
+      # cell Raku merge with no signal here; t/15-shim-presence.rakutest
+      # treats this env as a hard requirement.
+      NOTCURSES_NATIVE_REQUIRE_SHIM: '1'
     steps:
       - name: Install system deps
         run: |

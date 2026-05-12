@@ -735,14 +735,22 @@ class Build {
                 $import-lib;
             }
             default {
-                # Linux: -Wl,--unresolved-symbols=ignore-in-shared-libs
-                # is the GNU ld equivalent of -undefined dynamic_lookup.
-                # Lets us link without naming a libnotcurses to resolve
-                # against — the symbols come from the host process at
-                # runtime.
+                # Linux: explicit link against the staged
+                # libnotcurses-core, RPATH '$ORIGIN' so at runtime
+                # the shim resolves its NEEDED entry to its own
+                # sibling (our patched libnotcurses-core.so).
+                # Mirror Vips-Native's shim-build pattern. An
+                # earlier version used `-Wl,--unresolved-symbols=
+                # ignore-in-shared-libs` to defer to runtime; that
+                # flag only suppresses errors from shared-lib deps
+                # we link against, not from our own object file's
+                # undefined references to notcurses symbols — so
+                # ld correctly rejected the link.
                 'cc', '-O2', '-shared', '-fPIC',
                 "-I$inc",
-                '-Wl,--unresolved-symbols=ignore-in-shared-libs',
+                "-L$stage", '-lnotcurses-core',
+                '-Wl,-soname,libnotcurses_native_shim.so',
+                "-Wl,-rpath,\$ORIGIN",
                 '-o', $shim.Str, $src;
             }
         };

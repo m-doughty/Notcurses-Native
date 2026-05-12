@@ -13,6 +13,15 @@ env:
   COLORTERM: truecolor
   LANG: en_US.UTF-8
   LC_ALL: en_US.UTF-8
+  # Enforce shim presence at test time. t/15-shim-presence.rakutest
+  # treats this as a hard requirement: the prebuilt path's bundle
+  # MUST ship libnotcurses_native_shim, or Build.rakumod's
+  # !try-compile-shim MUST succeed on the source-build path. Without
+  # it, Selkie::Widget::ViewportedCardList silently falls back to a
+  # per-cell Raku merge (~5000× slower) and we'd ship a regressed
+  # release. End-user installs without this env var skip the check
+  # so a missing toolchain doesn't break their `zef install`.
+  NOTCURSES_NATIVE_REQUIRE_SHIM: '1'
 
 jobs:
   test-linux:
