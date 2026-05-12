@@ -479,8 +479,25 @@ class Build {
         # each version-suffixed dylib it can locate in the build tree,
         # so we may have e.g. libnotcurses-core.dylib +
         # libnotcurses-core.3.dylib + libnotcurses-core.3.0.17.dylib).
+        #
+        # Pick up every notcurses core dylib (`libnotcurses.dylib`,
+        # `libnotcurses-core.3.dylib`, `libnotcurses-ffi.3.0.17.dylib`,
+        # etc.) AND exclude `libnotcurses_native_shim.dylib`.
+        # !try-compile-shim stages the shim with a short
+        # `@loader_path/libnotcurses_native_shim.dylib` install-name;
+        # its only LC_LOAD_DYLIB entries are libSystem and friends —
+        # no `@rpath/libnotcurses*.dylib` references to rewrite,
+        # because the shim is compiled `-undefined dynamic_lookup`
+        # and resolves its notcurses calls at runtime against the
+        # host process. Rewriting its install-name to the absolute
+        # staged path would fail with "larger updated load commands
+        # do not fit" — the shim's Mach-O headerpad is sized for
+        # the short name, not the ~100-char absolute. On a force-
+        # install, the previous run's shim is still on disk; this
+        # pass would loudly refuse it.
         my @all-files = $stage.dir.grep({
             .basename ~~ /^ 'libnotcurses' \S* '.dylib' $ /
+            && .basename !~~ /'_shim'/
         });
 
         # Make sure files are writable; CMake sometimes installs 0444.
@@ -719,7 +736,15 @@ class Build {
 
         my @cmd = do given $os {
             when /darwin/ {
+                # -headerpad_max_install_names: reserve generous load-
+                # command padding so any future install_name_tool -id
+                # call (e.g. moving the shim to an absolute staged
+                # path) doesn't fail with "larger updated load
+                # commands do not fit". Note: !rewrite-macos-install-
+                # names explicitly skips the shim today — this is
+                # belt-and-braces for future relocators.
                 'cc', '-O2', '-dynamiclib', '-fPIC',
+                '-Wl,-headerpad_max_install_names',
                 '-install_name', "\@loader_path/libnotcurses_native_shim.dylib",
                 '-undefined', 'dynamic_lookup',
                 "-I$inc",

@@ -167,7 +167,14 @@ jobs:
       - name: Compile perf shim
         run: |
           set -euxo pipefail
+          # -Wl,-headerpad_max_install_names: reserve generous load-
+          # command padding so a downstream install_name_tool call
+          # (e.g. !rewrite-macos-install-names in Build.rakumod, were
+          # it to ever touch the shim) doesn't fail with "larger
+          # updated load commands do not fit". Standard practice for
+          # any dylib that may be relocated post-link.
           cc -O2 -dynamiclib -fPIC \
+            -Wl,-headerpad_max_install_names \
             -install_name '@loader_path/libnotcurses_native_shim.dylib' \
             -undefined dynamic_lookup \
             -I vendor/notcurses/include \
