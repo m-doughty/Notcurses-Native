@@ -1,0 +1,68 @@
+use Test;
+
+# Build.rakumod isn't published in META6's `provides` (it's the
+# `build:` script, not a module), so `use Build;` is rejected by the
+# dist's CompUnit boundary. EVALFILE'd at BEGIN time so the class
+# symbol is in scope for the rest of the file.
+BEGIN EVALFILE $*PROGRAM.parent.parent.child('Build.rakumod').absolute;
+
+# Regression test for the 0.3.2 install bug: untyped %PLATFORM-SLUGS
+# returned `Any` (not `Str`) for missing keys, which tripped the
+# `--> Str` return-type constraint on `detect-platform` and killed
+# `zef install` with a cryptic "expected Str but got Any" type-check
+# before the source-build fallback could fire.
+#
+# The headline case that surfaced this: Raku running under Rosetta on
+# Apple Silicon reports $*KERNEL.hardware = 'x86_64', so the lookup
+# key becomes 'darwin-x86_64' — deliberately not in %PLATFORM-SLUGS
+# (Intel/Rosetta Macs are designed to take the CMake source-build
+# path), but the untyped-hash bug meant they crashed instead.
+
+my $b = Build.new;
+
+# Mapped platforms return the slug.
+is $b.detect-platform(:os<darwin>,  :hardware<arm64>),
+    'macos-arm64',
+    'darwin/arm64 maps';
+is $b.detect-platform(:os<linux>,   :hardware<x86_64>),
+    'linux-x86_64-glibc',
+    'linux/x86_64 maps';
+is $b.detect-platform(:os<linux>,   :hardware<aarch64>),
+    'linux-aarch64-glibc',
+    'linux/aarch64 maps';
+is $b.detect-platform(:os<win32>,   :hardware<x86_64>),
+    'windows-x86_64',
+    'win32/x86_64 maps';
+is $b.detect-platform(:os<win32>,   :hardware<aarch64>),
+    'windows-arm64',
+    'win32/aarch64 maps';
+is $b.detect-platform(:os<mswin32>, :hardware<x86_64>),
+    'windows-x86_64',
+    'mswin32/x86_64 maps';
+is $b.detect-platform(:os<mswin32>, :hardware<aarch64>),
+    'windows-arm64',
+    'mswin32/aarch64 maps';
+
+# The Rosetta-on-Apple-Silicon case that prompted this fix: must
+# return an undefined Str (not Any) so build()'s `without $plat`
+# fallback fires instead of dying on the return type-check.
+ok $b.detect-platform(:os<darwin>, :hardware<x86_64>) ~~ Str:U,
+    'rosetta-on-Apple-Silicon (darwin/x86_64) returns Str:U for source-build fallback';
+ok $b.detect-platform(:os<freebsd>, :hardware<riscv64>) ~~ Str:U,
+    'fully unknown platform (freebsd/riscv64) returns Str:U';
+
+# detect-platform-key reflects exactly what was looked up — the
+# unknown-platform diagnostic quotes this verbatim.
+is $b.detect-platform-key(:os<darwin>, :hardware<x86_64>),
+    'darwin-x86_64',
+    'detect-platform-key returns the actual lookup string';
+
+# known-platform-keys covers the documented slug map.
+is-deeply $b.known-platform-keys.Set,
+    <darwin-arm64
+     linux-x86_64 linux-aarch64
+     win32-x86_64 win32-aarch64
+     mswin32-x86_64 mswin32-aarch64>.Set,
+    'known-platform-keys matches the documented slug map';
+
+done-testing;

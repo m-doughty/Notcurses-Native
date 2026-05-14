@@ -67,10 +67,13 @@ class Build {
     # filenames + cache paths. macOS ships as arm64-only for v1 —
     # cross-compiling universal ffmpeg on an arm64-only runner fleet
     # is substantially more CI work than the other platforms. Intel
-    # Mac users fall through to the compile fallback (deliberately
-    # unmapped here so detect-platform returns Str, triggering the
-    # unknown-platform branch in build()).
-    my %PLATFORM-SLUGS =
+    # Macs (and x86_64 Rakudo running under Rosetta on Apple Silicon,
+    # which reports `$*KERNEL.hardware = "x86_64"`) fall through to
+    # the source-build branch in build() — deliberately unmapped here.
+    # Typed `Str` so missing-key lookups return the Str type object
+    # (not Any), which satisfies `detect-platform`'s `--> Str` return
+    # constraint and lets `without $plat { ... }` fire.
+    my Str %PLATFORM-SLUGS =
         'darwin-arm64'    => 'macos-arm64',
         'linux-x86_64'    => 'linux-x86_64-glibc',
         'linux-aarch64'   => 'linux-aarch64-glibc',
@@ -87,7 +90,7 @@ class Build {
         my Bool $binary-only  = ?%*ENV<NOTCURSES_NATIVE_BINARY_ONLY>;
 
         my Str $binary-tag = self!binary-tag($dist-path);
-        my Str $plat = self!detect-platform;
+        my Str $plat = self.detect-platform;
 
         # Make BINARY_TAG available via %?RESOURCES so Native.rakumod
         # can find the corresponding staged-libs dir at runtime. This
@@ -100,8 +103,19 @@ class Build {
         my IO::Path $stage = self!staged-lib-dir($binary-tag);
 
         without $plat {
-            note "⚠️  Unknown platform ({$*KERNEL.name}-{$*KERNEL.hardware}); "
-                ~ "falling back to source build.";
+            my Str $tried = self.detect-platform-key;
+            my Str $known = self.known-platform-keys.join(', ');
+            note qq:to/MSG/;
+                ⚠️  Notcurses::Native has no prebuilt binary for this platform.
+                    Tried lookup key: '$tried'
+                        (\$*KERNEL.name='{$*KERNEL.name}',
+                         \$*KERNEL.hardware='{$*KERNEL.hardware}')
+                    Known platforms:  $known
+                    Falling back to building notcurses from source via CMake.
+                    (If this is an Apple Silicon Mac reporting 'x86_64', your
+                     Rakudo is likely running under Rosetta — install a native
+                     arm64 Rakudo to use the prebuilt binaries.)
+                MSG
             self!compile-from-source($dist-path, $stage);
             self!try-compile-shim($dist-path, $stage);
             return True;
@@ -630,9 +644,36 @@ class Build {
 
     # --- Shared helpers -------------------------------------------------
 
-    method !detect-platform(--> Str) {
-        my Str $key = "{$*KERNEL.name.lc}-{$*KERNEL.hardware.lc}";
-        %PLATFORM-SLUGS{$key};
+    #| Look up the prebuilt-archive slug for the current platform. Returns
+    #| the slug string when (os, hardware) is in %PLATFORM-SLUGS, otherwise
+    #| an undefined `Str` type object (NOT `Any`) so callers can use
+    #| `without $plat { ... }` to fall through to the source build.
+    #|
+    #| `:os` / `:hardware` default to `$*KERNEL.name.lc` / `$*KERNEL.hardware.lc`
+    #| so production callers pass nothing; tests inject pairs directly to
+    #| avoid having to override `$*KERNEL`.
+    method detect-platform(
+        Str :$os       = $*KERNEL.name.lc,
+        Str :$hardware = $*KERNEL.hardware.lc,
+        --> Str
+    ) {
+        %PLATFORM-SLUGS{"$os-$hardware"} // Str
+    }
+
+    #| The exact key `detect-platform` looked up — surfaced so the
+    #| unknown-platform diagnostic can quote it verbatim.
+    method detect-platform-key(
+        Str :$os       = $*KERNEL.name.lc,
+        Str :$hardware = $*KERNEL.hardware.lc,
+        --> Str
+    ) {
+        "$os-$hardware"
+    }
+
+    #| Sorted list of all keys in %PLATFORM-SLUGS, so the unknown-platform
+    #| diagnostic can show the user which platforms ARE supported.
+    method known-platform-keys(--> List) {
+        %PLATFORM-SLUGS.keys.sort.List
     }
 
     #| Parse `ldd --version` for the system's glibc version. Returns a
