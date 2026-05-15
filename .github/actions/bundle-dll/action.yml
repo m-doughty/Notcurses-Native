@@ -50,35 +50,18 @@ runs:
         # On Windows, DLL search order finds siblings in the same
         # directory as the DLL being loaded — no rpath needed.
         # We just need to ensure every transitive dep is present
-        # in bundle/. MSYS2's `ldd` works on Windows DLLs.
+        # in bundle/. MSYS2's `ldd` works on Windows DLLs, with the
+        # objdump backstop below covering the cases where ldd lies
+        # (notably on CLANGARM64).
         #
-        # Filter by PATH not by name: anything under C:\Windows\ is
-        # a system DLL shipped with Windows itself and must stay
-        # dynamic (bundling them would crash on newer Windows).
-        # Also skip MSVC/UCRT runtime DLLs — these are always
-        # available on any Windows machine modern enough to run
-        # Rakudo.
-        is_system_dll() {
-          local name="$1"
-          local path="$2"
-          # Name-based skip: Windows API Set forwarders are ALWAYS
-          # system DLLs and ALWAYS present on any supported Windows
-          # version. ldd on ARM64 sometimes reports their paths
-          # truncated or pointing at a directory; the name match
-          # catches them regardless of what ldd says.
-          case "${name,,}" in
-            api-ms-*|ext-ms-*|ms-win-*)
-              return 0 ;;
-          esac
-          # Path-based skip: anything under C:\Windows is a system
-          # DLL and must stay dynamic.
-          local lc="${path,,}"
-          case "$lc" in
-            /c/windows/*|c:/windows/*|c:\\windows\\*)
-              return 0 ;;
-          esac
-          return 1
-        }
+        # Single source of truth for "is system DLL": the
+        # scripts/ci/win-system-dll.sh helper. Covers API Set
+        # forwarders (api-ms-*, ext-ms-*, ms-win-*), versioned
+        # runtime DLLs (vcruntime140*.dll, d3dcompiler_47.dll),
+        # the long-standing Win32/GDI/COM/security/networking/
+        # multimedia DLLs by exact name, and any path under
+        # C:\Windows as a belt-and-braces fallback.
+        source scripts/ci/win-system-dll.sh
 
         # Fallback: search known msystem bin dirs by name when ldd
         # gives us a bogus path. CLANGARM64's ldd is unreliable —
@@ -210,6 +193,58 @@ runs:
           fi
         done
 
+        # Backstop pass: walk every bundled DLL's PE import table
+        # via `objdump -p`. Catches the failure mode where ldd's
+        # walk lies (well-documented on CLANGARM64 — xtajit64
+        # emulation quirks cause ldd to silently return incomplete
+        # output) and the belt-and-braces sweep doesn't have the
+        # missing DLL in its hardcoded list. objdump reads the PE
+        # header directly without invoking the binary, so it's
+        # immune to ldd's runtime issues.
+        #
+        # Uses the same `is_system_dll` whitelist sourced at the
+        # top of the step, so what's classified as "system" here
+        # matches what the audit step uses — both can't disagree.
+        echo "--- objdump-based backstop walk ---"
+        declare -A SEEN_OBJDUMP=()
+        process_deps_objdump() {
+          local dll="$1"
+          local depth="${2:-0}"
+          if (( depth > 12 )); then
+            echo "process_deps_objdump: depth cap hit at $dll"
+            return 0
+          fi
+          local key="$(basename "$dll")"
+          [[ -n "${SEEN_OBJDUMP[$key]:-}" ]] && return 0
+          SEEN_OBJDUMP[$key]=1
+
+          local name
+          while IFS= read -r name; do
+            [[ -z "$name" ]] && continue
+            if is_system_dll "$name"; then
+              continue
+            fi
+            if [[ -f "bundle/$name" ]]; then
+              process_deps_objdump "bundle/$name" $((depth + 1))
+              continue
+            fi
+            if resolved=$(find_dll_by_name "$name"); then
+              cp "$resolved" "bundle/$name"
+              echo "Bundled (objdump): $name  (from $resolved)"
+              process_deps_objdump "bundle/$name" $((depth + 1))
+            else
+              echo "::warning::objdump-walk: '$name' not in known msys2 bin dirs — audit will flag if it isn't a system DLL"
+            fi
+          done < <(objdump -p "$dll" 2>/dev/null | awk '/DLL Name:/ {print $3}')
+        }
+        # Iterate the bundle after both prior passes. Any DLL ldd or
+        # the sweep already grabbed acts as an entry point; we walk
+        # its real PE imports and pick up anything missed.
+        for dll in bundle/*.dll; do
+          [[ -L "$dll" ]] && continue
+          process_deps_objdump "$dll"
+        done
+
         echo "--- bundle contents ---"
         ls -la bundle/
 
@@ -225,36 +260,10 @@ runs:
         # missed a DLL and the belt-and-braces sweep didn't catch
         # it either — the bundle works in CI (msys2 has the DLL
         # on PATH) but fails on a user's machine.
-        is_system_dll() {
-          local name_lc="${1,,}"
-          # Windows API Set forwarders (api-ms-*, ext-ms-*, ms-win-*)
-          # are always present in System32 on Win 10+. The named
-          # system DLLs below are the long-standing Win32 API
-          # surface — kernel32, user32, advapi32, msvcrt, etc.
-          case "$name_lc" in
-            api-ms-*|ext-ms-*|ms-win-*)
-              return 0 ;;
-            kernel32.dll|kernelbase.dll|user32.dll|advapi32.dll|\
-            msvcrt.dll|ntdll.dll|ole32.dll|oleaut32.dll|\
-            shell32.dll|gdi32.dll|gdi32full.dll|shlwapi.dll|\
-            shcore.dll|comctl32.dll|comdlg32.dll|crypt32.dll|\
-            secur32.dll|setupapi.dll|ws2_32.dll|wsock32.dll|\
-            iphlpapi.dll|wininet.dll|winmm.dll|winhttp.dll|\
-            psapi.dll|version.dll|imm32.dll|d3d11.dll|d3d9.dll|\
-            dxgi.dll|d2d1.dll|dwrite.dll|opengl32.dll|\
-            bcrypt.dll|ncrypt.dll|userenv.dll|combase.dll|\
-            normaliz.dll|powrprof.dll|propsys.dll|rpcrt4.dll|\
-            urlmon.dll|wldap32.dll|cabinet.dll|profapi.dll|\
-            mscoree.dll|dbghelp.dll|cfgmgr32.dll|dwmapi.dll|\
-            uxtheme.dll|winspool.drv|wtsapi32.dll|netapi32.dll|\
-            dnsapi.dll|mpr.dll|cryptsp.dll|cryptbase.dll|\
-            avrt.dll|avicap32.dll|mfplat.dll|mfreadwrite.dll|\
-            mf.dll|evr.dll|d3dcompiler_*.dll|dxva2.dll|\
-            ucrtbase.dll|vcruntime*.dll)
-              return 0 ;;
-          esac
-          return 1
-        }
+        # Shared whitelist (same as bundling step uses for ldd +
+        # objdump walks) — guaranteed agreement between what's
+        # classified as system and what gets bundled.
+        source scripts/ci/win-system-dll.sh
         fail=0
         for dll in bundle/*.dll; do
           [[ -L "$dll" ]] && continue

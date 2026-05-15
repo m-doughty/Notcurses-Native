@@ -46,6 +46,27 @@ cd "libvpx-${VERSION}"
 make -j"$JOBS"
 make install
 
+# libvpx's macOS build leaves the dylib's install_name as a bare
+# leaf name (e.g. "libvpx.9.dylib") — no @rpath/ prefix, no
+# absolute path. This is fine for direct linking + DT_NEEDED
+# resolution via fallback paths, but breaks downstream
+# dylibbundler when notcurses → dylibbundler tries to walk the
+# dep tree. dylibbundler can't resolve a bare leaf name back to
+# a file and dies with "Cannot resolve path libvpx.X.dylib"
+# followed by an otool "can't open file" error. Patch the
+# install_name to @rpath/<leaf> so dylibbundler can do its job.
+# Linux dylibs don't have this concept (DT_SONAME is always a
+# leaf-style name without prefix, and patchelf later handles
+# rpath separately), so this fixup is macOS-only.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    for dylib in "$PREFIX/lib"/libvpx.*.dylib; do
+        [[ -L "$dylib" ]] && continue
+        leaf=$(basename "$dylib")
+        install_name_tool -id "@rpath/$leaf" "$dylib"
+        echo "  patched install_name: $dylib  ->  @rpath/$leaf"
+    done
+fi
+
 PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
     pkg-config --modversion vpx
 
