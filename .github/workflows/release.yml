@@ -1,0 +1,82 @@
+# Top-level orchestrator: build every prebuilt platform archive in
+# parallel, then publish the release.
+#
+# Triggers:
+#   - workflow_dispatch: manual run while iterating on the recipe.
+#   - push: tags matching `binaries-*` for production releases.
+#     BINARY_TAG file at repo root is the single source of truth
+#     for which tag this release should produce.
+
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'binaries-*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos-arm64:
+    uses: ./.github/workflows/_build-macos.yml
+    with:
+      arch: arm64
+      deployment-target: '11.0'
+      artifact-name: notcurses-macos-arm64
+
+  build-macos-x86_64:
+    uses: ./.github/workflows/_build-macos.yml
+    with:
+      arch: x86_64
+      deployment-target: '10.15'
+      artifact-name: notcurses-macos-x86_64
+
+  build-linux-glibc-x86_64:
+    uses: ./.github/workflows/_build-linux-glibc.yml
+    with:
+      arch: x86_64
+      artifact-name: notcurses-linux-x86_64-glibc
+
+  build-linux-glibc-aarch64:
+    uses: ./.github/workflows/_build-linux-glibc.yml
+    with:
+      arch: aarch64
+      artifact-name: notcurses-linux-aarch64-glibc
+
+  build-linux-musl-x86_64:
+    uses: ./.github/workflows/_build-linux-musl.yml
+    with:
+      arch: x86_64
+      artifact-name: notcurses-linux-x86_64-musl
+
+  build-linux-musl-aarch64:
+    uses: ./.github/workflows/_build-linux-musl.yml
+    with:
+      arch: aarch64
+      artifact-name: notcurses-linux-aarch64-musl
+
+  build-windows-x86_64:
+    uses: ./.github/workflows/_build-windows.yml
+    with:
+      arch: x86_64
+      artifact-name: notcurses-windows-x86_64
+
+  build-windows-arm64:
+    uses: ./.github/workflows/_build-windows.yml
+    with:
+      arch: arm64
+      artifact-name: notcurses-windows-arm64
+
+  publish:
+    needs:
+      - build-macos-arm64
+      - build-macos-x86_64
+      - build-linux-glibc-x86_64
+      - build-linux-glibc-aarch64
+      - build-linux-musl-x86_64
+      - build-linux-musl-aarch64
+      - build-windows-x86_64
+      - build-windows-arm64
+    uses: ./.github/workflows/_release-publish.yml

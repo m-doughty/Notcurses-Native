@@ -1,0 +1,158 @@
+# Reusable workflow: build the macos-{arm64,x86_64} prebuilt
+# notcurses archive on a `macos-14` arm64 GHA runner.
+#
+# arm64 lane: native build. Deployment target = 11.0 (Big Sur, the
+# earliest macOS supporting Apple Silicon).
+#
+# x86_64 lane: Rosetta build on the same arm64 runner. We install
+# x86_64 Homebrew under /usr/local + an x86_64 dispatch helper
+# (bin/host-arch) and prefix every subsequent build command with it.
+# Deployment target = 10.15 (Catalina, last x86_64-only macOS) so
+# the artefact loads on every Intel Mac Apple supports back to ~2012
+# hardware — Mac Pro 2013, iMac Pro, the 2016-2020 Intel MacBook Pro
+# line, Hackintoshes on Catalina/Big Sur/Monterey/Ventura/Sonoma.
+
+name: _build-macos
+
+on:
+  workflow_call:
+    inputs:
+      arch:
+        description: '`arm64` or `x86_64`.'
+        type: string
+        required: true
+      deployment-target:
+        description: >-
+          MACOSX_DEPLOYMENT_TARGET passed to clang and CMake. Defaults
+          to 11.0 for arm64, 10.15 for x86_64.
+        type: string
+        required: true
+      artifact-name:
+        description: 'Archive basename, e.g. notcurses-macos-x86_64.'
+        type: string
+        required: true
+
+env:
+  CMAKE_FLAGS: >-
+    -DUSE_MULTIMEDIA=ffmpeg
+    -DBUILD_FFI_LIBRARY=ON
+    -DUSE_CXX=OFF
+    -DBUILD_EXECUTABLES=OFF
+    -DUSE_PANDOC=OFF
+    -DUSE_DOCTEST=OFF
+    -DUSE_POC=OFF
+    -DUSE_STATIC=OFF
+    -DCMAKE_BUILD_TYPE=Release
+  MACOSX_DEPLOYMENT_TARGET: ${{ inputs.deployment-target }}
+
+jobs:
+  build:
+    name: build-macos-${{ inputs.arch }}
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Emit arch dispatch helper
+        run: |
+          set -euxo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          if [[ "${{ inputs.arch }}" == "x86_64" ]]; then
+            printf '#!/bin/bash\nexec arch -x86_64 "$@"\n' > "$GITHUB_WORKSPACE/bin/host-arch"
+          else
+            printf '#!/bin/bash\nexec "$@"\n' > "$GITHUB_WORKSPACE/bin/host-arch"
+          fi
+          chmod +x "$GITHUB_WORKSPACE/bin/host-arch"
+          echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
+
+      - name: Install Rosetta + x86_64 Homebrew (x86_64 lane only)
+        if: inputs.arch == 'x86_64'
+        run: |
+          set -euxo pipefail
+          # Rosetta may already be installed on the runner image —
+          # softwareupdate is idempotent and exits 0 if so.
+          softwareupdate --install-rosetta --agree-to-license || true
+          # x86_64 brew installs under /usr/local (arm64 brew is at
+          # /opt/homebrew). The two coexist on the same machine.
+          if [[ ! -x /usr/local/bin/brew ]]; then
+            arch -x86_64 /bin/bash -c \
+              "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
+              < /dev/null
+          fi
+          /usr/local/bin/brew --version
+
+      - name: Install build deps
+        run: |
+          set -euxo pipefail
+          if [[ "${{ inputs.arch }}" == "x86_64" ]]; then
+            arch -x86_64 /usr/local/bin/brew install \
+              cmake pkg-config ffmpeg ncurses libunistring libdeflate dylibbundler
+            echo "BREW_PREFIX=/usr/local" >> "$GITHUB_ENV"
+          else
+            brew install cmake pkg-config ffmpeg ncurses libunistring libdeflate dylibbundler
+            echo "BREW_PREFIX=$(brew --prefix)" >> "$GITHUB_ENV"
+          fi
+
+      - name: Configure + build notcurses
+        run: |
+          set -euxo pipefail
+          cd vendor/notcurses
+          mkdir -p build
+
+          # Homebrew ncurses isn't in the default pkg-config path.
+          # $BREW_PREFIX is /usr/local for x86_64 lane and /opt/homebrew
+          # for arm64 lane (set by the previous step).
+          export PKG_CONFIG_PATH="${BREW_PREFIX}/opt/ncurses/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+
+          host-arch cmake -B build -S . \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ inputs.deployment-target }} \
+            -DCMAKE_OSX_ARCHITECTURES=${{ inputs.arch }} \
+            $CMAKE_FLAGS
+          host-arch cmake --build build -j"$(sysctl -n hw.ncpu)"
+
+      - name: Bundle + relocate + codesign + audit dylibs
+        uses: ./.github/actions/bundle-macos
+        with:
+          # Only audit on x86_64 lane — the arm64 lane already targets
+          # 11.0 and any modern brew bottle is compatible.
+          audit-min-macos: ${{ inputs.arch == 'x86_64' && '10.15' || '' }}
+
+      # Compile the perf shim into the bundle so users installing the
+      # prebuilt archive don't need a C toolchain to get the fast path.
+      # See src/notcurses_native_shim.c for what's in it; mirrors
+      # Build.rakumod's !try-compile-shim flags. -undefined dynamic_lookup
+      # defers the notcurses symbols to runtime (resolved against the
+      # libnotcurses-core.dylib already in this same bundle, loaded by
+      # Notcurses::Native at startup).
+      - name: Compile perf shim
+        run: |
+          set -euxo pipefail
+          # -Wl,-headerpad_max_install_names: reserve generous load-
+          # command padding so a downstream install_name_tool call
+          # (e.g. !rewrite-macos-install-names in Build.rakumod, were
+          # it to ever touch the shim) doesn't fail with "larger
+          # updated load commands do not fit". Standard practice for
+          # any dylib that may be relocated post-link.
+          host-arch cc -O2 -dynamiclib -fPIC \
+            -mmacosx-version-min=${{ inputs.deployment-target }} \
+            -Wl,-headerpad_max_install_names \
+            -install_name '@loader_path/libnotcurses_native_shim.dylib' \
+            -undefined dynamic_lookup \
+            -I vendor/notcurses/include \
+            -o bundle/libnotcurses_native_shim.dylib \
+            src/notcurses_native_shim.c
+          # Sequoia hard-rejects unsigned dylibs at first page access —
+          # ad-hoc sign matches what we do for the notcurses libs above.
+          codesign --force --sign - --timestamp=none \
+            bundle/libnotcurses_native_shim.dylib
+          codesign --verify bundle/libnotcurses_native_shim.dylib
+          echo "--- shim symbols ---"
+          nm -gU bundle/libnotcurses_native_shim.dylib \
+            | grep notcurses_native_copy_cells
+
+      - name: Package + upload
+        uses: ./.github/actions/package-and-upload
+        with:
+          artifact-name: ${{ inputs.artifact-name }}
+          format: tar.gz

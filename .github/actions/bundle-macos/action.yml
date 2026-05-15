@@ -1,0 +1,155 @@
+name: bundle-macos
+description: >-
+  Stage the three notcurses libs into `bundle/`, run dylibbundler to
+  resolve and copy ffmpeg sibling dylibs with @loader_path rewrites,
+  create SONAME + unversioned symlinks, strip + ad-hoc-codesign every
+  shipped dylib, and (if a deployment-target is given) audit every
+  bundled dylib's LC_BUILD_VERSION minos to ensure it's <= the target.
+
+  Macros calling this action must already have:
+    - notcurses built under vendor/notcurses/build/
+    - `bundle/` writable (empty is fine; action creates it if absent)
+    - dylibbundler on PATH (from brew)
+
+inputs:
+  audit-min-macos:
+    description: >-
+      If set, every shipped dylib's LC_BUILD_VERSION minos is verified
+      to be <= this value (e.g. '10.15' for the x86_64 lane to catch
+      a brew bottle that slipped through targeting 12.0+). Empty =
+      skip the audit (arm64 lane stays on 11.0 implicitly).
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Stage + relocate libs (dylibbundler + symlinks + codesign)
+      shell: bash
+      run: |
+        set -euxo pipefail
+        mkdir -p bundle
+
+        # Only stage the two ENTRY-POINT libs:
+        #   - libnotcurses        (full, with multimedia)
+        #   - libnotcurses-ffi    (static-inline C wrappers;
+        #                          NOT a dep of libnotcurses)
+        #
+        # libnotcurses-core gets auto-copied into bundle/ by
+        # dylibbundler as a dependency of libnotcurses. Pre-staging
+        # it here would cause dylibbundler to try `cp bundle/x.dylib
+        # bundle/x.dylib` and fail with "identical files not copied"
+        # because dylibbundler doesn't recognise already-bundled deps.
+        for lib in libnotcurses libnotcurses-ffi; do
+          real=$(find vendor/notcurses/build -name "${lib}.*.dylib" -type f ! -type l | sort | tail -1)
+          if [[ -z "$real" ]]; then
+            echo "❌ Could not find real file for $lib"
+            exit 1
+          fi
+          cp "$real" "bundle/$(basename "$real")"
+        done
+
+        # Run dylibbundler. -s points at the cmake build dir so
+        # dylibbundler can resolve @rpath/libnotcurses-core.3.dylib
+        # (a symlink in build/) and copy the real file into bundle/.
+        # Both notcurses entry-points share the same ffmpeg tree, so
+        # the second invocation mostly skips already-bundled deps.
+        for lib in libnotcurses libnotcurses-ffi; do
+          real_in_bundle=$(ls bundle/${lib}.*.*.dylib | head -1)
+          dylibbundler -of -b -ns \
+            -x "$real_in_bundle" \
+            -s vendor/notcurses/build \
+            -d bundle/ \
+            -p '@loader_path/'
+        done
+
+        # Create SONAME + unversioned symlinks AFTER dylibbundler
+        # finishes, for each of the three notcurses libs now in
+        # bundle/. NativeCall looks up the unversioned name
+        # (libnotcurses.dylib) via %?RESOURCES; dylibbundler's
+        # rewritten refs look for the SONAME-style name
+        # (libnotcurses-core.3.dylib). Both resolve to the real
+        # versioned file via these symlinks.
+        cd bundle
+        for lib in libnotcurses libnotcurses-core libnotcurses-ffi; do
+          real=$(ls ${lib}.*.*.dylib 2>/dev/null | head -1)
+          if [[ -z "$real" ]]; then
+            echo "⚠️  No real file for $lib in bundle/ — dylibbundler may have used a different name."
+            ls ${lib}* 2>/dev/null || true
+            exit 1
+          fi
+          major=$(echo "$real" | sed -E "s|^${lib}\.([0-9]+)\..*|\1|")
+          ln -sf "$real" "${lib}.${major}.dylib"
+          ln -sf "$real" "${lib}.dylib"
+        done
+        cd ..
+
+        # Strip debug symbols from every real dylib we ship (skip symlinks).
+        find bundle -name '*.dylib' -type f ! -type l -exec strip -x {} \; 2>/dev/null || true
+
+        # Re-sign every modified dylib. dylibbundler's
+        # install_name_tool calls invalidate the linker-emitted
+        # ad-hoc signature; strip invalidates it again. macOS
+        # Sequoia (14+) hard-rejects dylibs with stale signatures
+        # via SIGKILL at first page access — load looks like it
+        # succeeds via dyld, then the kernel kills the process
+        # the moment any code from the bad page executes. Ad-hoc
+        # resign produces a fresh signature matching the modified
+        # bytes; no developer cert needed.
+        find bundle -name '*.dylib' -type f ! -type l \
+          -exec codesign --force --sign - --timestamp=none {} \;
+
+        # Sanity-check: every dylib should now verify cleanly.
+        # Loud failure here = wrong arch / corrupt artifact / etc.
+        for f in bundle/*.dylib; do
+          [[ -L "$f" ]] && continue
+          codesign --verify "$f" || { echo "❌ $f failed verify"; exit 1; }
+        done
+
+        echo "--- bundle contents ---"
+        ls -la bundle/
+        echo "--- otool dump (libnotcurses) ---"
+        otool -L bundle/libnotcurses.dylib
+
+    - name: Audit dylib LC_BUILD_VERSION minos <= target
+      if: inputs.audit-min-macos != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        target='${{ inputs.audit-min-macos }}'
+        fail=0
+        # vtool -show emits a block like:
+        #   Load command N
+        #         cmd LC_BUILD_VERSION
+        #     cmdsize 32
+        #    platform macos
+        #       minos 10.15
+        #         sdk 15.0
+        #       ntools 1
+        # We grep for `minos` from each LC_BUILD_VERSION block. The
+        # older LC_VERSION_MIN_MACOSX has the same `minos` line shape.
+        for f in bundle/*.dylib; do
+          [[ -L "$f" ]] && continue
+          minos=$(vtool -show "$f" 2>/dev/null \
+            | awk '/^[[:space:]]*minos[[:space:]]/{print $2; exit}')
+          if [[ -z "$minos" ]]; then
+            echo "::warning::$f has no LC_BUILD_VERSION / LC_VERSION_MIN_MACOSX — pre-10.14 build?"
+            continue
+          fi
+          # `sort -V` sorts as versions; if target sorts after minos
+          # then minos > target, which is the failure case.
+          if [[ "$(printf '%s\n%s\n' "$minos" "$target" | sort -V | head -1)" != "$minos" ]]; then
+            echo "::error file=$f::minos=$minos > target=$target — won't load on macOS $target."
+            fail=1
+          else
+            echo "ok: $f minos=$minos (<= $target)"
+          fi
+        done
+        if (( fail != 0 )); then
+          echo "❌ One or more dylibs have minos > $target."
+          echo "   Likely a brew bottle targeting newer macOS slipped through."
+          echo "   Either downgrade the dep (brew install --build-from-source)"
+          echo "   or rebuild it with MACOSX_DEPLOYMENT_TARGET=$target."
+          exit 1
+        fi
+        echo "✅ All bundled dylibs target macOS $target or older."

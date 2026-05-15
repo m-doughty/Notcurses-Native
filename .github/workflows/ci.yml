@@ -1,0 +1,55 @@
+# Top-level orchestrator: run every per-platform verify lane on push
+# or pull_request. No internal gating — verify lanes run in parallel.
+#
+# Sequencing note: the 3 NEW verify lanes (`macos-x86_64` and the two
+# musl lanes) reference prebuilt archives that don't exist on the
+# `binaries-notcurses-3.0.17-r5` release. They're commented out here
+# until the r6 release lands; the follow-up commit that bumps
+# BINARY_TAG to r6 + copies the published `resources/checksums.txt`
+# uncomments them.
+
+name: ci
+
+on:
+  push:
+    branches:
+      - '*'
+    tags-ignore:
+      - '*'
+  pull_request:
+
+jobs:
+  verify-macos-arm64:
+    uses: ./.github/workflows/_verify.yml
+    with: { lane: macos-arm64 }
+
+  # Uncomment in the 0.3.5 follow-up commit (post-r6).
+  # verify-macos-x86_64:
+  #   uses: ./.github/workflows/_verify.yml
+  #   with: { lane: macos-x86_64 }
+
+  verify-linux-glibc-x86_64:
+    uses: ./.github/workflows/_verify.yml
+    with: { lane: linux-glibc-x86_64 }
+
+  verify-linux-glibc-aarch64:
+    uses: ./.github/workflows/_verify.yml
+    with: { lane: linux-glibc-aarch64 }
+
+  # Uncomment in the 0.3.5 follow-up commit (post-r6).
+  # verify-linux-musl-x86_64:
+  #   uses: ./.github/workflows/_verify.yml
+  #   with: { lane: linux-musl-x86_64 }
+
+  # Uncomment in the 0.3.5 follow-up commit (post-r6).
+  # verify-linux-musl-aarch64:
+  #   uses: ./.github/workflows/_verify.yml
+  #   with: { lane: linux-musl-aarch64 }
+
+  verify-windows-x86_64:
+    uses: ./.github/workflows/_verify.yml
+    with: { lane: windows-x86_64 }
+
+  verify-windows-arm64:
+    uses: ./.github/workflows/_verify.yml
+    with: { lane: windows-arm64 }

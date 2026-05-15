@@ -1,0 +1,324 @@
+# Reusable workflow: verify the just-built (or already-released)
+# prebuilt notcurses archive loads + works on each supported lane.
+#
+# Each lane:
+#   1. Installs the appropriate Rakudo (setup-raku for native,
+#      Rakudo Star pkg for Rosetta'd mac, apk add for alpine).
+#   2. zef install Notcurses::Native via the *prebuilt path* (no
+#      system deps installed yet — proves the bundle is self-contained).
+#   3. Runs prove6 against t/ (plus xt/ where the terminal supports it).
+#   4. Installs system deps (cmake + ffmpeg + ncurses + ...).
+#   5. zef reinstall with NOTCURSES_NATIVE_BUILD_FROM_SOURCE=1 to
+#      exercise the source-build fallback path.
+#   6. Re-runs prove6.
+#
+# NOTCURSES_NATIVE_REQUIRE_SHIM=1 in env makes
+# t/15-shim-presence.rakutest fail if the shim isn't shipped or
+# compiled — both paths should produce a working shim.
+#
+# Windows lanes skip prove6 entirely (upstream notcurses-tester is
+# known-broken on Windows per doc/notcurses.md). They verify the
+# install + DLL-load + symbol-resolution surface via the zef-install
+# success itself.
+
+name: _verify
+
+on:
+  workflow_call:
+    inputs:
+      lane:
+        description: >-
+          One of: `macos-arm64`, `macos-x86_64`,
+          `linux-glibc-x86_64`, `linux-glibc-aarch64`,
+          `linux-musl-x86_64`, `linux-musl-aarch64`,
+          `windows-x86_64`, `windows-arm64`.
+        type: string
+        required: true
+      rakudo-star-version:
+        description: >-
+          Rakudo Star version to install on the macos-x86_64 lane
+          (the only lane where setup-raku@v1 can't be used because
+          Rosetta x86_64 needs a separate Rakudo binary).
+        type: string
+        required: false
+        default: '2025.10'
+
+env:
+  TERM: xterm
+  COLORTERM: truecolor
+  LANG: en_US.UTF-8
+  LC_ALL: en_US.UTF-8
+  NOTCURSES_NATIVE_REQUIRE_SHIM: '1'
+
+jobs:
+  # ----- macOS ------------------------------------------------------
+  verify-macos-arm64:
+    if: inputs.lane == 'macos-arm64'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v6
+        with: { submodules: recursive }
+      - uses: Raku/setup-raku@v1
+        with: { raku-version: 'latest' }
+      - name: zef install (prebuilt)
+        run: zef install --/test .
+      - name: zef install App::Prove6
+        run: zef install --/test App::Prove6
+      - name: prove6 (prebuilt)
+        run: prove6 --verbose -I lib -I t/lib t
+      - name: prove6 xt (terminal-dependent)
+        run: prove -e 'raku -I lib -I t/lib' --verbose xt/*.rakutest
+      - name: Install brew deps for source-build pass
+        run: |
+          brew install cmake pkg-config ffmpeg ncurses libunistring libdeflate
+      - name: zef install (source-build)
+        env: { NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1' }
+        run: zef install --/test --force-install .
+      - name: prove6 (source-build)
+        run: prove6 --verbose -I lib -I t/lib t
+
+  verify-macos-x86_64:
+    if: inputs.lane == 'macos-x86_64'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v6
+        with: { submodules: recursive }
+      - name: Install Rosetta
+        run: |
+          softwareupdate --install-rosetta --agree-to-license || true
+      - name: Install x86_64 Rakudo Star
+        run: |
+          set -euxo pipefail
+          v='${{ inputs.rakudo-star-version }}'
+          url="https://rakudo.org/dl/star/rakudo-star-${v}-macos-x86_64-clang.pkg"
+          curl -fSL -o /tmp/rakudo-star.pkg "$url"
+          arch -x86_64 sudo installer -pkg /tmp/rakudo-star.pkg -target /
+          # Rakudo Star installs under /Applications/Rakudo/bin
+          echo "/Applications/Rakudo/bin" >> "$GITHUB_PATH"
+      - name: Verify Rakudo arch
+        run: |
+          file "$(which raku || echo /Applications/Rakudo/bin/raku)" | tee /tmp/raku-arch
+          grep -q 'x86_64' /tmp/raku-arch
+      - name: Install x86_64 brew (for source-build pass)
+        run: |
+          set -euxo pipefail
+          if [[ ! -x /usr/local/bin/brew ]]; then
+            arch -x86_64 /bin/bash -c \
+              "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
+              < /dev/null
+          fi
+      - name: zef install (prebuilt)
+        run: |
+          arch -x86_64 zef install --/test .
+      - name: zef install App::Prove6
+        run: |
+          arch -x86_64 zef install --/test App::Prove6
+      - name: prove6 (prebuilt)
+        run: |
+          arch -x86_64 prove6 --verbose -I lib -I t/lib t
+      - name: Install x86_64 brew deps for source-build
+        run: |
+          arch -x86_64 /usr/local/bin/brew install \
+            cmake pkg-config ffmpeg ncurses libunistring libdeflate
+      - name: zef install (source-build)
+        env: { NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1' }
+        run: |
+          arch -x86_64 zef install --/test --force-install .
+      - name: prove6 (source-build)
+        run: |
+          arch -x86_64 prove6 --verbose -I lib -I t/lib t
+
+  # ----- Linux glibc ------------------------------------------------
+  verify-linux-glibc-x86_64:
+    if: inputs.lane == 'linux-glibc-x86_64'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with: { submodules: recursive }
+      - uses: Raku/setup-raku@v1
+        with: { raku-version: 'latest' }
+      - name: zef install (prebuilt)
+        run: zef install --/test .
+      - name: zef install App::Prove6
+        run: zef install --/test App::Prove6
+      - name: prove6 (prebuilt)
+        run: prove6 --verbose -I lib -I t/lib t
+      - name: prove6 xt (terminal-dependent)
+        run: prove -e 'raku -I lib -I t/lib' --verbose xt/*.rakutest
+      - name: Install apt deps for source-build
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            cmake pkg-config \
+            libncurses-dev libunistring-dev libdeflate-dev \
+            libavformat-dev libavcodec-dev libavdevice-dev \
+            libavutil-dev libswscale-dev
+      - name: zef install (source-build)
+        env: { NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1' }
+        run: zef install --/test --force-install .
+      - name: prove6 (source-build)
+        run: prove6 --verbose -I lib -I t/lib t
+
+  verify-linux-glibc-aarch64:
+    if: inputs.lane == 'linux-glibc-aarch64'
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v6
+        with: { submodules: recursive }
+      - uses: Raku/setup-raku@v1
+        with: { raku-version: 'latest' }
+      - name: zef install (prebuilt)
+        run: zef install --/test .
+      - name: zef install App::Prove6
+        run: zef install --/test App::Prove6
+      - name: prove6 (prebuilt)
+        run: prove6 --verbose -I lib -I t/lib t
+      - name: Install apt deps for source-build
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            cmake pkg-config \
+            libncurses-dev libunistring-dev libdeflate-dev \
+            libavformat-dev libavcodec-dev libavdevice-dev \
+            libavutil-dev libswscale-dev
+      - name: zef install (source-build)
+        env: { NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1' }
+        run: zef install --/test --force-install .
+      - name: prove6 (source-build)
+        run: prove6 --verbose -I lib -I t/lib t
+
+  # ----- Linux musl -------------------------------------------------
+  verify-linux-musl-x86_64:
+    if: inputs.lane == 'linux-musl-x86_64'
+    runs-on: ubuntu-22.04
+    container:
+      image: alpine:3.20
+    steps:
+      - name: Install Rakudo + build deps
+        run: |
+          set -euxo pipefail
+          apk add --no-cache \
+              bash coreutils findutils tar \
+              git \
+              rakudo zef \
+              cmake make pkgconf patchelf \
+              gcc g++ musl-dev linux-headers \
+              ffmpeg-dev ncurses-dev libunistring-dev libdeflate-dev
+      - uses: actions/checkout@v6
+        with: { submodules: recursive }
+      - name: zef install (prebuilt)
+        shell: bash
+        run: zef install --/test .
+      - name: zef install App::Prove6
+        shell: bash
+        run: zef install --/test App::Prove6
+      - name: prove6 (prebuilt)
+        shell: bash
+        run: prove6 --verbose -I lib -I t/lib t
+      - name: zef install (source-build)
+        shell: bash
+        env: { NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1' }
+        run: zef install --/test --force-install .
+      - name: prove6 (source-build)
+        shell: bash
+        run: prove6 --verbose -I lib -I t/lib t
+
+  verify-linux-musl-aarch64:
+    if: inputs.lane == 'linux-musl-aarch64'
+    runs-on: ubuntu-22.04-arm
+    container:
+      image: alpine:3.20
+    steps:
+      - name: Install Rakudo + build deps
+        run: |
+          set -euxo pipefail
+          apk add --no-cache \
+              bash coreutils findutils tar \
+              git \
+              rakudo zef \
+              cmake make pkgconf patchelf \
+              gcc g++ musl-dev linux-headers \
+              ffmpeg-dev ncurses-dev libunistring-dev libdeflate-dev
+      - uses: actions/checkout@v6
+        with: { submodules: recursive }
+      - name: zef install (prebuilt)
+        shell: bash
+        run: zef install --/test .
+      - name: zef install App::Prove6
+        shell: bash
+        run: zef install --/test App::Prove6
+      - name: prove6 (prebuilt)
+        shell: bash
+        run: prove6 --verbose -I lib -I t/lib t
+      - name: zef install (source-build)
+        shell: bash
+        env: { NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1' }
+        run: zef install --/test --force-install .
+      - name: prove6 (source-build)
+        shell: bash
+        run: prove6 --verbose -I lib -I t/lib t
+
+  # ----- Windows ----------------------------------------------------
+  # Upstream notcurses-tester is broken on Windows (per doc/notcurses.md,
+  # 'Microsoft Windows' section). These lanes verify install +
+  # DLL-load + symbol-resolution via successful zef install; prove6
+  # itself isn't useful here.
+  verify-windows-x86_64:
+    if: inputs.lane == 'windows-x86_64'
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: 'msys2 {0}'
+    steps:
+      - uses: actions/checkout@v6
+        with: { submodules: recursive }
+      - uses: Raku/setup-raku@v1
+        with: { raku-version: 'latest' }
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          path-type: inherit
+          install: >-
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-libdeflate
+            mingw-w64-ucrt-x86_64-libunistring
+            mingw-w64-ucrt-x86_64-ncurses
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-toolchain
+      - name: zef install (prebuilt)
+        run: zef install --/test .
+      - name: zef install (source-build)
+        env: { NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1' }
+        run: zef install --/test --force-install .
+
+  verify-windows-arm64:
+    if: inputs.lane == 'windows-arm64'
+    runs-on: windows-11-arm
+    defaults:
+      run:
+        shell: 'msys2 {0}'
+    steps:
+      - uses: actions/checkout@v6
+        with: { submodules: recursive }
+      - uses: Raku/setup-raku@v1
+        with: { raku-version: 'latest' }
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          path-type: inherit
+          install: >-
+            mingw-w64-clang-aarch64-cmake
+            mingw-w64-clang-aarch64-ffmpeg
+            mingw-w64-clang-aarch64-libdeflate
+            mingw-w64-clang-aarch64-libunistring
+            mingw-w64-clang-aarch64-ncurses
+            mingw-w64-clang-aarch64-ninja
+            mingw-w64-clang-aarch64-toolchain
+      - name: zef install (prebuilt)
+        run: zef install --/test .
+      - name: zef install (source-build)
+        env: { NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1' }
+        run: zef install --/test --force-install .

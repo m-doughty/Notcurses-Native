@@ -1,0 +1,64 @@
+name: package-and-upload
+description: >-
+  Tar/zip up `bundle/` into a platform-specific archive, compute its
+  SHA256, stage everything under `artefacts/`, and upload as a GHA
+  artifact for the release-publish job to collect.
+
+inputs:
+  artifact-name:
+    description: >-
+      Archive basename without extension, e.g. `notcurses-macos-arm64`
+      or `notcurses-linux-x86_64-musl`. Also used as the
+      actions/upload-artifact name.
+    required: true
+  format:
+    description: '`tar.gz` (Unix) or `zip` (Windows).'
+    required: true
+  shell:
+    description: >-
+      Shell to use for the packaging script. Defaults to `bash`. The
+      Windows lane sets this to `msys2 {0}` so the `zip` utility
+      installed via pacman is on PATH (Git Bash's PATH doesn't
+      include it).
+    required: false
+    default: bash
+  retention-days:
+    description: How long the GHA artifact survives.
+    required: false
+    default: '14'
+
+runs:
+  using: composite
+  steps:
+    - name: Package archive (tar.gz)
+      if: inputs.format == 'tar.gz'
+      shell: ${{ inputs.shell }}
+      run: |
+        set -euxo pipefail
+        artifact='${{ inputs.artifact-name }}.tar.gz'
+        tar -czf "$artifact" -C bundle .
+        if command -v sha256sum >/dev/null 2>&1; then
+          sha256sum "$artifact" | tee "${artifact}.sha256"
+        else
+          # macOS doesn't ship sha256sum; shasum -a 256 is equivalent.
+          shasum -a 256 "$artifact" | tee "${artifact}.sha256"
+        fi
+        mkdir -p artefacts
+        mv "$artifact" "${artifact}.sha256" artefacts/
+
+    - name: Package archive (zip)
+      if: inputs.format == 'zip'
+      shell: ${{ inputs.shell }}
+      run: |
+        set -euxo pipefail
+        artifact='${{ inputs.artifact-name }}.zip'
+        (cd bundle && zip -r "../$artifact" .)
+        sha256sum "$artifact" | tee "${artifact}.sha256"
+        mkdir -p artefacts
+        mv "$artifact" "${artifact}.sha256" artefacts/
+
+    - uses: actions/upload-artifact@v6
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: artefacts/
+        retention-days: ${{ inputs.retention-days }}

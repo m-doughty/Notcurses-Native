@@ -1,0 +1,149 @@
+# Reusable workflow: build the windows-{x86_64,arm64} prebuilt notcurses
+# archive inside MSYS2 (UCRT64 for x86_64; CLANGARM64 for arm64).
+#
+# Pure port of the existing build-binaries.yml matrix entry — no
+# behaviour change, just refactored to take `arch` as input.
+
+name: _build-windows
+
+on:
+  workflow_call:
+    inputs:
+      arch:
+        description: '`x86_64` or `arm64`.'
+        type: string
+        required: true
+      artifact-name:
+        description: 'Archive basename, e.g. notcurses-windows-x86_64.'
+        type: string
+        required: true
+
+env:
+  CMAKE_FLAGS: >-
+    -DUSE_MULTIMEDIA=ffmpeg
+    -DBUILD_FFI_LIBRARY=ON
+    -DUSE_CXX=OFF
+    -DBUILD_EXECUTABLES=OFF
+    -DUSE_PANDOC=OFF
+    -DUSE_DOCTEST=OFF
+    -DUSE_POC=OFF
+    -DUSE_STATIC=OFF
+    -DCMAKE_BUILD_TYPE=Release
+
+jobs:
+  build:
+    name: build-windows-${{ inputs.arch }}
+    # ARM Windows runners are flaky — ldd subprocesses periodically
+    # hang indefinitely (likely xtajit64 emulation deadlocks). Cap
+    # the whole job so a stuck runner fails in an hour instead of
+    # eating GitHub's 6h default and forcing a manual restart.
+    timeout-minutes: 60
+    runs-on: ${{ inputs.arch == 'arm64' && 'windows-11-arm' || 'windows-2022' }}
+    defaults:
+      run:
+        shell: 'msys2 {0}'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ inputs.arch == 'arm64' && 'CLANGARM64' || 'UCRT64' }}
+          path-type: inherit
+          # NOTE: deliberately no `update: true`. That flag runs
+          # `pacman -Syuu` which pulls whatever's newest off the
+          # mirrors, shifting installed package versions on nearly
+          # every run. setup-msys2 keys its cache on installed
+          # package state, so `update: true` invalidates the cache
+          # almost every time — defeating the point. Without it,
+          # we install whatever versions the base MSYS2 image ships
+          # with, and the cache actually sticks across runs.
+          # Restore MSYS2 install state between runs — first run
+          # still pays the big download (~6 GB for UCRT64 x86_64,
+          # ~9 GB for CLANGARM64 — most of it ffmpeg's codec tree +
+          # the toolchain). Retries hit cache and finish in seconds.
+          cache: true
+          install: >-
+            zip
+            mingw-w64-${{ inputs.arch == 'arm64' && 'clang-aarch64' || 'ucrt-x86_64' }}-cmake
+            mingw-w64-${{ inputs.arch == 'arm64' && 'clang-aarch64' || 'ucrt-x86_64' }}-ninja
+            mingw-w64-${{ inputs.arch == 'arm64' && 'clang-aarch64' || 'ucrt-x86_64' }}-toolchain
+            mingw-w64-${{ inputs.arch == 'arm64' && 'clang-aarch64' || 'ucrt-x86_64' }}-ffmpeg
+            mingw-w64-${{ inputs.arch == 'arm64' && 'clang-aarch64' || 'ucrt-x86_64' }}-libdeflate
+            mingw-w64-${{ inputs.arch == 'arm64' && 'clang-aarch64' || 'ucrt-x86_64' }}-libunistring
+            mingw-w64-${{ inputs.arch == 'arm64' && 'clang-aarch64' || 'ucrt-x86_64' }}-ncurses
+            mingw-w64-${{ inputs.arch == 'arm64' && 'clang-aarch64' || 'ucrt-x86_64' }}-pkgconf
+
+      - name: Configure + build notcurses
+        run: |
+          set -euxo pipefail
+          cd vendor/notcurses
+          mkdir -p build
+          cmake -B build -S . -G Ninja $CMAKE_FLAGS
+
+          # Fail loudly if cmake silently downgraded USE_MULTIMEDIA=ffmpeg
+          # to none — that'd produce a stripped notcurses with no image
+          # support, defeating half the point of shipping it.
+          if ! grep -q 'USE_MULTIMEDIA:STRING=ffmpeg' build/CMakeCache.txt; then
+            echo "❌ USE_MULTIMEDIA did not land as 'ffmpeg' in CMakeCache."
+            echo "--- relevant cache entries ---"
+            grep -E '(USE_MULTIMEDIA|FFMPEG|AVCODEC)' build/CMakeCache.txt || true
+            exit 1
+          fi
+
+          ninja -C build
+
+      - name: Bundle + sweep sibling DLLs
+        uses: ./.github/actions/bundle-dll
+
+      # Compile the perf shim into the bundle so users installing the
+      # prebuilt archive don't need a C toolchain to get the fast path.
+      # Windows is different from macOS/Linux: MinGW (and MSVC) require
+      # every symbol resolved at link time — no equivalent of macOS's
+      # -undefined dynamic_lookup or GNU ld's --unresolved-symbols.
+      # We link against vendor/notcurses/build's libnotcurses-core.dll.a
+      # import lib instead. At runtime the shim's import table resolves
+      # to the libnotcurses-core.dll sibling in the same archive
+      # directory (Windows DLL search order finds same-dir DLLs first).
+      - name: Compile perf shim
+        run: |
+          set -euxo pipefail
+          import_lib=$(find vendor/notcurses/build \
+                         -name 'libnotcurses-core.dll.a' -type f | head -1)
+          if [[ -z "$import_lib" ]]; then
+            echo "❌ Couldn't find libnotcurses-core.dll.a import lib"
+            find vendor/notcurses/build -name '*.dll.a' -type f
+            exit 1
+          fi
+          cc -O2 -shared \
+            -I vendor/notcurses/include \
+            -o bundle/libnotcurses_native_shim.dll \
+            src/notcurses_native_shim.c \
+            "$import_lib"
+          # No `strip` on the shim — matches Vips-Native's Windows
+          # pattern. `strip --strip-unneeded` removes PE's COFF
+          # symbol table; `nm -g` reads from there too, not from
+          # the export directory, so a stripped DLL reports "no
+          # symbols" even though the exports are still in the
+          # export directory and the DLL is fully functional. The
+          # shim is a few KB so stripping saves nothing meaningful.
+          echo "--- shim symbols ---"
+          # Use `nm -g --defined-only` like Vips-Native does — its
+          # output format is stable across MinGW/UCRT/CLANGARM64
+          # toolchains (every entry is "<addr> T <symbol>" for
+          # defined exported text symbols). The previous objdump
+          # -p check parsed the export-table-name table format,
+          # which differs across binutils versions and silently
+          # failed to match even when the export was present.
+          nm -g --defined-only bundle/libnotcurses_native_shim.dll \
+            | grep -E 'T (_)?notcurses_native_' \
+            || { echo "❌ shim DLL missing notcurses_native_* exports"; \
+                 exit 1; }
+
+      - name: Package + upload
+        uses: ./.github/actions/package-and-upload
+        with:
+          artifact-name: ${{ inputs.artifact-name }}
+          format: zip
+          shell: 'msys2 {0}'

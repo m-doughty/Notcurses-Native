@@ -6,61 +6,93 @@ use Test;
 # symbol is in scope for the rest of the file.
 BEGIN EVALFILE $*PROGRAM.parent.parent.child('Build.rakumod').absolute;
 
-# Regression test for the 0.3.2 install bug: untyped %PLATFORM-SLUGS
-# returned `Any` (not `Str`) for missing keys, which tripped the
-# `--> Str` return-type constraint on `detect-platform` and killed
-# `zef install` with a cryptic "expected Str but got Any" type-check
-# before the source-build fallback could fire.
+# Regression tests for the platform-detection layer in Build.rakumod.
 #
-# The headline case that surfaced this: Raku running under Rosetta on
-# Apple Silicon reports $*KERNEL.hardware = 'x86_64', so the lookup
-# key becomes 'darwin-x86_64' — deliberately not in %PLATFORM-SLUGS
-# (Intel/Rosetta Macs are designed to take the CMake source-build
-# path), but the untyped-hash bug meant they crashed instead.
+# History:
+#   * 0.3.3 fixed the original "untyped %PLATFORM-SLUGS returns Any"
+#     bug that killed install on platforms not in the map (headline
+#     case: Rosetta'd Rakudo on M1 → key 'darwin-x86_64' unmapped).
+#   * 0.3.4 added 'darwin-x86_64' (Intel Mac / Hackintosh prebuilt),
+#     dropped $MIN-GLIBC to 2.17 (manylinux2014 baseline), introduced
+#     the libc axis on Linux keys (linux-<arch>-<libc>), added
+#     `detect-libc` probing `/lib/ld-musl-*.so.1`, and fixed the
+#     silent-musl bug (was downloading glibc artefact and segfaulting
+#     at first dlopen; now routes to the musl slug).
+#
+# Tests pass :os / :hardware / :libc explicitly so they don't depend
+# on the host machine the test happens to run on. detect-libc's
+# filesystem probe is exercised by the CI verify jobs running inside
+# real Linux containers — testing the probe itself here would require
+# faking the filesystem, which isn't worth the complexity.
 
 my $b = Build.new;
 
-# Mapped platforms return the slug.
-is $b.detect-platform(:os<darwin>,  :hardware<arm64>),
+# --- macOS ---------------------------------------------------------
+is $b.detect-platform(:os<darwin>, :hardware<arm64>),
     'macos-arm64',
     'darwin/arm64 maps';
-is $b.detect-platform(:os<linux>,   :hardware<x86_64>),
-    'linux-x86_64-glibc',
-    'linux/x86_64 maps';
-is $b.detect-platform(:os<linux>,   :hardware<aarch64>),
-    'linux-aarch64-glibc',
-    'linux/aarch64 maps';
-is $b.detect-platform(:os<win32>,   :hardware<x86_64>),
-    'windows-x86_64',
-    'win32/x86_64 maps';
-is $b.detect-platform(:os<win32>,   :hardware<aarch64>),
-    'windows-arm64',
-    'win32/aarch64 maps';
-is $b.detect-platform(:os<mswin32>, :hardware<x86_64>),
-    'windows-x86_64',
-    'mswin32/x86_64 maps';
-is $b.detect-platform(:os<mswin32>, :hardware<aarch64>),
-    'windows-arm64',
-    'mswin32/aarch64 maps';
+is $b.detect-platform(:os<darwin>, :hardware<x86_64>),
+    'macos-x86_64',
+    'darwin/x86_64 maps (Intel Mac / Hackintosh / Rosetta\'d Raku on M1)';
 
-# The Rosetta-on-Apple-Silicon case that prompted this fix: must
-# return an undefined Str (not Any) so build()'s `without $plat`
-# fallback fires instead of dying on the return type-check.
-ok $b.detect-platform(:os<darwin>, :hardware<x86_64>) ~~ Str:U,
-    'rosetta-on-Apple-Silicon (darwin/x86_64) returns Str:U for source-build fallback';
+# --- Linux (libc axis) ---------------------------------------------
+is $b.detect-platform(:os<linux>, :hardware<x86_64>,  :libc<glibc>),
+    'linux-x86_64-glibc',
+    'linux/x86_64/glibc maps';
+is $b.detect-platform(:os<linux>, :hardware<x86_64>,  :libc<musl>),
+    'linux-x86_64-musl',
+    'linux/x86_64/musl maps (was the silent-bug case in 0.3.3)';
+is $b.detect-platform(:os<linux>, :hardware<aarch64>, :libc<glibc>),
+    'linux-aarch64-glibc',
+    'linux/aarch64/glibc maps';
+is $b.detect-platform(:os<linux>, :hardware<aarch64>, :libc<musl>),
+    'linux-aarch64-musl',
+    'linux/aarch64/musl maps';
+
+# Linux with neither libc detected (e.g. uclibc, statically-linked
+# busybox systems) → Str:U so build() falls through to source build.
+ok $b.detect-platform(:os<linux>, :hardware<x86_64>, :libc(Str)) ~~ Str:U,
+    'linux/x86_64/no-libc returns Str:U for source-build fallback';
+
+# --- Windows -------------------------------------------------------
+is $b.detect-platform(:os<win32>,   :hardware<x86_64>),
+    'windows-x86_64',  'win32/x86_64 maps';
+is $b.detect-platform(:os<win32>,   :hardware<aarch64>),
+    'windows-arm64',   'win32/aarch64 maps';
+is $b.detect-platform(:os<mswin32>, :hardware<x86_64>),
+    'windows-x86_64',  'mswin32/x86_64 maps';
+is $b.detect-platform(:os<mswin32>, :hardware<aarch64>),
+    'windows-arm64',   'mswin32/aarch64 maps';
+
+# --- Unknown-platform fallback -------------------------------------
 ok $b.detect-platform(:os<freebsd>, :hardware<riscv64>) ~~ Str:U,
     'fully unknown platform (freebsd/riscv64) returns Str:U';
 
-# detect-platform-key reflects exactly what was looked up — the
-# unknown-platform diagnostic quotes this verbatim.
+# --- detect-platform-key shape -------------------------------------
+is $b.detect-platform-key(:os<darwin>, :hardware<arm64>),
+    'darwin-arm64',
+    'detect-platform-key omits libc axis for non-Linux';
 is $b.detect-platform-key(:os<darwin>, :hardware<x86_64>),
     'darwin-x86_64',
-    'detect-platform-key returns the actual lookup string';
+    'detect-platform-key returns the actual lookup string (darwin x86_64)';
+is $b.detect-platform-key(:os<linux>, :hardware<x86_64>, :libc<musl>),
+    'linux-x86_64-musl',
+    'detect-platform-key includes libc axis for Linux';
+is $b.detect-platform-key(:os<linux>, :hardware<x86_64>, :libc<glibc>),
+    'linux-x86_64-glibc',
+    'detect-platform-key with glibc';
 
-# known-platform-keys covers the documented slug map.
+# --- detect-libc on non-Linux always returns Str:U -----------------
+ok $b.detect-libc(:os<darwin>)  ~~ Str:U, 'detect-libc returns Str:U on darwin';
+ok $b.detect-libc(:os<win32>)   ~~ Str:U, 'detect-libc returns Str:U on win32';
+ok $b.detect-libc(:os<mswin32>) ~~ Str:U, 'detect-libc returns Str:U on mswin32';
+ok $b.detect-libc(:os<freebsd>) ~~ Str:U, 'detect-libc returns Str:U on freebsd';
+
+# --- known-platform-keys covers the documented slug map ------------
 is-deeply $b.known-platform-keys.Set,
-    <darwin-arm64
-     linux-x86_64 linux-aarch64
+    <darwin-arm64 darwin-x86_64
+     linux-x86_64-glibc linux-x86_64-musl
+     linux-aarch64-glibc linux-aarch64-musl
      win32-x86_64 win32-aarch64
      mswin32-x86_64 mswin32-aarch64>.Set,
     'known-platform-keys matches the documented slug map';

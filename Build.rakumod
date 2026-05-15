@@ -42,12 +42,23 @@
 #|                                         dir instead of the staged
 #|                                         data dir
 #|
-#| Linux prebuilts are built on ubuntu-22.04 (glibc 2.35 — see the
-#| $MIN-GLIBC constant). On systems with older glibc (Ubuntu 20.04 /
-#| Debian 11 / RHEL 8 / etc.) the prebuilt libnotcurses / ffmpeg libs
-#| load but die at first symbol use with "GLIBC_2.xx not found".
-#| Build detects this via `ldd --version` and short-circuits to the
-#| CMake source build before the download even happens.
+#| Linux prebuilts:
+#|
+#|   * glibc lanes are built in manylinux2014 containers
+#|     (`quay.io/pypa/manylinux2014_{x86_64,aarch64}`, RHEL 7-era,
+#|     glibc 2.17 floor — see the $MIN-GLIBC constant). On systems
+#|     with older glibc the prebuilt libnotcurses / ffmpeg libs
+#|     load but die at first symbol use with "GLIBC_2.xx not found".
+#|     Build detects this via `ldd --version` and short-circuits to
+#|     the CMake source build before the download even happens.
+#|     glibc 2.17 covers basically every Linux distro shipping in
+#|     2026 — RHEL 7+, Ubuntu 14.04+, Debian 8+, etc.
+#|
+#|   * musl lanes are built in `alpine:3.20` containers (musl 1.2.5
+#|     headers; practical runtime floor musl 1.20 per notcurses'
+#|     declared support level, which Alpine 3.13+ satisfies). musl
+#|     vs glibc is selected by the slug-map key — `!detect-libc`
+#|     probes for `/lib/ld-musl-*.so.1` on disk.
 
 class Build {
 
@@ -57,30 +68,48 @@ class Build {
         'https://github.com/m-doughty/Notcurses-Native/releases/download';
 
     # Minimum glibc the prebuilt Linux archives are compatible with.
-    # The CI workflow builds on ubuntu-22.04 (glibc 2.35); libnotcurses
-    # + the sibling ffmpeg dylibs reference GLIBC_2.3x versioned
-    # symbols so loading on older systems fails with "GLIBC_2.xx not
-    # found". Bump in lockstep with the CI runner OS.
-    constant $MIN-GLIBC = v2.35;
+    # The CI workflow builds inside manylinux2014 containers (RHEL 7
+    # baseline, glibc 2.17); libnotcurses + sibling ffmpeg dylibs only
+    # reference GLIBC_2.17-or-older versioned symbols, so they load on
+    # any glibc Linux distro shipping in 2026 (RHEL 7+, Ubuntu 14.04+,
+    # Debian 8+, etc.). Bump in lockstep with the manylinux baseline
+    # if we ever rebase onto manylinux_2_28 / manylinux_2_34.
+    constant $MIN-GLIBC = v2.17;
 
-    # Map (OS, hardware) → platform slug used in release artefact
-    # filenames + cache paths. macOS ships as arm64-only for v1 —
-    # cross-compiling universal ffmpeg on an arm64-only runner fleet
-    # is substantially more CI work than the other platforms. Intel
-    # Macs (and x86_64 Rakudo running under Rosetta on Apple Silicon,
-    # which reports `$*KERNEL.hardware = "x86_64"`) fall through to
-    # the source-build branch in build() — deliberately unmapped here.
+    # Map (platform key) → platform slug used in release artefact
+    # filenames + cache paths.
+    #
+    # Key shape:
+    #   * non-Linux: "<os>-<hardware>"           (e.g. "darwin-arm64")
+    #   * Linux:     "<os>-<hardware>-<libc>"    (e.g. "linux-x86_64-musl")
+    # `!detect-libc` only inspects the libc on Linux; everywhere else
+    # the key is just `os-hardware`.
+    #
+    # macOS x86_64 is built on an arm64 GHA runner under Rosetta 2
+    # (GitHub's `macos-13` native-x86_64 runner is deprecated and
+    # arm64-with-Rosetta is the long-lived option); clang under
+    # Rosetta emits ordinary x86_64 Mach-O that runs natively on real
+    # Intel Macs and Hackintoshes. macOS x86_64 deployment target is
+    # pinned at 10.15 (Catalina) so the artefact loads on every Intel
+    # Mac Apple supports back to ~2012 hardware.
+    #
+    # Linux glibc lanes use manylinux2014 (glibc 2.17 floor); musl
+    # lanes use alpine:3.20 (musl 1.2.5 headers, 1.20+ runtime floor).
     # Typed `Str` so missing-key lookups return the Str type object
     # (not Any), which satisfies `detect-platform`'s `--> Str` return
-    # constraint and lets `without $plat { ... }` fire.
+    # constraint and lets `without $plat { ... }` fire for any
+    # genuinely-novel platform combo we don't ship binaries for.
     my Str %PLATFORM-SLUGS =
-        'darwin-arm64'    => 'macos-arm64',
-        'linux-x86_64'    => 'linux-x86_64-glibc',
-        'linux-aarch64'   => 'linux-aarch64-glibc',
-        'win32-x86_64'    => 'windows-x86_64',
-        'win32-aarch64'   => 'windows-arm64',
-        'mswin32-x86_64'  => 'windows-x86_64',
-        'mswin32-aarch64' => 'windows-arm64',
+        'darwin-arm64'          => 'macos-arm64',
+        'darwin-x86_64'         => 'macos-x86_64',
+        'linux-x86_64-glibc'    => 'linux-x86_64-glibc',
+        'linux-x86_64-musl'     => 'linux-x86_64-musl',
+        'linux-aarch64-glibc'   => 'linux-aarch64-glibc',
+        'linux-aarch64-musl'    => 'linux-aarch64-musl',
+        'win32-x86_64'          => 'windows-x86_64',
+        'win32-aarch64'         => 'windows-arm64',
+        'mswin32-x86_64'        => 'windows-x86_64',
+        'mswin32-aarch64'       => 'windows-arm64',
     ;
 
     # --- Entry point ----------------------------------------------------
@@ -105,16 +134,15 @@ class Build {
         without $plat {
             my Str $tried = self.detect-platform-key;
             my Str $known = self.known-platform-keys.join(', ');
+            my Str $libc = self.detect-libc // 'n/a';
             note qq:to/MSG/;
                 ⚠️  Notcurses::Native has no prebuilt binary for this platform.
                     Tried lookup key: '$tried'
                         (\$*KERNEL.name='{$*KERNEL.name}',
-                         \$*KERNEL.hardware='{$*KERNEL.hardware}')
+                         \$*KERNEL.hardware='{$*KERNEL.hardware}',
+                         libc='$libc')
                     Known platforms:  $known
                     Falling back to building notcurses from source via CMake.
-                    (If this is an Apple Silicon Mac reporting 'x86_64', your
-                     Rakudo is likely running under Rosetta — install a native
-                     arm64 Rakudo to use the prebuilt binaries.)
                 MSG
             self!compile-from-source($dist-path, $stage);
             self!try-compile-shim($dist-path, $stage);
@@ -645,35 +673,64 @@ class Build {
     # --- Shared helpers -------------------------------------------------
 
     #| Look up the prebuilt-archive slug for the current platform. Returns
-    #| the slug string when (os, hardware) is in %PLATFORM-SLUGS, otherwise
-    #| an undefined `Str` type object (NOT `Any`) so callers can use
+    #| the slug string when the key is in %PLATFORM-SLUGS, otherwise an
+    #| undefined `Str` type object (NOT `Any`) so callers can use
     #| `without $plat { ... }` to fall through to the source build.
     #|
-    #| `:os` / `:hardware` default to `$*KERNEL.name.lc` / `$*KERNEL.hardware.lc`
-    #| so production callers pass nothing; tests inject pairs directly to
-    #| avoid having to override `$*KERNEL`.
+    #| `:os` / `:hardware` / `:libc` default to live system probes
+    #| (`$*KERNEL.name.lc`, `$*KERNEL.hardware.lc`, `detect-libc`) so
+    #| production callers pass nothing; tests inject pairs directly to
+    #| avoid having to override `$*KERNEL` or touch the filesystem.
     method detect-platform(
         Str :$os       = $*KERNEL.name.lc,
         Str :$hardware = $*KERNEL.hardware.lc,
+        Str :$libc     = self.detect-libc(:$os),
         --> Str
     ) {
-        %PLATFORM-SLUGS{"$os-$hardware"} // Str
+        %PLATFORM-SLUGS{self.detect-platform-key(:$os, :$hardware, :$libc)} // Str
     }
 
     #| The exact key `detect-platform` looked up — surfaced so the
     #| unknown-platform diagnostic can quote it verbatim.
+    #|
+    #| Linux keys carry a libc suffix (`linux-x86_64-glibc`,
+    #| `linux-aarch64-musl`, etc.); non-Linux keys are just
+    #| `os-hardware` because there's no libc axis to disambiguate.
     method detect-platform-key(
         Str :$os       = $*KERNEL.name.lc,
         Str :$hardware = $*KERNEL.hardware.lc,
+        Str :$libc     = self.detect-libc(:$os),
         --> Str
     ) {
-        "$os-$hardware"
+        $libc ?? "$os-$hardware-$libc" !! "$os-$hardware"
     }
 
     #| Sorted list of all keys in %PLATFORM-SLUGS, so the unknown-platform
     #| diagnostic can show the user which platforms ARE supported.
     method known-platform-keys(--> List) {
         %PLATFORM-SLUGS.keys.sort.List
+    }
+
+    #| Detect the system C library on Linux. Probe order:
+    #|   1. musl loader presence — unambiguous if a `ld-musl-*.so.1`
+    #|      file is on disk under `/lib` or `/usr/lib`.
+    #|   2. glibc via `!detect-glibc-version`.
+    #|
+    #| Returns Str (undefined) for non-Linux OSes — callers strip the
+    #| libc axis from the platform key on those. Also returns Str for
+    #| Linux systems with neither glibc nor musl loaders visible (e.g.
+    #| uclibc, statically-linked busybox systems), which the slug-map
+    #| won't have a key for, so they fall through to source build.
+    method detect-libc(Str :$os = $*KERNEL.name.lc --> Str) {
+        return Str unless $os eq 'linux';
+        for </lib /usr/lib> -> Str $d {
+            next unless $d.IO.d;
+            return 'musl' if try {
+                $d.IO.dir.first(*.basename.starts-with('ld-musl-'))
+            };
+        }
+        return 'glibc' if self!detect-glibc-version.defined;
+        Str
     }
 
     #| Parse `ldd --version` for the system's glibc version. Returns a

@@ -1,0 +1,100 @@
+# Reusable workflow: collect every uploaded artefact from the
+# parallel build lanes, assemble a single `checksums.txt`, validate
+# that the pushed tag (if any) matches BINARY_TAG, and publish to a
+# GitHub release.
+#
+# Pure port of the original build-binaries.yml `release` job — no
+# behaviour change. Extracted into a reusable workflow so the
+# top-level release.yml stays focused on orchestration.
+
+name: _release-publish
+
+on:
+  workflow_call:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/binaries-') || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download all artefacts
+        uses: actions/download-artifact@v7
+        with:
+          path: downloaded/
+
+      - name: Flatten + generate combined checksums.txt + resolve tag
+        id: prep
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p release
+          find downloaded -type f \( -name 'notcurses-*.tar.gz' \
+                                 -o -name 'notcurses-*.zip'   \) \
+            -exec cp {} release/ \;
+
+          cd release
+          sha256sum * | sort > ../checksums.txt
+          cd ..
+          echo "--- checksums.txt ---"
+          cat checksums.txt
+
+          file_tag=$(cat BINARY_TAG | tr -d '[:space:]')
+          if [[ -z "$file_tag" ]]; then
+            echo "❌ BINARY_TAG empty / missing."
+            exit 1
+          fi
+
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            pushed=${GITHUB_REF#refs/tags/}
+            if [[ "$pushed" != "$file_tag" ]]; then
+              echo "❌ Pushed tag '$pushed' doesn't match BINARY_TAG '$file_tag'."
+              exit 1
+            fi
+          fi
+
+          echo "tag=$file_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Create / update GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.prep.outputs.tag }}
+          name: ${{ steps.prep.outputs.tag }}
+          files: |
+            release/*
+            checksums.txt
+          body: |
+            Prebuilt notcurses binaries for `${{ steps.prep.outputs.tag }}`.
+
+            Each archive contains `libnotcurses`, `libnotcurses-core`,
+            `libnotcurses-ffi`, plus ffmpeg sibling dylibs/sos/DLLs
+            that notcurses dyn-links — all with rpaths relocated so
+            they load siblings from the archive's own directory.
+
+            Linux glibc archives are built in `quay.io/pypa/manylinux2014_*`
+            containers (glibc 2.17 floor — RHEL 7+, Ubuntu 14.04+,
+            Debian 8+).
+            Linux musl archives are built in `alpine:3.20` containers
+            (musl 1.2.5 build, 1.20+ runtime — Alpine 3.13+, Postmarket
+            OS, Void, Adelie).
+            macOS arm64 targets macOS 11.0 (Big Sur).
+            macOS x86_64 targets macOS 10.15 (Catalina) and is built
+            under Rosetta 2 on an arm64 GHA runner.
+
+            ## Verifying
+
+            ```
+            sha256sum -c checksums.txt
+            ```
+
+            ## After release
+
+            Copy `checksums.txt` contents into `resources/checksums.txt`
+            in the source tree + commit, then publish the next Raku
+            dist version.
+          draft: false
+          prerelease: false
