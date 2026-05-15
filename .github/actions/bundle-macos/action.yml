@@ -20,12 +20,25 @@ inputs:
       skip the audit (arm64 lane stays on 11.0 implicitly).
     required: false
     default: ''
+  extra-search-path:
+    description: >-
+      Additional `-s` search path for dylibbundler. The x86_64 lane
+      source-builds ffmpeg / ncurses / libunistring / libdeflate into
+      a workspace cache dir (so the bundle can target macOS 10.15 —
+      brew x86_64 bottles target 14+); dylibbundler needs to be told
+      where to find those .dylibs in addition to vendor/notcurses/build.
+      Empty default = arm64 lane uses brew bottles via the system
+      paths dylibbundler already knows.
+    required: false
+    default: ''
 
 runs:
   using: composite
   steps:
     - name: Stage + relocate libs (dylibbundler + symlinks + codesign)
       shell: bash
+      env:
+        EXTRA_SEARCH_PATH: ${{ inputs.extra-search-path }}
       run: |
         set -euxo pipefail
         mkdir -p bundle
@@ -54,11 +67,23 @@ runs:
         # (a symlink in build/) and copy the real file into bundle/.
         # Both notcurses entry-points share the same ffmpeg tree, so
         # the second invocation mostly skips already-bundled deps.
+        #
+        # EXTRA_SEARCH_PATH (when set, x86_64 lane only): the lib dir
+        # of our workspace cache, where source-built ffmpeg / ncurses
+        # / libunistring / libdeflate live. dylibbundler walks @rpath
+        # / @loader_path references to find their target files; the
+        # source-built libs have @rpath references baked in by their
+        # configure scripts, so dylibbundler needs an explicit -s
+        # entry pointing at the install lib dir to resolve them.
+        bundler_paths=( -s vendor/notcurses/build )
+        if [[ -n "${EXTRA_SEARCH_PATH:-}" ]]; then
+            bundler_paths+=( -s "$EXTRA_SEARCH_PATH" )
+        fi
         for lib in libnotcurses libnotcurses-ffi; do
           real_in_bundle=$(ls bundle/${lib}.*.*.dylib | head -1)
           dylibbundler -of -b -ns \
             -x "$real_in_bundle" \
-            -s vendor/notcurses/build \
+            "${bundler_paths[@]}" \
             -d bundle/ \
             -p '@loader_path/'
         done

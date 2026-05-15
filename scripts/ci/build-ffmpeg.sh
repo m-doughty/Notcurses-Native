@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Build + install ffmpeg inside a manylinux2014 container.
-# RHEL 7's repos don't ship ffmpeg; notcurses' multimedia path
-# (image rendering — Selkie/Cantina avatars depend on this) requires
-# libavformat + libavcodec + libavutil + libswscale + libswresample.
+# Build + install ffmpeg. Two callers:
+#   * Linux manylinux_2_28 container (RHEL 8 baseline) — RHEL 8's
+#     repos don't ship ffmpeg, source-build is required.
+#   * macOS x86_64 Rosetta build — brew bottles target macOS 14+,
+#     which fails our 10.15 deployment-target floor, so we
+#     source-build with MACOSX_DEPLOYMENT_TARGET=10.15 in env. clang
+#     reads $MACOSX_DEPLOYMENT_TARGET and stamps LC_BUILD_VERSION
+#     minos on every produced dylib.
 #
 # Config is intentionally minimal: shared libs, no executables, no
 # devices, only the codecs notcurses might encounter when decoding
@@ -10,8 +14,8 @@
 # size (full ffmpeg adds ~80 MB; this targets ~25 MB).
 #
 # Honours $PREFIX (default /usr/local) so the install can target a
-# workspace-relative cache dir bind-mounted into the container —
-# letting actions/cache persist the build between runs.
+# workspace-relative cache dir, letting actions/cache persist the
+# build between runs.
 set -euxo pipefail
 
 VERSION='6.1.2'
@@ -19,17 +23,35 @@ URL="https://ffmpeg.org/releases/ffmpeg-${VERSION}.tar.xz"
 PREFIX="${PREFIX:-/usr/local}"
 mkdir -p "$PREFIX"
 
-# Need nasm for x86 SIMD; not available in manylinux2014 base.
-# Build from source (~1 min, cheap relative to ffmpeg itself).
-yum install -y --setopt=tsflags=nodocs yasm nasm zlib-devel bzip2-devel xz-devel || {
-    # nasm sometimes isn't in the default repos; build from source.
-    cd /tmp
-    NASM_V='2.16.03'
-    curl -fSL -o nasm.tar.xz "https://www.nasm.us/pub/nasm/releasebuilds/${NASM_V}/nasm-${NASM_V}.tar.xz"
-    tar -xJf nasm.tar.xz
-    (cd "nasm-${NASM_V}" && ./configure --prefix=/usr/local && make -j"$(nproc)" && make install)
-    rm -rf "/tmp/nasm-${NASM_V}" /tmp/nasm.tar.xz
-}
+# Portable parallelism: GNU nproc on Linux, sysctl on macOS.
+JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+
+# nasm is needed for x86 SIMD. Available paths:
+#   * Linux manylinux_2_28: yum (dnf) — try first, fall back to
+#     building from source if EPEL is unavailable.
+#   * macOS: assume caller pre-installed nasm via x86_64 brew (the
+#     workflow does this in its "Install build tools" step). Bail
+#     out loudly if it isn't on PATH.
+if ! command -v nasm >/dev/null 2>&1; then
+    if command -v yum >/dev/null 2>&1; then
+        yum install -y --setopt=tsflags=nodocs yasm nasm zlib-devel bzip2-devel xz-devel || {
+            # EPEL nasm sometimes isn't reachable; build from source.
+            NASM_V='2.16.03'
+            curl -fSL -o /tmp/nasm.tar.xz \
+                "https://www.nasm.us/pub/nasm/releasebuilds/${NASM_V}/nasm-${NASM_V}.tar.xz"
+            (cd /tmp && tar -xJf nasm.tar.xz \
+                && cd "nasm-${NASM_V}" \
+                && ./configure --prefix=/usr/local \
+                && make -j"$JOBS" \
+                && make install)
+            rm -rf "/tmp/nasm-${NASM_V}" /tmp/nasm.tar.xz
+        }
+    else
+        echo "❌ nasm not on PATH and no yum/dnf available." >&2
+        echo "   On macOS, install via x86_64 brew: arch -x86_64 /usr/local/bin/brew install nasm" >&2
+        exit 1
+    fi
+fi
 
 cd /tmp
 curl -fSL -o ffmpeg.tar.xz "$URL"
@@ -71,13 +93,14 @@ cd "ffmpeg-${VERSION}"
     --enable-demuxer=image2,mjpeg,gif,mov,matroska,mp3,wav,ogg,flac,aac \
     --enable-parser=png,mjpeg,h264,hevc,vp8,vp9,av1,mpegaudio,aac \
     --enable-protocol=file,pipe,data
-make -j"$(nproc)"
+make -j"$JOBS"
 make install
 
-# ldconfig only matters when PREFIX=/usr/local (the linker's default
-# search path). For workspace-prefix installs, the caller is
-# expected to set LD_LIBRARY_PATH + PKG_CONFIG_PATH to find these.
-if [[ "$PREFIX" == "/usr/local" ]]; then
+# ldconfig only matters on Linux when PREFIX=/usr/local (the linker's
+# default search path). For workspace-prefix installs OR macOS,
+# the caller is expected to set LD_LIBRARY_PATH / DYLD_LIBRARY_PATH /
+# PKG_CONFIG_PATH to find these.
+if [[ "$PREFIX" == "/usr/local" ]] && command -v ldconfig >/dev/null 2>&1; then
     ldconfig
 fi
 PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \

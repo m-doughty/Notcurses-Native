@@ -44,15 +44,18 @@
 #|
 #| Linux prebuilts:
 #|
-#|   * glibc lanes are built in manylinux2014 containers
-#|     (`quay.io/pypa/manylinux2014_{x86_64,aarch64}`, RHEL 7-era,
-#|     glibc 2.17 floor — see the $MIN-GLIBC constant). On systems
+#|   * glibc lanes are built in manylinux_2_28 containers
+#|     (`quay.io/pypa/manylinux_2_28_{x86_64,aarch64}`, RHEL 8-era,
+#|     glibc 2.28 floor — see the $MIN-GLIBC constant). On systems
 #|     with older glibc the prebuilt libnotcurses / ffmpeg libs
 #|     load but die at first symbol use with "GLIBC_2.xx not found".
 #|     Build detects this via `ldd --version` and short-circuits to
 #|     the CMake source build before the download even happens.
-#|     glibc 2.17 covers basically every Linux distro shipping in
-#|     2026 — RHEL 7+, Ubuntu 14.04+, Debian 8+, etc.
+#|     glibc 2.28 covers every glibc distro under active maintenance
+#|     in 2026 — RHEL 8+ / Ubuntu 18.10+ / Debian 10+. (manylinux2014
+#|     / RHEL 7 / glibc 2.17 was retired by pypa in March 2025 and
+#|     its CentOS 7 yum mirrors are decaying after the June 2024
+#|     CentOS 7 EOL, so we're on the actively-maintained successor.)
 #|
 #|   * musl lanes are built in `alpine:3.20` containers (musl 1.2.5
 #|     headers; practical runtime floor musl 1.20 per notcurses'
@@ -68,13 +71,14 @@ class Build {
         'https://github.com/m-doughty/Notcurses-Native/releases/download';
 
     # Minimum glibc the prebuilt Linux archives are compatible with.
-    # The CI workflow builds inside manylinux2014 containers (RHEL 7
-    # baseline, glibc 2.17); libnotcurses + sibling ffmpeg dylibs only
-    # reference GLIBC_2.17-or-older versioned symbols, so they load on
-    # any glibc Linux distro shipping in 2026 (RHEL 7+, Ubuntu 14.04+,
-    # Debian 8+, etc.). Bump in lockstep with the manylinux baseline
-    # if we ever rebase onto manylinux_2_28 / manylinux_2_34.
-    constant $MIN-GLIBC = v2.17;
+    # The CI workflow builds inside manylinux_2_28 containers (RHEL 8
+    # baseline, glibc 2.28); libnotcurses + sibling ffmpeg dylibs only
+    # reference GLIBC_2.28-or-older versioned symbols, so they load
+    # on every glibc Linux distro under active maintenance in 2026
+    # (RHEL 8+ / Ubuntu 18.10+ / Debian 10+). Bump in lockstep with
+    # the manylinux baseline if we ever rebase onto manylinux_2_34
+    # (RHEL 9, glibc 2.34).
+    constant $MIN-GLIBC = v2.28;
 
     # Map (platform key) → platform slug used in release artefact
     # filenames + cache paths.
@@ -93,8 +97,9 @@ class Build {
     # pinned at 10.15 (Catalina) so the artefact loads on every Intel
     # Mac Apple supports back to ~2012 hardware.
     #
-    # Linux glibc lanes use manylinux2014 (glibc 2.17 floor); musl
-    # lanes use alpine:3.20 (musl 1.2.5 headers, 1.20+ runtime floor).
+    # Linux glibc lanes use manylinux_2_28 (RHEL 8, glibc 2.28 floor);
+    # musl lanes use alpine:3.20 (musl 1.2.5 headers, 1.20+ runtime
+    # floor).
     # Typed `Str` so missing-key lookups return the Str type object
     # (not Any), which satisfies `detect-platform`'s `--> Str` return
     # constraint and lets `without $plat { ... }` fire for any

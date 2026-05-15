@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Build + install ncurses for the macOS x86_64 prebuilt lane.
+# macOS ships ncurses 5.7 in /usr/lib (very old — predates notcurses'
+# terminfo extension usage). Homebrew x86_64 ncurses bottles target
+# macOS 14+ which fails our 10.15 deployment-target floor, so we
+# source-build with MACOSX_DEPLOYMENT_TARGET=10.15 in env.
+#
+# Currently macOS-only. Linux manylinux_2_28 has ncurses-devel in dnf
+# (the build-linux-glibc.sh path installs that directly).
+#
+# Configuration choices:
+#   * --with-shared / --without-static — bundleable .dylibs.
+#   * --enable-widec — wide-char ncurses (libncursesw), required by
+#     notcurses for Unicode handling.
+#   * --enable-pc-files + --with-pkg-config-libdir=$PREFIX/lib/pkgconfig
+#     so cmake's pkg_search_module finds it.
+#   * --with-default-terminfo-dir=/usr/share/terminfo so the shipped
+#     dylib falls back to the user's system terminfo database at
+#     runtime (every Intel Mac has /usr/share/terminfo populated by
+#     macOS itself). We could ship our own terminfo dir but it's
+#     ~5 MB of mostly-redundant data.
+#   * --without-debug / --without-tests / --without-tack — strip
+#     non-essential build outputs.
+set -euxo pipefail
+
+VERSION='6.5'
+URL="https://ftpmirror.gnu.org/ncurses/ncurses-${VERSION}.tar.gz"
+PREFIX="${PREFIX:-/usr/local}"
+mkdir -p "$PREFIX"
+
+JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+
+cd /tmp
+curl -fSL -o ncurses.tar.gz "$URL"
+tar -xzf ncurses.tar.gz
+cd "ncurses-${VERSION}"
+
+./configure \
+    --prefix="$PREFIX" \
+    --with-shared \
+    --without-debug \
+    --without-tests \
+    --without-tack \
+    --without-manpages \
+    --enable-widec \
+    --enable-pc-files \
+    --with-pkg-config-libdir="$PREFIX/lib/pkgconfig" \
+    --with-default-terminfo-dir=/usr/share/terminfo \
+    --without-progs \
+    --without-cxx-binding \
+    --without-ada
+
+make -j"$JOBS"
+make install
+
+PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
+    pkg-config --modversion ncursesw
+
+cd /
+rm -rf "/tmp/ncurses-${VERSION}" /tmp/ncurses.tar.gz

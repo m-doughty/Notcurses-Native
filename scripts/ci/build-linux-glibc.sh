@@ -1,30 +1,39 @@
 #!/usr/bin/env bash
 # Orchestrator: build + bundle the linux-<arch>-glibc prebuilt
-# notcurses archive INSIDE a manylinux2014 container. Runs from
-# `docker run -v $PWD:/work -w /work quay.io/pypa/manylinux2014_<arch> bash scripts/ci/build-linux-glibc.sh`.
+# notcurses archive INSIDE a manylinux_2_28 container. Runs from
+# `docker run -v $PWD:/work -w /work quay.io/pypa/manylinux_2_28_<arch> bash scripts/ci/build-linux-glibc.sh`.
 #
-# Container directive can't be used directly because GHA's Node 24
-# JS-action runtime requires glibc ≥ 2.27/2.28 + libstdc++ from
-# gcc ≥ 5, and manylinux2014 ships glibc 2.17 + libstdc++ from
-# devtoolset-9. So actions/checkout etc. run on the native host
-# (ubuntu-22.04 / -arm) and only the build itself happens here.
+# manylinux_2_28 = RHEL 8 baseline = glibc 2.28. Successor to
+# manylinux2014 (CentOS 7, glibc 2.17) which pypa retired March 2025
+# and whose mirrors decay after the June 2024 CentOS 7 EOL. Floor
+# of 2.28 still covers RHEL 8+ / Ubuntu 18.10+ / Debian 10+ — i.e.
+# every glibc distro under active maintenance in 2026.
 #
-# Cache contract: CACHE_DIR (defaulting to /work/_ci-cache/manylinux2014)
+# Cache contract: CACHE_DIR (defaulting to /work/_ci-cache/manylinux_2_28)
 # may already contain a populated lib/ + include/ from a previous
 # run's actions/cache restore. If so, skip the ~10-min ffmpeg
 # source build. Otherwise build + populate.
 
 set -euxo pipefail
 
-CACHE_DIR="${CACHE_DIR:-/work/_ci-cache/manylinux2014}"
+CACHE_DIR="${CACHE_DIR:-/work/_ci-cache/manylinux_2_28}"
 mkdir -p "$CACHE_DIR"
 
-# manylinux2014 ships gcc/g++/make + python toolchains but cmake is
-# too old (notcurses needs 3.21+). Install cmake3 from EPEL.
-yum install -y --setopt=tsflags=nodocs \
-    cmake3 pkgconfig patchelf \
+# System packages via dnf. RHEL 8 doesn't ship modern ffmpeg or
+# libdeflate (we source-build below); ncurses-devel + libunistring-
+# devel are in the base repos. patchelf + pkgconfig in EPEL 8 which
+# manylinux_2_28 enables.
+dnf install -y --setopt=tsflags=nodocs \
+    pkgconfig patchelf \
     ncurses-devel libunistring-devel
-ln -sf /usr/bin/cmake3 /usr/local/bin/cmake
+
+# cmake via pip — RHEL 8's dnf ships cmake 3.20 and notcurses needs
+# 3.21+. manylinux preinstalls Python at /opt/python/cp*/bin/; the
+# pip cmake wheel is currently ~3.30 and tracks upstream.
+PYBIN=$(ls -d /opt/python/cp3*/bin 2>/dev/null | head -1)
+[[ -n "$PYBIN" ]] || { echo "❌ No /opt/python/cp3*/bin found in manylinux image"; exit 1; }
+"$PYBIN/pip" install --quiet cmake
+ln -sf "$PYBIN/cmake" /usr/local/bin/cmake
 cmake --version
 ldd --version | head -1
 
