@@ -51,7 +51,17 @@ cd "ncurses-${VERSION}"
     --without-ada
 
 make -j"$JOBS"
-make install
+
+# Install ONLY the libs + headers + pkg-config files. Skip
+# `make install`'s default `install.data` target — that runs `tic`
+# to populate $ticdir with terminfo entries, and on macOS that
+# resolves to `/usr/share/terminfo` (per the configure flag above),
+# which is SIP-protected and cannot be written to even by root.
+# We don't need our own terminfo data anyway: every macOS install
+# ships `/usr/share/terminfo` already-populated by Apple, and our
+# bundled libncursesw.dylib reads from there at runtime via the
+# baked-in --with-default-terminfo-dir path.
+make install.libs install.includes
 
 PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
     pkg-config --modversion ncursesw
