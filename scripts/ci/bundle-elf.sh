@@ -139,10 +139,17 @@ while IFS= read -r line; do
     rest="${line#*=> }"
     libpath="${rest% \(*}"
     case "$libname" in
-        libc.so.*|libm.so.*|libpthread.so.*|libdl.so.*|\
+        libc.so.*|libc.musl-*.so.*|\
+        libm.so.*|libpthread.so.*|libdl.so.*|\
         librt.so.*|libstdc++.so.*|libgcc_s.so.*|libresolv.so.*|\
         libnsl.so.*|libutil.so.*|libcrypt.so.*|libcrypto.so.*|\
         libssl.so.*|ld-linux*|ld-musl*|linux-vdso.so.*)
+            # musl's libc is `libc.musl-<arch>.so.1` (and confusingly
+            # ldd reports the same loader at both `libc.musl-<arch>.so.1`
+            # AND `ld-musl-<arch>.so.1` — they're literally the same
+            # binary; the first is libc, the second is the dynamic
+            # loader, and musl ships them as one file via symlink).
+            # Both names are system libs that must stay dynamic.
             continue ;;
     esac
     case "$libpath" in

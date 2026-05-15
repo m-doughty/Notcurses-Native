@@ -60,11 +60,18 @@ if ! ls bundle/libavcodec.* >/dev/null 2>&1 && \
     exit 1
 fi
 
+# Capture workspace root BEFORE we cd into bundle/, so the probe
+# can resolve fixture paths like
+# `$WORKSPACE_DIR/vendor/notcurses/data/chunli44.png` for its
+# decode tests.
+export WORKSPACE_DIR="$PWD"
+
 # Run the probe with bundle/ as CWD and library-search env pointing
 # at "." — combined this makes dlopen resolve libavcodec from the
 # bundle, NOT from any host-installed libavcodec (which could mask
 # the bundled one and produce a false-green probe against the
-# wrong library).
+# wrong library). On Windows, cd'ing into bundle/ also gets bundled
+# DLLs onto LoadLibrary's CWD search path.
 cd bundle
 case "$LIBPATH_VAR" in
     LD_LIBRARY_PATH)   LD_LIBRARY_PATH=".:${LD_LIBRARY_PATH:-}"     "$PROBE_BIN" ;;

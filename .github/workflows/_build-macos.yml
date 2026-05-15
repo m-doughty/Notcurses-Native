@@ -117,14 +117,22 @@ jobs:
             # the produced dylibs stamp minos=10.15 and pass the audit.
             # meson + ninja are needed by libdav1d's build system.
             #
-            # --overwrite: meson depends on python@3.14, whose link
-            # step would otherwise fail because Apple's pre-existing
-            # Python framework symlinks (e.g. /usr/local/bin/idle3 →
-            # /Library/Frameworks/Python.framework/...) already
-            # occupy those paths. --overwrite tells brew to clobber
-            # them. Safe on a CI runner — we don't use Apple's
-            # framework python from any other step.
-            arch -x86_64 /usr/local/bin/brew install --overwrite \
+            # Two-step install:
+            #   1. python@3.14 with --overwrite. meson depends on
+            #      python@3.14, and brew's auto-link step on that
+            #      dep would otherwise fail because the runner ships
+            #      with Apple's Python framework already populating
+            #      /usr/local/bin/{idle3,pip3,python3,...} as
+            #      symlinks into /Library/Frameworks. --overwrite
+            #      tells brew to clobber them — but --overwrite only
+            #      applies to the formula being installed, NOT to
+            #      its auto-installed dependencies. So we must
+            #      install python@3.14 EXPLICITLY first.
+            #   2. The rest of the tools. python@3.14 is now
+            #      already installed, so meson's resolution finds
+            #      it satisfied and proceeds without re-linking.
+            arch -x86_64 /usr/local/bin/brew install --overwrite python@3.14
+            arch -x86_64 /usr/local/bin/brew install \
               cmake pkg-config nasm dylibbundler meson ninja
             echo "BREW_PREFIX=/usr/local" >> "$GITHUB_ENV"
           else
