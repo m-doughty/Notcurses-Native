@@ -72,3 +72,9 @@ nm -g --defined-only bundle/libnotcurses_native_shim.so \
     echo "❌ no notcurses_native_* exports — link silently failed."
     exit 1
   }
+
+# Release gate: confirm bundled libavcodec has the required
+# accelerated decoders (libdav1d, libvpx_vp8, libvpx_vp9, libopus).
+# Alpine's ffmpeg-dev package usually has all of them, but a future
+# apk update could drop a feature; the probe blocks publish if so.
+bash scripts/ci/run-codec-probe.sh

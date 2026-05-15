@@ -26,31 +26,21 @@ mkdir -p "$PREFIX"
 # Portable parallelism: GNU nproc on Linux, sysctl on macOS.
 JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 
-# nasm is needed for x86 SIMD. Available paths:
-#   * Linux manylinux_2_28: yum (dnf) — try first, fall back to
-#     building from source if EPEL is unavailable.
-#   * macOS: assume caller pre-installed nasm via x86_64 brew (the
-#     workflow does this in its "Install build tools" step). Bail
-#     out loudly if it isn't on PATH.
+# nasm is needed for x86 SIMD — caller MUST pre-install it before
+# invoking this script, because the codec libs we now also build
+# (libdav1d, libvpx) need nasm too and the caller orchestrates the
+# order. Concretely:
+#   * manylinux_2_28: build-linux-glibc.sh `dnf install nasm` in
+#     its system-deps step.
+#   * macOS x86_64: _build-macos.yml's "Install build deps" step
+#     runs `arch -x86_64 /usr/local/bin/brew install nasm`.
+# Bail out loudly if anything skipped that step.
 if ! command -v nasm >/dev/null 2>&1; then
-    if command -v yum >/dev/null 2>&1; then
-        yum install -y --setopt=tsflags=nodocs yasm nasm zlib-devel bzip2-devel xz-devel || {
-            # EPEL nasm sometimes isn't reachable; build from source.
-            NASM_V='2.16.03'
-            curl -fSL -o /tmp/nasm.tar.xz \
-                "https://www.nasm.us/pub/nasm/releasebuilds/${NASM_V}/nasm-${NASM_V}.tar.xz"
-            (cd /tmp && tar -xJf nasm.tar.xz \
-                && cd "nasm-${NASM_V}" \
-                && ./configure --prefix=/usr/local \
-                && make -j"$JOBS" \
-                && make install)
-            rm -rf "/tmp/nasm-${NASM_V}" /tmp/nasm.tar.xz
-        }
-    else
-        echo "❌ nasm not on PATH and no yum/dnf available." >&2
-        echo "   On macOS, install via x86_64 brew: arch -x86_64 /usr/local/bin/brew install nasm" >&2
-        exit 1
-    fi
+    echo "❌ nasm not on PATH." >&2
+    echo "   Caller must install nasm before invoking build-ffmpeg.sh:" >&2
+    echo "     * manylinux: dnf install -y nasm" >&2
+    echo "     * macOS: arch -x86_64 /usr/local/bin/brew install nasm" >&2
+    exit 1
 fi
 
 cd /tmp
@@ -69,6 +59,15 @@ cd "ffmpeg-${VERSION}"
 #   --enable-zlib                   → PNG via zlib
 #   --enable-libxml2 omitted        → DASH manifest support unneeded
 #   --enable-pic                    → required for shared lib on x86_64
+# Accelerated codec libs the caller is expected to have already
+# source-built into $PREFIX:
+#   * libdav1d → ~10× faster AV1 decode (the big win).
+#   * libvpx   → VP8/9 decode (marginal win, but matches what
+#                package-managed lanes ship).
+#   * libopus  → Opus audio decode (marginal win, parity).
+# --enable-libfoo enables the libfoo-dispatched codecs; the matching
+# --enable-decoder=libdav1d / libvpx_vp9 / libopus selects the libfoo
+# decoder over the internal one when codec_id matches at runtime.
 ./configure \
     --prefix="$PREFIX" \
     --libdir="$PREFIX/lib" \
@@ -87,9 +86,13 @@ cd "ffmpeg-${VERSION}"
     --enable-swscale \
     --enable-swresample \
     --enable-zlib \
+    --enable-libdav1d \
+    --enable-libvpx \
+    --enable-libopus \
     --enable-decoder=png,mjpeg,jpegls,jpeg2000,bmp,gif,webp,tiff,tga,pcx,pbm,pgm,ppm,pam \
     --enable-decoder=mp3,aac,vorbis,flac,opus,pcm_s16le,pcm_s16be,pcm_u8 \
     --enable-decoder=h264,hevc,vp8,vp9,av1,mpeg4,theora \
+    --enable-decoder=libdav1d,libvpx_vp8,libvpx_vp9,libopus \
     --enable-demuxer=image2,mjpeg,gif,mov,matroska,mp3,wav,ogg,flac,aac \
     --enable-parser=png,mjpeg,h264,hevc,vp8,vp9,av1,mpegaudio,aac \
     --enable-protocol=file,pipe,data

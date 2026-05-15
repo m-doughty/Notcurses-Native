@@ -19,22 +19,33 @@ set -euxo pipefail
 CACHE_DIR="${CACHE_DIR:-/work/_ci-cache/manylinux_2_28}"
 mkdir -p "$CACHE_DIR"
 
-# System packages via dnf. RHEL 8 doesn't ship modern ffmpeg or
-# libdeflate (we source-build below); ncurses-devel + libunistring-
-# devel are in the base repos. patchelf + pkgconfig in EPEL 8 which
-# manylinux_2_28 enables.
+# System packages via dnf:
+#   * pkgconfig, patchelf, ncurses-devel, libunistring-devel:
+#     base build/runtime needs.
+#   * nasm, yasm: needed by libdav1d / libvpx / ffmpeg for x86 SIMD
+#     (on aarch64 they're no-ops but cheap to install).
+# RHEL 8 doesn't ship modern ffmpeg / libdeflate / libdav1d / libvpx /
+# libopus — those get source-built below into $CACHE_DIR with
+# accelerated paths (--enable-libdav1d in ffmpeg, etc.) so notcurses
+# gets ~10× faster AV1 decode + matched VP8/9 + Opus accel.
 dnf install -y --setopt=tsflags=nodocs \
     pkgconfig patchelf \
+    nasm yasm \
     ncurses-devel libunistring-devel
 
-# cmake via pip — RHEL 8's dnf ships cmake 3.20 and notcurses needs
-# 3.21+. manylinux preinstalls Python at /opt/python/cp*/bin/; the
-# pip cmake wheel is currently ~3.30 and tracks upstream.
+# cmake / meson / ninja via pip — RHEL 8's dnf ships cmake 3.20 and
+# notcurses needs 3.21+. meson + ninja are required by libdav1d's
+# build system. manylinux preinstalls Python at /opt/python/cp*/bin/;
+# the pip wheels for all three are current.
 PYBIN=$(ls -d /opt/python/cp3*/bin 2>/dev/null | head -1)
 [[ -n "$PYBIN" ]] || { echo "❌ No /opt/python/cp3*/bin found in manylinux image"; exit 1; }
-"$PYBIN/pip" install --quiet cmake
+"$PYBIN/pip" install --quiet cmake meson ninja
 ln -sf "$PYBIN/cmake" /usr/local/bin/cmake
+ln -sf "$PYBIN/meson" /usr/local/bin/meson
+ln -sf "$PYBIN/ninja" /usr/local/bin/ninja
 cmake --version
+meson --version
+ninja --version
 # `| head -1` is informational; tolerate SIGPIPE under `set -o
 # pipefail` (head closes stdin after line 1, ldd's continuing
 # version-blob writes then SIGPIPE — bash propagates exit 141 and
@@ -56,20 +67,27 @@ export CMAKE_PREFIX_PATH="$CACHE_DIR:${CMAKE_PREFIX_PATH:-}"
 export CPATH="$CACHE_DIR/include:${CPATH:-}"
 export LIBRARY_PATH="$CACHE_DIR/lib:${LIBRARY_PATH:-}"
 
-# Cache-hit detection: libdeflate's pkg-config file is the cheapest
-# probe (no need to invoke pkg-config). If it's there, ffmpeg's
-# will be too.
-if [[ -f "$CACHE_DIR/lib/pkgconfig/libdeflate.pc" \
-   && -f "$CACHE_DIR/lib/pkgconfig/libavcodec.pc" ]]; then
-  echo "✅ Cache hit — skipping libdeflate + ffmpeg source builds."
+# Cache-hit detection: ffmpeg's pkg-config file is the cheapest
+# all-or-nothing probe. ffmpeg is the LAST thing built, so if it's
+# present every prerequisite (libdeflate, libdav1d, libvpx, libopus)
+# is too.
+if [[ -f "$CACHE_DIR/lib/pkgconfig/libavcodec.pc" ]]; then
+  echo "✅ Cache hit — skipping libdeflate / libdav1d / libvpx / libopus / ffmpeg builds."
 else
-  echo "⏳ Cache miss — building libdeflate + ffmpeg from source (~10-12 min)."
+  # Codec libs MUST land before ffmpeg — ffmpeg's configure probes
+  # them via pkg-config + --enable-libfoo to wire its libfoo-backed
+  # decoder dispatches.
+  echo "⏳ Cache miss — building accelerated codec stack from source (~15-20 min first run)."
   PREFIX="$CACHE_DIR" bash scripts/ci/build-libdeflate.sh
+  PREFIX="$CACHE_DIR" bash scripts/ci/build-libdav1d.sh
+  PREFIX="$CACHE_DIR" bash scripts/ci/build-libvpx.sh
+  PREFIX="$CACHE_DIR" bash scripts/ci/build-libopus.sh
   PREFIX="$CACHE_DIR" bash scripts/ci/build-ffmpeg.sh
 fi
 
 # Verify deps resolve before kicking off notcurses build.
 pkg-config --modversion libdeflate
+pkg-config --modversion dav1d vpx opus
 pkg-config --modversion libavcodec libavformat libavutil libswscale libswresample
 
 CMAKE_FLAGS=(
@@ -114,3 +132,11 @@ nm -g --defined-only bundle/libnotcurses_native_shim.so \
     echo "❌ no notcurses_native_* exports — link silently failed."
     exit 1
   }
+
+# Release gate: confirm libavcodec actually got linked against
+# libdav1d / libvpx / libopus during ffmpeg's configure. Catches
+# the regression class where pkg-config silently failed and ffmpeg
+# fell back to its internal decoders. If the probe fails, the
+# build job fails, and release.yml's `needs:` chain refuses to
+# publish this artefact.
+bash scripts/ci/run-codec-probe.sh

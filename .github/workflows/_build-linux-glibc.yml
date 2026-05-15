@@ -50,11 +50,11 @@ jobs:
           path: _ci-cache/manylinux_2_28-${{ inputs.arch }}
           # Key on:
           #   * the manylinux_2_28_<arch> tag (image baseline)
-          #   * hashes of the source-build scripts so a version bump
-          #     invalidates the cache automatically.
+          #   * hashes of every source-build script so a version
+          #     bump or config change invalidates the cache.
           # No fallback restore-keys — partial caches would corrupt
           # the install tree mid-pkgconfig.
-          key: vendored-deps-manylinux_2_28-${{ inputs.arch }}-${{ hashFiles('scripts/ci/build-ffmpeg.sh', 'scripts/ci/build-libdeflate.sh') }}
+          key: vendored-deps-manylinux_2_28-${{ inputs.arch }}-${{ hashFiles('scripts/ci/build-ffmpeg.sh', 'scripts/ci/build-libdeflate.sh', 'scripts/ci/build-libdav1d.sh', 'scripts/ci/build-libvpx.sh', 'scripts/ci/build-libopus.sh') }}
 
       - name: Pull build image
         run: docker pull quay.io/pypa/manylinux_2_28_${{ inputs.arch }}

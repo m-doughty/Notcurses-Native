@@ -72,14 +72,95 @@ for lib in bundle/libnotcurses.so bundle/libnotcurses-core.so bundle/libnotcurse
 done
 
 # Set rpath to $ORIGIN on every shipped .so so they find siblings
-# in their own directory at load time.
+# in their own directory at load time. NO `|| true` here — silent
+# patchelf failures would leave dylibs falling back to system paths
+# at user-runtime; we fail loud instead.
 find bundle -name '*.so*' -type f | while read f; do
-  patchelf --set-rpath '$ORIGIN' "$f" 2>/dev/null || true
+  patchelf --set-rpath '$ORIGIN' "$f"
 done
 
 find bundle -name '*.so*' -type f -exec strip --strip-unneeded {} \; 2>/dev/null || true
 
+# Hard audit: every non-symlink .so in bundle/ must now report
+# RUNPATH=$ORIGIN. patchelf above can't set it if a binary has no
+# PT_DYNAMIC, or already has DT_RPATH instead of DT_RUNPATH, or
+# similar quirk — and the per-file failures get masked by the
+# pipeline. Verify and fail loudly here.
+echo "--- RUNPATH audit ---"
+fail=0
+for f in $(find bundle -name '*.so*' -type f ! -type l); do
+    rpath=$(patchelf --print-rpath "$f" 2>/dev/null)
+    if [[ "$rpath" != '$ORIGIN' ]]; then
+        echo "::error file=$f::RUNPATH is '$rpath', expected '\$ORIGIN'"
+        fail=1
+    else
+        echo "ok: $f RUNPATH=\$ORIGIN"
+    fi
+done
+if (( fail != 0 )); then
+    echo "❌ One or more bundled .so files don't have RUNPATH=\$ORIGIN."
+    echo "   They'll fall back to /lib64/ etc. at user-runtime instead"
+    echo "   of finding bundle siblings. Investigate the patchelf step."
+    exit 1
+fi
+
 echo "--- bundle contents ---"
 ls -la bundle/
-echo "--- ldd libnotcurses.so ---"
-ldd bundle/libnotcurses.so || true
+
+# Diagnostic ldd in CLEAN env: the build set LD_LIBRARY_PATH +
+# CMAKE_PREFIX_PATH etc. pointing at $CACHE/lib so cmake/configure
+# could find source-built deps. Those env vars are still set when
+# bundle-elf.sh runs, so a plain `ldd bundle/libnotcurses.so` would
+# resolve via LD_LIBRARY_PATH instead of the binary's $ORIGIN
+# RUNPATH, painting a misleading picture (deps showing as resolving
+# to $CACHE/lib that won't exist on user machines). `env -i` wipes
+# all env vars except PATH, mimicking the user-runtime ld.so view.
+echo "--- ldd in clean env (user-runtime view) ---"
+LDD_OUT=$(env -i PATH=/usr/bin:/bin ldd bundle/libnotcurses.so 2>&1 || true)
+echo "$LDD_OUT"
+
+# Hard audit: every "lib.so.N => path" line must have its path
+# inside bundle/ UNLESS the lib is a system library we deliberately
+# don't bundle (libc, libm, libpthread, libdl, librt, libgcc_s,
+# linux-vdso, libstdc++, libresolv, libnsl, libutil, libcrypt,
+# libcrypto for Linux; ld-linux* / ld-musl* loaders).
+echo "--- non-system dep resolution audit ---"
+fail=0
+while IFS= read -r line; do
+    # Skip lines that aren't "X => Y" form (linux-vdso prints just
+    # "linux-vdso.so.1 (0x...)" without an arrow — those are system).
+    if ! [[ "$line" =~ \=\> ]]; then
+        continue
+    fi
+    # "    libfoo.so.N => /some/path (0x...)" — strip leading
+    # whitespace, split on ' => '.
+    libname="${line#"${line%%[![:space:]]*}"}"  # ltrim
+    libname="${libname%% =>*}"
+    rest="${line#*=> }"
+    libpath="${rest% \(*}"
+    case "$libname" in
+        libc.so.*|libm.so.*|libpthread.so.*|libdl.so.*|\
+        librt.so.*|libstdc++.so.*|libgcc_s.so.*|libresolv.so.*|\
+        libnsl.so.*|libutil.so.*|libcrypt.so.*|libcrypto.so.*|\
+        libssl.so.*|ld-linux*|ld-musl*|linux-vdso.so.*)
+            continue ;;
+    esac
+    case "$libpath" in
+        not\ found)
+            echo "::error::Non-system lib '$libname' is NOT FOUND in clean env"
+            fail=1 ;;
+        */bundle/*)
+            : ;;  # resolved inside bundle/ — good
+        *)
+            echo "::error::Non-system lib '$libname' resolves to '$libpath' (outside bundle/)"
+            fail=1 ;;
+    esac
+done <<< "$LDD_OUT"
+if (( fail != 0 )); then
+    echo "❌ Bundle audit failed: one or more non-system deps don't"
+    echo "   resolve to bundle/ at user-runtime. The shipped tarball"
+    echo "   would fall back to system paths (different libs / missing"
+    echo "   libs) on the user's machine."
+    exit 1
+fi
+echo "✅ Bundle audit passed: every non-system dep resolves inside bundle/"

@@ -141,6 +141,14 @@ jobs:
             || { echo "❌ shim DLL missing notcurses_native_* exports"; \
                  exit 1; }
 
+      # Release gate: LoadLibrary avcodec-*.dll from bundle/, confirm
+      # libdav1d / libvpx_vp8 / libvpx_vp9 / libopus are registered
+      # decoders. msys2's mingw-w64-*-ffmpeg package usually has all
+      # of them, but a future pacman update could drop a feature;
+      # the probe blocks publish if so.
+      - name: Codec capability probe (release gate)
+        run: bash scripts/ci/run-codec-probe.sh
+
       - name: Package + upload
         uses: ./.github/actions/package-and-upload
         with:
