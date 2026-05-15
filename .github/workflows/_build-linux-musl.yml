@@ -1,17 +1,19 @@
 # Reusable workflow: build the linux-<arch>-musl prebuilt notcurses
-# archive inside an alpine:3.20 container. musl 1.2.5 build headers;
-# practical runtime floor is musl 1.20 per notcurses' declared
-# support level (so Alpine 3.13+, Postmarket OS, Void, Adelie).
+# archive in an alpine:3.20 Docker container. musl 1.2.5 build
+# headers; practical runtime floor is musl 1.20 per notcurses'
+# declared support level (Alpine 3.13+, Postmarket OS, Void, Adelie).
 #
-# Alpine 3.20 ships every dep we need as `apk` packages, so this
-# lane is cheaper than the manylinux2014 glibc lane (no ffmpeg
-# source build).
+# Why docker-run from native host instead of GHA's `container:`
+# directive: GHA's Node 24 JS-action runtime needs glibc — alpine
+# ships musl, so JS actions can't run inside the container. On
+# aarch64 GHA explicitly errors with "JavaScript Actions in Alpine
+# containers are only supported on x64 Linux runners". Workaround
+# is to run JS actions on the native ubuntu-22.04 / -arm runner and
+# only invoke the alpine container for the build itself.
 #
-# Wrinkle: `alpine:3.20` doesn't ship git in the base image, so
-# `actions/checkout` falls back to its tarball-download path. The
-# vendored notcurses lives in vendor/ as plain files (not a submodule),
-# so the tarball captures it cleanly. If submodules ever land in this
-# repo, we'd need a custom ghcr.io image with git preinstalled.
+# Alpine 3.20 ships every dep we need as apk packages, so this lane
+# is cheaper than the manylinux2014 glibc lane (no ffmpeg source
+# build).
 
 name: _build-linux-musl
 
@@ -27,80 +29,25 @@ on:
         type: string
         required: true
 
-env:
-  CMAKE_FLAGS: >-
-    -DUSE_MULTIMEDIA=ffmpeg
-    -DBUILD_FFI_LIBRARY=ON
-    -DUSE_CXX=OFF
-    -DBUILD_EXECUTABLES=OFF
-    -DUSE_PANDOC=OFF
-    -DUSE_DOCTEST=OFF
-    -DUSE_POC=OFF
-    -DUSE_STATIC=OFF
-    -DCMAKE_BUILD_TYPE=Release
-
 jobs:
   build:
     name: build-linux-${{ inputs.arch }}-musl
     runs-on: ${{ inputs.arch == 'aarch64' && 'ubuntu-22.04-arm' || 'ubuntu-22.04' }}
-    container:
-      image: alpine:3.20
     steps:
-      - name: Install build deps
-        run: |
-          set -euxo pipefail
-          apk add --no-cache \
-              bash coreutils findutils tar \
-              cmake make pkgconf patchelf \
-              gcc g++ musl-dev linux-headers \
-              ffmpeg-dev ncurses-dev libunistring-dev libdeflate-dev
-          cmake --version
-          # No `ldd --version` on musl — it just prints loader info.
-          /lib/ld-musl-*.so.1 --version 2>&1 | head -2 || true
-
       - uses: actions/checkout@v6
         with:
           submodules: recursive
 
-      - name: Configure + build notcurses
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd vendor/notcurses
-          mkdir -p build
-          cmake -B build -S . $CMAKE_FLAGS
-          cmake --build build -j"$(nproc)"
+      - name: Pull build image
+        run: docker pull alpine:3.20
 
-      - name: Bundle + relocate libs ($ORIGIN rpath)
-        uses: ./.github/actions/bundle-elf
-        with:
-          # alpine ships musl's loader at /lib/ld-musl-<arch>.so.1
-          # and libc as libc.musl-<arch>.so.1 — neither should be
-          # bundled (alpine systems have them; bundling them would
-          # produce a 2-libc conflict).
-          extra-skip-libs: 'ld-musl-*.so.1 libc.musl-*.so.1'
-
-      # Same shim-compile model as the glibc lane — link explicitly
-      # against libnotcurses-core in bundle/ and set DT_RUNPATH so
-      # the shim's NEEDED entry resolves at runtime to our bundled
-      # libnotcurses-core.so.
-      - name: Compile perf shim
-        shell: bash
+      - name: Build + bundle in alpine:3.20 container
         run: |
-          set -euxo pipefail
-          cc -O2 -shared -fPIC \
-            -I vendor/notcurses/include \
-            -Wl,-soname,libnotcurses_native_shim.so \
-            -o bundle/libnotcurses_native_shim.so \
-            src/notcurses_native_shim.c \
-            -Lbundle -lnotcurses-core
-          patchelf --set-rpath '$ORIGIN' bundle/libnotcurses_native_shim.so
-          echo "--- shim symbols ---"
-          nm -g --defined-only bundle/libnotcurses_native_shim.so \
-            | grep -E 'T (_)?notcurses_native_' || {
-              echo "❌ no notcurses_native_* exports — link silently failed."
-              exit 1
-            }
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            alpine:3.20 \
+            sh -c 'apk add --no-cache bash >/dev/null && bash scripts/ci/build-linux-musl.sh'
 
       - name: Package + upload
         uses: ./.github/actions/package-and-upload

@@ -60,6 +60,16 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/bin"
           if [[ "${{ inputs.arch }}" == "x86_64" ]]; then
             printf '#!/bin/bash\nexec arch -x86_64 "$@"\n' > "$GITHUB_WORKSPACE/bin/host-arch"
+            # x86_64 brew installs under /usr/local. Prepend so
+            # x86_64 toolchain binaries (cmake, pkg-config,
+            # dylibbundler) win PATH search over the runner's
+            # default arm64 brew at /opt/homebrew. Without this,
+            # `host-arch cmake` → `arch -x86_64 cmake` tries to
+            # run the arm64 cmake binary under Rosetta and fails
+            # with "arch: posix_spawnp: cmake: Bad CPU type in
+            # executable" (Rosetta only translates x86_64; an
+            # arm64 binary can't be translated to anything).
+            echo "/usr/local/bin" >> "$GITHUB_PATH"
           else
             printf '#!/bin/bash\nexec "$@"\n' > "$GITHUB_WORKSPACE/bin/host-arch"
           fi

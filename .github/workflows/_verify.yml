@@ -107,6 +107,11 @@ jobs:
               "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
               < /dev/null
           fi
+          # Prepend /usr/local/bin so the source-build pass'es
+          # cmake/pkg-config invocations (via Build.rakumod's
+          # subprocesses) resolve to x86_64 binaries, not arm64
+          # binaries that Rosetta can't translate.
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
       - name: zef install (prebuilt)
         run: |
           arch -x86_64 zef install --/test .
@@ -188,75 +193,45 @@ jobs:
         run: prove6 --verbose -I lib -I t/lib t
 
   # ----- Linux musl -------------------------------------------------
+  # GHA's Node 24 JS-action runtime needs glibc — alpine ships musl,
+  # so JS actions can't run inside an alpine container. On aarch64
+  # GHA explicitly errors with "JavaScript Actions in Alpine
+  # containers are only supported on x64 Linux runners". So we
+  # checkout on the native ubuntu-22.04 / -arm host and docker-run
+  # the alpine container only for the install + prove6 invocations.
   verify-linux-musl-x86_64:
     if: inputs.lane == 'linux-musl-x86_64'
     runs-on: ubuntu-22.04
-    container:
-      image: alpine:3.20
     steps:
-      - name: Install Rakudo + build deps
-        run: |
-          set -euxo pipefail
-          apk add --no-cache \
-              bash coreutils findutils tar \
-              git \
-              rakudo zef \
-              cmake make pkgconf patchelf \
-              gcc g++ musl-dev linux-headers \
-              ffmpeg-dev ncurses-dev libunistring-dev libdeflate-dev
       - uses: actions/checkout@v6
         with: { submodules: recursive }
-      - name: zef install (prebuilt)
-        shell: bash
-        run: zef install --/test .
-      - name: zef install App::Prove6
-        shell: bash
-        run: zef install --/test App::Prove6
-      - name: prove6 (prebuilt)
-        shell: bash
-        run: prove6 --verbose -I lib -I t/lib t
-      - name: zef install (source-build)
-        shell: bash
-        env: { NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1' }
-        run: zef install --/test --force-install .
-      - name: prove6 (source-build)
-        shell: bash
-        run: prove6 --verbose -I lib -I t/lib t
+      - name: Pull alpine:3.20
+        run: docker pull alpine:3.20
+      - name: Verify prebuilt + source-build in alpine:3.20 container
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" -w /work \
+            -e NOTCURSES_NATIVE_REQUIRE_SHIM \
+            -e TERM -e COLORTERM -e LANG -e LC_ALL \
+            alpine:3.20 \
+            sh -c 'apk add --no-cache bash >/dev/null && bash scripts/ci/verify-linux-musl.sh'
 
   verify-linux-musl-aarch64:
     if: inputs.lane == 'linux-musl-aarch64'
     runs-on: ubuntu-22.04-arm
-    container:
-      image: alpine:3.20
     steps:
-      - name: Install Rakudo + build deps
-        run: |
-          set -euxo pipefail
-          apk add --no-cache \
-              bash coreutils findutils tar \
-              git \
-              rakudo zef \
-              cmake make pkgconf patchelf \
-              gcc g++ musl-dev linux-headers \
-              ffmpeg-dev ncurses-dev libunistring-dev libdeflate-dev
       - uses: actions/checkout@v6
         with: { submodules: recursive }
-      - name: zef install (prebuilt)
-        shell: bash
-        run: zef install --/test .
-      - name: zef install App::Prove6
-        shell: bash
-        run: zef install --/test App::Prove6
-      - name: prove6 (prebuilt)
-        shell: bash
-        run: prove6 --verbose -I lib -I t/lib t
-      - name: zef install (source-build)
-        shell: bash
-        env: { NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1' }
-        run: zef install --/test --force-install .
-      - name: prove6 (source-build)
-        shell: bash
-        run: prove6 --verbose -I lib -I t/lib t
+      - name: Pull alpine:3.20
+        run: docker pull alpine:3.20
+      - name: Verify prebuilt + source-build in alpine:3.20 container
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" -w /work \
+            -e NOTCURSES_NATIVE_REQUIRE_SHIM \
+            -e TERM -e COLORTERM -e LANG -e LC_ALL \
+            alpine:3.20 \
+            sh -c 'apk add --no-cache bash >/dev/null && bash scripts/ci/verify-linux-musl.sh'
 
   # ----- Windows ----------------------------------------------------
   # Upstream notcurses-tester is broken on Windows (per doc/notcurses.md,

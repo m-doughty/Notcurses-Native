@@ -1,12 +1,22 @@
 # Reusable workflow: build the linux-<arch>-glibc prebuilt notcurses
-# archive inside a manylinux2014 container (RHEL 7 baseline, glibc
-# 2.17). Produces binaries that load on basically every glibc Linux
+# archive in a manylinux2014 Docker container (RHEL 7 baseline,
+# glibc 2.17). Produces binaries that load on every glibc Linux
 # distro still shipping in 2026 — RHEL 7+, Ubuntu 14.04+, Debian 8+.
 #
-# RHEL 7's repos are EOL and don't ship modern ffmpeg / libdeflate,
-# so we source-build both inside the container. ncurses + libunistring
-# are available as yum packages from the manylinux base image's
-# devtoolset.
+# Why docker-run from native host instead of GHA's `container:`
+# directive: GHA's Node 24 JS-action runtime is built against
+# glibc ≥ 2.27/2.28 + libstdc++ from gcc ≥ 5. manylinux2014 ships
+# glibc 2.17 + libstdc++ from devtoolset-9, so JS actions
+# (actions/checkout, actions/upload-artifact, actions/cache) crash
+# at startup with "GLIBC_2.27 not found / CXXABI_1.3.8 not found"
+# the moment they try to launch their bundled node binary. Workaround
+# is to run JS actions on the native ubuntu-22.04 / -arm runner
+# (glibc 2.35, fresh Node 24 works fine) and only invoke the
+# manylinux2014 container for the build itself.
+#
+# RHEL 7's repos don't ship modern ffmpeg / libdeflate, so we
+# source-build both inside the container. ncurses + libunistring
+# are available from the manylinux base image's devtoolset.
 
 name: _build-linux-glibc
 
@@ -22,142 +32,44 @@ on:
         type: string
         required: true
 
-env:
-  CMAKE_FLAGS: >-
-    -DUSE_MULTIMEDIA=ffmpeg
-    -DBUILD_FFI_LIBRARY=ON
-    -DUSE_CXX=OFF
-    -DBUILD_EXECUTABLES=OFF
-    -DUSE_PANDOC=OFF
-    -DUSE_DOCTEST=OFF
-    -DUSE_POC=OFF
-    -DUSE_STATIC=OFF
-    -DCMAKE_BUILD_TYPE=Release
-
 jobs:
   build:
     name: build-linux-${{ inputs.arch }}-glibc
     runs-on: ${{ inputs.arch == 'aarch64' && 'ubuntu-22.04-arm' || 'ubuntu-22.04' }}
-    container:
-      image: quay.io/pypa/manylinux2014_${{ inputs.arch }}
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
 
       - name: Cache source-built ffmpeg + libdeflate
-        id: vendored-deps
         uses: actions/cache@v4
         with:
-          path: |
-            /usr/local/lib/libavcodec.*
-            /usr/local/lib/libavformat.*
-            /usr/local/lib/libavutil.*
-            /usr/local/lib/libavdevice.*
-            /usr/local/lib/libswscale.*
-            /usr/local/lib/libswresample.*
-            /usr/local/lib/libdeflate.*
-            /usr/local/lib/pkgconfig/libav*.pc
-            /usr/local/lib/pkgconfig/libsw*.pc
-            /usr/local/lib/pkgconfig/libdeflate.pc
-            /usr/local/include/libavcodec
-            /usr/local/include/libavformat
-            /usr/local/include/libavutil
-            /usr/local/include/libavdevice
-            /usr/local/include/libswscale
-            /usr/local/include/libswresample
-            /usr/local/include/libdeflate.h
-          # Cache key:
-          #   * manylinux2014_<arch>  → image baseline (yum repos, gcc version)
-          #   * scripts/ci/build-ffmpeg.sh + build-libdeflate.sh hashes
-          #     so a version bump invalidates cache automatically.
-          # No fallback restore-keys — partial caches would corrupt the
-          # install tree mid-pkgconfig.
+          # Cached path is workspace-relative so the docker bind
+          # mount picks it up automatically. The build script reads
+          # it via $CACHE_DIR.
+          path: _ci-cache/manylinux2014-${{ inputs.arch }}
+          # Key on:
+          #   * the manylinux2014_<arch> tag (image baseline)
+          #   * hashes of the source-build scripts so a version bump
+          #     invalidates the cache automatically.
+          # No fallback restore-keys — partial caches would corrupt
+          # the install tree mid-pkgconfig.
           key: vendored-deps-manylinux2014-${{ inputs.arch }}-${{ hashFiles('scripts/ci/build-ffmpeg.sh', 'scripts/ci/build-libdeflate.sh') }}
 
-      - name: Install yum deps (ncurses + libunistring + build tools)
-        run: |
-          set -euxo pipefail
-          # manylinux2014 base ships gcc/g++/make/cmake but cmake is
-          # too old for notcurses (needs 3.21+). Install cmake3 from
-          # EPEL (already enabled in the manylinux image).
-          yum install -y --setopt=tsflags=nodocs \
-              cmake3 pkgconfig patchelf \
-              ncurses-devel libunistring-devel
-          # Symlink cmake3 → cmake so notcurses' CMakeLists works.
-          ln -sf /usr/bin/cmake3 /usr/local/bin/cmake
-          cmake --version
-          ldd --version | head -1
+      - name: Pull build image
+        run: docker pull quay.io/pypa/manylinux2014_${{ inputs.arch }}
 
-      - name: Source-build ffmpeg + libdeflate (RHEL 7 repos don't ship them)
-        if: steps.vendored-deps.outputs.cache-hit != 'true'
+      - name: Build + bundle in manylinux2014 container
         run: |
-          set -euxo pipefail
-          bash scripts/ci/build-libdeflate.sh
-          bash scripts/ci/build-ffmpeg.sh
-          ldconfig
-
-      - name: Refresh ldconfig from cache (cache hit path)
-        if: steps.vendored-deps.outputs.cache-hit == 'true'
-        run: |
-          set -euxo pipefail
-          ldconfig
-          pkg-config --modversion libavcodec || {
-            echo "❌ cached pkg-config files for libavcodec don't resolve. Cache corrupt?"
-            exit 1
-          }
-
-      - name: Configure + build notcurses
-        run: |
-          set -euxo pipefail
-          export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-          cd vendor/notcurses
-          mkdir -p build
-          cmake -B build -S . $CMAKE_FLAGS
-          cmake --build build -j"$(nproc)"
-
-      - name: Bundle + relocate libs ($ORIGIN rpath)
-        uses: ./.github/actions/bundle-elf
-
-      # Compile the perf shim into the bundle so users installing the
-      # prebuilt archive don't need a C toolchain to get the fast path.
-      # Linking model mirrors Vips-Native's shim build — link the shim
-      # explicitly against libnotcurses-core from bundle/ and set
-      # DT_RUNPATH to $ORIGIN so the shim's NEEDED entry resolves to
-      # *our* patched libnotcurses-core.so at the same path it was
-      # compiled against, not whatever else might be loaded in the
-      # host process. An earlier version used
-      # `-Wl,--unresolved-symbols=ignore-in-shared-libs` to defer
-      # resolution to runtime — that flag is misnamed in the manpage
-      # and only suppresses unresolved-symbol errors that come from
-      # SHARED-LIB DEPS we link against, not from our own object
-      # file. Symbols `notcurses_native_copy_cells` references
-      # (`ncplane_at_yx_cell`, `nccell_extended_gcluster`, etc.) come
-      # from src/notcurses_native_shim.c and the linker still rejects
-      # them. Hence the explicit -lnotcurses-core.
-      - name: Compile perf shim
-        run: |
-          set -euxo pipefail
-          cc -O2 -shared -fPIC \
-            -I vendor/notcurses/include \
-            -Wl,-soname,libnotcurses_native_shim.so \
-            -o bundle/libnotcurses_native_shim.so \
-            src/notcurses_native_shim.c \
-            -Lbundle -lnotcurses-core
-          patchelf --set-rpath '$ORIGIN' bundle/libnotcurses_native_shim.so
-          # No `strip` on the shim — matches Vips-Native's pattern.
-          # The shim is a few KB; the strip saves nothing meaningful
-          # and removes the regular .symtab, leaving `nm -g` reading
-          # an empty table (it doesn't auto-fall-back to .dynsym).
-          # Verifying before-strip would also work but adds an order
-          # dependency; not stripping at all is simpler and matches
-          # how Vips's shim is shipped.
-          echo "--- shim symbols ---"
-          nm -g --defined-only bundle/libnotcurses_native_shim.so \
-            | grep -E 'T (_)?notcurses_native_' || {
-              echo "❌ no notcurses_native_* exports — link silently failed."
-              exit 1
-            }
+          # $PWD on the runner is bind-mounted to /work in the
+          # container — so checkout's output AND the cache dir are
+          # visible to the build script.
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            -e CACHE_DIR=/work/_ci-cache/manylinux2014-${{ inputs.arch }} \
+            quay.io/pypa/manylinux2014_${{ inputs.arch }} \
+            bash scripts/ci/build-linux-glibc.sh
 
       - name: Package + upload
         uses: ./.github/actions/package-and-upload

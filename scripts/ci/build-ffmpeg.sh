@@ -9,12 +9,15 @@
 # user-provided images. Keeping the surface tight controls bundle
 # size (full ffmpeg adds ~80 MB; this targets ~25 MB).
 #
-# Cached via actions/cache keyed on this file's hash + the manylinux
-# image digest — see _build-linux-glibc.yml.
+# Honours $PREFIX (default /usr/local) so the install can target a
+# workspace-relative cache dir bind-mounted into the container —
+# letting actions/cache persist the build between runs.
 set -euxo pipefail
 
 VERSION='6.1.2'
 URL="https://ffmpeg.org/releases/ffmpeg-${VERSION}.tar.xz"
+PREFIX="${PREFIX:-/usr/local}"
+mkdir -p "$PREFIX"
 
 # Need nasm for x86 SIMD; not available in manylinux2014 base.
 # Build from source (~1 min, cheap relative to ffmpeg itself).
@@ -45,8 +48,8 @@ cd "ffmpeg-${VERSION}"
 #   --enable-libxml2 omitted        → DASH manifest support unneeded
 #   --enable-pic                    → required for shared lib on x86_64
 ./configure \
-    --prefix=/usr/local \
-    --libdir=/usr/local/lib \
+    --prefix="$PREFIX" \
+    --libdir="$PREFIX/lib" \
     --pkg-config-flags=--static \
     --disable-static \
     --enable-shared \
@@ -71,12 +74,14 @@ cd "ffmpeg-${VERSION}"
 make -j"$(nproc)"
 make install
 
-ldconfig
-pkg-config --modversion libavcodec
-pkg-config --modversion libavformat
-pkg-config --modversion libavutil
-pkg-config --modversion libswscale
-pkg-config --modversion libswresample
+# ldconfig only matters when PREFIX=/usr/local (the linker's default
+# search path). For workspace-prefix installs, the caller is
+# expected to set LD_LIBRARY_PATH + PKG_CONFIG_PATH to find these.
+if [[ "$PREFIX" == "/usr/local" ]]; then
+    ldconfig
+fi
+PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
+    pkg-config --modversion libavcodec libavformat libavutil libswscale libswresample
 
 cd /
 rm -rf "/tmp/ffmpeg-${VERSION}" /tmp/ffmpeg.tar.xz
