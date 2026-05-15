@@ -35,7 +35,11 @@ PYBIN=$(ls -d /opt/python/cp3*/bin 2>/dev/null | head -1)
 "$PYBIN/pip" install --quiet cmake
 ln -sf "$PYBIN/cmake" /usr/local/bin/cmake
 cmake --version
-ldd --version | head -1
+# `| head -1` is informational; tolerate SIGPIPE under `set -o
+# pipefail` (head closes stdin after line 1, ldd's continuing
+# version-blob writes then SIGPIPE — bash propagates exit 141 and
+# kills the script otherwise).
+ldd --version | head -1 || true
 
 export PKG_CONFIG_PATH="$CACHE_DIR/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 export LD_LIBRARY_PATH="$CACHE_DIR/lib:${LD_LIBRARY_PATH:-}"

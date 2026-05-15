@@ -32,8 +32,9 @@ make -j"$JOBS"
 make install
 
 # libunistring doesn't ship a pkg-config file by default; just verify
-# the dylib exists.
-ls -la "$PREFIX/lib/libunistring."* | head -5
+# the dylib exists. `|| true` to tolerate SIGPIPE under pipefail
+# (head exits after line 5 closing stdin; ls writes more = SIGPIPE).
+ls -la "$PREFIX/lib/libunistring."* | head -5 || true
 
 cd /
 rm -rf "/tmp/libunistring-${VERSION}" /tmp/libunistring.tar.gz
