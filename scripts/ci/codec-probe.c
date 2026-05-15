@@ -49,11 +49,18 @@ typedef const AVCodec *(*find_decoder_fn)(const char *);
 /* Required accelerated decoders. If any is missing, ffmpeg was
  * built without the matching --enable-libfoo and AV1/VP8/VP9/Opus
  * fall back to internal decoders (functional but ~10× slower for
- * AV1 specifically). */
+ * AV1 specifically).
+ *
+ * The names here are the runtime codec `.name` strings used by
+ * libavcodec — NOT the configure-time --enable-decoder= option
+ * names. They differ for libvpx:
+ *   * configure flag:     --enable-decoder=libvpx_vp8,libvpx_vp9
+ *   * runtime codec name: "libvpx" (VP8), "libvpx-vp9" (VP9)
+ * libdav1d / libopus are spelled the same in both. */
 static const char *REQUIRED_DECODERS[] = {
     "libdav1d",
-    "libvpx_vp8",
-    "libvpx_vp9",
+    "libvpx",      /* VP8 via libvpx */
+    "libvpx-vp9",  /* VP9 via libvpx */
     "libopus",
     NULL,
 };

@@ -149,8 +149,12 @@ while IFS= read -r line; do
         not\ found)
             echo "::error::Non-system lib '$libname' is NOT FOUND in clean env"
             fail=1 ;;
-        */bundle/*)
-            : ;;  # resolved inside bundle/ — good
+        bundle/*|*/bundle/*)
+            # Inside bundle/ — matches both relative (`bundle/foo`,
+            # which is what ldd emits when ld.so resolves via
+            # $ORIGIN from the binary's own dir) and absolute
+            # (`/work/bundle/foo`) forms.
+            : ;;
         *)
             echo "::error::Non-system lib '$libname' resolves to '$libpath' (outside bundle/)"
             fail=1 ;;

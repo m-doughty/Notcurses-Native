@@ -16,22 +16,24 @@
 # / bundle-macos action / bundle-dll action).
 set -euxo pipefail
 
+# LDFLAGS as a string (not array) so the empty-on-non-Linux case
+# survives `set -u` on bash 3.x (macOS default) — bash 3.x treats
+# "${arr[@]}" expansion of an empty array as unbound and exits.
+# Unquoted "$LDFLAGS" with an empty string disappears via word
+# splitting, which is what we want.
 case "$(uname -s)" in
     Linux)
-        EXT='so'
-        LDFLAGS=( -ldl )
+        LDFLAGS='-ldl'
         LIBPATH_VAR='LD_LIBRARY_PATH'
         PROBE_BIN='/tmp/codec-probe'
         ;;
     Darwin)
-        EXT='dylib'
-        LDFLAGS=()
+        LDFLAGS=''
         LIBPATH_VAR='DYLD_LIBRARY_PATH'
         PROBE_BIN='/tmp/codec-probe'
         ;;
     MINGW*|MSYS*|CYGWIN*)
-        EXT='dll'
-        LDFLAGS=()
+        LDFLAGS=''
         LIBPATH_VAR='PATH'
         PROBE_BIN='/tmp/codec-probe.exe'
         ;;
@@ -43,7 +45,10 @@ esac
 
 # Compile the probe. -O0 because we're not testing performance and
 # the probe should compile fast (it's a few-line program).
-cc -O0 -o "$PROBE_BIN" scripts/ci/codec-probe.c "${LDFLAGS[@]}"
+# Intentional unquoted $LDFLAGS — empty string vanishes via word
+# splitting on platforms without -ldl.
+# shellcheck disable=SC2086
+cc -O0 -o "$PROBE_BIN" scripts/ci/codec-probe.c $LDFLAGS
 
 # Verify bundle/ has libavcodec before invoking the probe — better
 # error than the probe's own "couldn't load" if we have an obviously

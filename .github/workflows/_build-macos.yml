@@ -116,7 +116,15 @@ jobs:
             # below with MACOSX_DEPLOYMENT_TARGET baked in via env, so
             # the produced dylibs stamp minos=10.15 and pass the audit.
             # meson + ninja are needed by libdav1d's build system.
-            arch -x86_64 /usr/local/bin/brew install \
+            #
+            # --overwrite: meson depends on python@3.14, whose link
+            # step would otherwise fail because Apple's pre-existing
+            # Python framework symlinks (e.g. /usr/local/bin/idle3 →
+            # /Library/Frameworks/Python.framework/...) already
+            # occupy those paths. --overwrite tells brew to clobber
+            # them. Safe on a CI runner — we don't use Apple's
+            # framework python from any other step.
+            arch -x86_64 /usr/local/bin/brew install --overwrite \
               cmake pkg-config nasm dylibbundler meson ninja
             echo "BREW_PREFIX=/usr/local" >> "$GITHUB_ENV"
           else
