@@ -62,31 +62,41 @@ runs:
           cp "$real" "bundle/$(basename "$real")"
         done
 
-        # Run dylibbundler. -s points at the cmake build dir so
-        # dylibbundler can resolve @rpath/libnotcurses-core.3.dylib
-        # (a symlink in build/) and copy the real file into bundle/.
-        # Both notcurses entry-points share the same ffmpeg tree, so
-        # the second invocation mostly skips already-bundled deps.
+        # Run dylibbundler ONCE with both entry-points as `-x` args
+        # so it builds a single deduped dep graph and copies each
+        # transitive dep exactly once. Earlier two-call pattern
+        # (one invocation per entry-point) broke on the x86_64 lane:
+        # the second invocation re-resolved deps already copied to
+        # `bundle/` (dylibbundler implicitly searches its destination),
+        # then tried `cp -f bundle/libdeflate.0.dylib
+        # bundle/libdeflate.0.dylib`, which macOS BSD cp rejects as
+        # "identical files, not copied". Source-built dylibs trigger
+        # this because their install_name is `@rpath/<libname>` —
+        # they resolve to the already-bundled copy on the second pass.
+        # brew bottles dodged it because their install_names are
+        # absolute Cellar paths (no @rpath round-tripping).
         #
-        # EXTRA_SEARCH_PATH (when set, x86_64 lane only): the lib dir
-        # of our workspace cache, where source-built ffmpeg / ncurses
-        # / libunistring / libdeflate live. dylibbundler walks @rpath
-        # / @loader_path references to find their target files; the
-        # source-built libs have @rpath references baked in by their
-        # configure scripts, so dylibbundler needs an explicit -s
-        # entry pointing at the install lib dir to resolve them.
+        # -s flags:
+        #   * vendor/notcurses/build — for libnotcurses-core.3.dylib
+        #     (cmake leaves it as a SONAME symlink in the build dir).
+        #   * EXTRA_SEARCH_PATH (x86_64 lane only): the lib dir of
+        #     our workspace cache, where source-built ffmpeg /
+        #     ncurses / libunistring / libdeflate live. dylibbundler
+        #     resolves their @rpath references via this -s.
         bundler_paths=( -s vendor/notcurses/build )
         if [[ -n "${EXTRA_SEARCH_PATH:-}" ]]; then
             bundler_paths+=( -s "$EXTRA_SEARCH_PATH" )
         fi
+        x_args=()
         for lib in libnotcurses libnotcurses-ffi; do
           real_in_bundle=$(ls bundle/${lib}.*.*.dylib | head -1)
-          dylibbundler -of -b -ns \
-            -x "$real_in_bundle" \
-            "${bundler_paths[@]}" \
-            -d bundle/ \
-            -p '@loader_path/'
+          x_args+=( -x "$real_in_bundle" )
         done
+        dylibbundler -of -b -ns \
+          "${x_args[@]}" \
+          "${bundler_paths[@]}" \
+          -d bundle/ \
+          -p '@loader_path/'
 
         # Create SONAME + unversioned symlinks AFTER dylibbundler
         # finishes, for each of the three notcurses libs now in

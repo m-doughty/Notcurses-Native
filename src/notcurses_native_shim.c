@@ -26,6 +26,21 @@
  * Notcurses::Native's existing FFI bindings.
  */
 
+/*
+ * notcurses.h's inline functions (NCCELL_INITIALIZER,
+ * ncplane_putwstr_aligned, etc.) call wcwidth() / wcswidth() from
+ * <wchar.h>. glibc only exposes those when _GNU_SOURCE,
+ * _XOPEN_SOURCE >= 500, or _POSIX_C_SOURCE >= 200809L is defined
+ * before any system header is pulled in. Without one, gcc 14+ now
+ * errors on the implicit declaration (gcc 14 promoted
+ * -Wimplicit-function-declaration to error by default as part of
+ * its C23 conformance push). Define _GNU_SOURCE up-front so every
+ * consumer compile path (CI prebuilt + Build.rakumod's
+ * source-build fallback + manual user builds) sees wcwidth
+ * declared. No-op on musl / macOS libc / Windows MSVCRT-UCRT.
+ */
+#define _GNU_SOURCE
+
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
