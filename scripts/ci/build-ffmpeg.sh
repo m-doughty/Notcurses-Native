@@ -23,6 +23,14 @@ URL="https://ffmpeg.org/releases/ffmpeg-${VERSION}.tar.xz"
 PREFIX="${PREFIX:-/usr/local}"
 mkdir -p "$PREFIX"
 
+# Make sure pkg-config finds the source-built codec libs we depend
+# on (libdav1d, libvpx, libopus, libdeflate). Their .pc files were
+# installed by their respective build scripts into $PREFIX/lib/pkgconfig.
+# Defensive export — build-linux-glibc.sh already exports this in
+# its env, but the macOS workflow step invokes us directly without
+# setting it.
+export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+
 # Portable parallelism: GNU nproc on Linux, sysctl on macOS.
 JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 

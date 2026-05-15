@@ -188,3 +188,81 @@ runs:
           exit 1
         fi
         echo "✅ All bundled dylibs target macOS $target or older."
+
+    - name: Audit bundle self-containment (otool)
+      shell: bash
+      run: |
+        set -euo pipefail
+        # For every bundled dylib, walk its LC_LOAD_DYLIB entries
+        # via `otool -L`. Each entry must be one of:
+        #   * @loader_path/X with X present as a file in bundle/
+        #   * @rpath/X (treated the same — dylibbundler rewrote
+        #     paths but @rpath sometimes survives)
+        #   * /usr/lib/X or /System/* — Apple-provided, present
+        #     on every macOS install regardless of brew status
+        # Anything else (e.g. /opt/homebrew/Cellar/..., /usr/local/...
+        # /Users/.../_ci-cache/... from a leaked source-build path)
+        # means the bundle references something the user's machine
+        # might not have, and we'd silently work in CI (brew is
+        # installed on the runner) but fail at user install. Block
+        # the release.
+        fail=0
+        for f in bundle/*.dylib; do
+          [[ -L "$f" ]] && continue
+          while IFS= read -r line; do
+            # otool -L format: "\tPATH (compatibility version X, current version Y)"
+            # First line of output is the binary's own name + colon, skip it.
+            [[ "$line" =~ ^[^[:space:]] ]] && continue
+            dep=$(printf '%s' "$line" \
+              | sed -E 's/^[[:space:]]+//; s/[[:space:]]*\(compatibility[^)]*\)$//')
+            [[ -z "$dep" ]] && continue
+            # Skip the binary's own LC_ID_DYLIB entry (matches its
+            # install_name; not a load command).
+            self_id=$(otool -D "$f" 2>/dev/null | tail -n 1 | sed 's/^[[:space:]]*//')
+            [[ "$dep" == "$self_id" ]] && continue
+            case "$dep" in
+              @loader_path/*|@rpath/*|@executable_path/*)
+                # Resolve to a basename and look in bundle/.
+                base="${dep##*/}"
+                if [[ ! -e "bundle/$base" ]]; then
+                  echo "::error file=$f::references '$dep' but 'bundle/$base' does not exist"
+                  fail=1
+                fi
+                ;;
+              /usr/lib/*|/System/*|/System/Volumes/*)
+                # Apple-provided system path. Always available on
+                # any macOS install. OK.
+                ;;
+              /opt/homebrew/*|/usr/local/Cellar/*|/usr/local/opt/*)
+                # Brew bottle path — leaks brew install state into
+                # the bundle. Users without brew would see dyld
+                # fail to load with "Library not loaded".
+                echo "::error file=$f::leaks brew path '$dep' — dylibbundler missed rewriting this"
+                fail=1
+                ;;
+              "$GITHUB_WORKSPACE"/*|/Users/*/_ci-cache/*|/work/*)
+                # Build-time cache path leaked through — same
+                # problem class as brew paths.
+                echo "::error file=$f::leaks build-cache path '$dep' — dylibbundler missed rewriting this"
+                fail=1
+                ;;
+              *)
+                # Anything else is suspect. Could be a one-off Apple
+                # framework path, but better to fail loud and
+                # whitelist explicitly if needed.
+                echo "::error file=$f::references unknown-class path '$dep'"
+                fail=1
+                ;;
+            esac
+          done < <(otool -L "$f")
+        done
+        if (( fail != 0 )); then
+          echo
+          echo "❌ Bundle audit failed: one or more dylibs reference"
+          echo "   paths outside bundle/ or the macOS system whitelist."
+          echo "   The bundle would not load on a user's machine."
+          exit 1
+        fi
+        echo "✅ Bundle self-containment audit passed: every dylib's"
+        echo "   LC_LOAD_DYLIB entries resolve inside bundle/ or to"
+        echo "   Apple system libraries."

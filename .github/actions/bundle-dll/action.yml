@@ -212,3 +212,76 @@ runs:
 
         echo "--- bundle contents ---"
         ls -la bundle/
+
+    - name: Audit bundle self-containment (objdump imports)
+      shell: 'msys2 {0}'
+      run: |
+        set -euo pipefail
+        # For every bundled .dll, list its PE import table via
+        # `objdump -p` and reject any imported DLL name that isn't
+        # either a Windows system DLL (universally available on
+        # every supported Windows version) or a sibling in bundle/.
+        # Catches the failure mode where ldd's recursive walk
+        # missed a DLL and the belt-and-braces sweep didn't catch
+        # it either — the bundle works in CI (msys2 has the DLL
+        # on PATH) but fails on a user's machine.
+        is_system_dll() {
+          local name_lc="${1,,}"
+          # Windows API Set forwarders (api-ms-*, ext-ms-*, ms-win-*)
+          # are always present in System32 on Win 10+. The named
+          # system DLLs below are the long-standing Win32 API
+          # surface — kernel32, user32, advapi32, msvcrt, etc.
+          case "$name_lc" in
+            api-ms-*|ext-ms-*|ms-win-*)
+              return 0 ;;
+            kernel32.dll|kernelbase.dll|user32.dll|advapi32.dll|\
+            msvcrt.dll|ntdll.dll|ole32.dll|oleaut32.dll|\
+            shell32.dll|gdi32.dll|gdi32full.dll|shlwapi.dll|\
+            shcore.dll|comctl32.dll|comdlg32.dll|crypt32.dll|\
+            secur32.dll|setupapi.dll|ws2_32.dll|wsock32.dll|\
+            iphlpapi.dll|wininet.dll|winmm.dll|winhttp.dll|\
+            psapi.dll|version.dll|imm32.dll|d3d11.dll|d3d9.dll|\
+            dxgi.dll|d2d1.dll|dwrite.dll|opengl32.dll|\
+            bcrypt.dll|ncrypt.dll|userenv.dll|combase.dll|\
+            normaliz.dll|powrprof.dll|propsys.dll|rpcrt4.dll|\
+            urlmon.dll|wldap32.dll|cabinet.dll|profapi.dll|\
+            mscoree.dll|dbghelp.dll|cfgmgr32.dll|dwmapi.dll|\
+            uxtheme.dll|winspool.drv|wtsapi32.dll|netapi32.dll|\
+            dnsapi.dll|mpr.dll|cryptsp.dll|cryptbase.dll|\
+            avrt.dll|avicap32.dll|mfplat.dll|mfreadwrite.dll|\
+            mf.dll|evr.dll|d3dcompiler_*.dll|dxva2.dll|\
+            ucrtbase.dll|vcruntime*.dll)
+              return 0 ;;
+          esac
+          return 1
+        }
+        fail=0
+        for dll in bundle/*.dll; do
+          [[ -L "$dll" ]] && continue
+          # objdump -p output has lines like:
+          #   DLL Name: libavcodec-62.dll
+          # Match those, extract the name.
+          while IFS= read -r imp; do
+            [[ -z "$imp" ]] && continue
+            if is_system_dll "$imp"; then
+              continue
+            fi
+            if [[ -f "bundle/$imp" ]]; then
+              continue
+            fi
+            echo "::error file=$dll::imports '$imp' which is neither a system DLL nor a bundle sibling"
+            fail=1
+          done < <(objdump -p "$dll" 2>/dev/null | awk '/DLL Name:/{print $3}')
+        done
+        if (( fail != 0 )); then
+          echo
+          echo "❌ Bundle audit failed: one or more bundled DLLs import"
+          echo "   non-system DLLs that aren't present in bundle/."
+          echo "   Those imports would fail on a user's machine. Either"
+          echo "   add the missing DLLs to the belt-and-braces sweep in"
+          echo "   process_deps's belt-and-braces section above, or fix"
+          echo "   ldd's walk to capture them."
+          exit 1
+        fi
+        echo "✅ Bundle self-containment audit passed: every bundled DLL's"
+        echo "   imports resolve inside bundle/ or to Windows system DLLs."
