@@ -43,6 +43,18 @@ ldd --version | head -1 || true
 
 export PKG_CONFIG_PATH="$CACHE_DIR/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 export LD_LIBRARY_PATH="$CACHE_DIR/lib:${LD_LIBRARY_PATH:-}"
+# CMake's find_path / find_library / find_package don't read
+# PKG_CONFIG_PATH — they search CMAKE_PREFIX_PATH plus system dirs.
+# notcurses' CMakeLists.txt locates libdeflate via a raw find_path
+# (not pkg-config like it does for ffmpeg), so without this it
+# bails with "Couldn't find libdeflate.h" even though libdeflate
+# is sitting in $CACHE_DIR/include.
+export CMAKE_PREFIX_PATH="$CACHE_DIR:${CMAKE_PREFIX_PATH:-}"
+# CPATH for raw `cc -I` resolution, LIBRARY_PATH for the linker's
+# `-l` lookup — defensive in case notcurses' build invokes the
+# compiler outside of CMake's find_X-managed flag set.
+export CPATH="$CACHE_DIR/include:${CPATH:-}"
+export LIBRARY_PATH="$CACHE_DIR/lib:${LIBRARY_PATH:-}"
 
 # Cache-hit detection: libdeflate's pkg-config file is the cheapest
 # probe (no need to invoke pkg-config). If it's there, ffmpeg's

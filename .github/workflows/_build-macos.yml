@@ -171,9 +171,16 @@ jobs:
             export PKG_CONFIG_PATH="$CACHE/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
             export DYLD_LIBRARY_PATH="$CACHE/lib:${DYLD_LIBRARY_PATH:-}"
             export LIBRARY_PATH="$CACHE/lib:${LIBRARY_PATH:-}"
-            # CPATH so notcurses' cmake can find ncurses.h /
-            # libunistring/uniwidth.h headers without manual
-            # -DCMAKE_INCLUDE_PATH gymnastics.
+            # CMAKE_PREFIX_PATH for find_path / find_library /
+            # find_package — notcurses' CMakeLists.txt locates
+            # libdeflate via raw find_path (not pkg-config like it
+            # uses for ffmpeg), so without this it errors with
+            # "Couldn't find libdeflate.h" despite libdeflate being
+            # at $CACHE/include/.
+            export CMAKE_PREFIX_PATH="$CACHE:${CMAKE_PREFIX_PATH:-}"
+            # CPATH so direct cc -I resolution finds ncurses.h /
+            # libunistring/uniwidth.h headers when notcurses' build
+            # invokes the compiler outside CMake's find_X flag set.
             export CPATH="$CACHE/include:${CPATH:-}"
           else
             # arm64 lane: Homebrew ncurses isn't in the default
