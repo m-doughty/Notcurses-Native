@@ -76,6 +76,20 @@ cd "ffmpeg-${VERSION}"
 # --enable-libfoo enables the libfoo-dispatched codecs; the matching
 # --enable-decoder=libdav1d / libvpx_vp9 / libopus selects the libfoo
 # decoder over the internal one when codec_id matches at runtime.
+#
+# --disable-lzma / --disable-bzlib / --disable-libxml2: these are
+# all auto-enabled by ffmpeg's configure if their .pc files are
+# visible via pkg-config. Our PKG_CONFIG_PATH prepends $PREFIX/
+# lib/pkgconfig but doesn't block the default fallback paths
+# (/usr/local/lib/pkgconfig on Intel-mac brew, /usr/lib/pkgconfig
+# on Linux), so on a runner with brew xz installed, ffmpeg would
+# transparently link against /usr/local/Cellar/xz/.../liblzma.5.dylib
+# — a brew bottle targeting macOS 14+, which fails our 10.15
+# deployment-target audit. Explicitly disable to force ffmpeg to
+# ignore these even when found. We don't need any of them for the
+# image/video formats notcurses cares about: lzma is for rare
+# matroska variants, bzip2 for similarly rare cases, libxml2 for
+# DASH/manifest demuxers.
 ./configure \
     --prefix="$PREFIX" \
     --libdir="$PREFIX/lib" \
@@ -87,6 +101,9 @@ cd "ffmpeg-${VERSION}"
     --disable-debug \
     --disable-programs \
     --disable-everything \
+    --disable-lzma \
+    --disable-bzlib \
+    --disable-libxml2 \
     --enable-avformat \
     --enable-avcodec \
     --enable-avutil \
