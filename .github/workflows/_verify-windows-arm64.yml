@@ -71,6 +71,9 @@ jobs:
           path: ~/.rakubrew
           key: rakudo-windows-arm64-${{ env.RAKUDO_VERSION }}-rakudo-only-v2
 
+      - name: Install zef (~30s; not cached on purpose — see script header)
+        run: bash scripts/ci/install-zef.sh
+
       - name: Add Rakudo shims + site-bin to PATH
         # shims/ for raku/zef (rakubrew-managed). site-bin for
         # zef-installed module bins like prove6.

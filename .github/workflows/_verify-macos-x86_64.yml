@@ -77,6 +77,9 @@ jobs:
           path: ~/.rakubrew
           key: rakudo-macos-x86_64-${{ env.RAKUDO_VERSION }}-rakudo-only-v2
 
+      - name: Install zef under Rosetta (~30s; not cached — see script header)
+        run: arch -x86_64 bash scripts/ci/install-zef.sh
+
       - name: Add Rakudo shims + site-bin to PATH
         # shims/ for raku/zef (rakubrew-managed). site-bin for
         # zef-installed module bins like prove6 (rakubrew doesn't

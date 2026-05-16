@@ -42,9 +42,13 @@ apk add --no-cache \
 
 cd /work
 
+# Install zef fresh — it's intentionally NOT in the cache (zef
+# state lives in site/, and caching site/ makes `zef install`
+# short-circuit on hit, skipping Build.rakumod). ~30s.
+bash scripts/ci/install-zef.sh
+
 # Put rakubrew's shims dir + zef's site-bin on PATH:
-#   * shims/ — rakubrew's dispatch wrappers for raku/zef (set up
-#     by prep-musl-rakudo.sh / build-rakudo.sh).
+#   * shims/ — rakubrew's dispatch wrappers for raku/zef.
 #   * install/share/perl6/site/bin — zef-installed module bins
 #     (App::Prove6's `prove6`, etc.). rakubrew doesn't auto-rehash
 #     after each `zef install` so binaries installed later in

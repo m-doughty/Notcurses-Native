@@ -18,12 +18,18 @@
 #                      can persist this directory between runs so
 #                      subsequent CI runs hit the ~10–20 min build.
 #
-# After the script completes, both `raku` and `zef` are accessible
-# at `$RAKUBREW_HOME/shims/{raku,zef}`. The calling workflow step
-# is expected to append `$RAKUBREW_HOME/shims` to $GITHUB_PATH
-# (the shims dir is rakubrew's canonical entry-point — every binary
-# the active version exposes is shimmed there, and `rakubrew rehash`
-# keeps that list in sync after each build / zef install).
+# After the script completes, `raku` is accessible at
+# `$RAKUBREW_HOME/shims/raku`. The calling workflow step is
+# expected to:
+#   1. Append `$RAKUBREW_HOME/shims` to $GITHUB_PATH.
+#   2. Run `scripts/ci/install-zef.sh` to install zef fresh.
+#
+# zef is NOT installed by this script — it lives in
+# `versions/moar-*/install/share/perl6/site/`, which is the same
+# directory zef tracks "already installed" module state in.
+# Caching that state turns `zef install` into a no-op on cache
+# hit (Build.rakumod never runs). Cleaner to keep site/ out of
+# the cache and pay 30s/run to install zef fresh.
 #
 # Idempotent — short-circuits if the target Rakudo is already
 # built (cache hit OR previous failed-step rerun).
@@ -33,36 +39,12 @@ RAKUDO_VERSION="${RAKUDO_VERSION:-2026.03}"
 export RAKUBREW_HOME="${RAKUBREW_HOME:-$HOME/.rakubrew}"
 SHIM_DIR="$RAKUBREW_HOME/shims"
 
-# Install zef using whatever raku is on PATH (via the just-set
-# rakubrew shims). rakubrew has a `build-zef` action but it
-# inconsistently fails to find the version it just built
-# ("Couldn't find version moar-X.Y" — bug in its version-name
-# resolution between `build` and `build-zef`). Bypass by
-# bootstrapping zef directly: clone the repo, run zef-from-source
-# to install zef-as-a-module. Standard upstream bootstrap recipe.
-install_zef() {
-    if [[ -x "$SHIM_DIR/zef" ]] && "$SHIM_DIR/zef" --version >/dev/null 2>&1; then
-        echo "  zef already working via shim at $SHIM_DIR/zef"
-        return 0
-    fi
-    local zef_src=/tmp/zef-bootstrap
-    rm -rf "$zef_src"
-    git clone --depth=1 https://github.com/ugexe/zef.git "$zef_src"
-    (cd "$zef_src" && "$SHIM_DIR/raku" -I . bin/zef install .)
-    rm -rf "$zef_src"
-    # zef installed into the active version's site dir → rakubrew
-    # needs to regenerate shims so $SHIM_DIR/zef appears.
-    "$RAKUBREW_HOME/bin/rakubrew" rehash
-}
-
 # Cache hit / already-installed short-circuit. Verify by asking
 # the shim what version it reports — if it's our target, we're done.
 if [[ -x "$SHIM_DIR/raku" ]] \
    && "$SHIM_DIR/raku" --version 2>/dev/null | grep -q "$RAKUDO_VERSION"; then
     echo "✅ Rakudo $RAKUDO_VERSION already installed at $RAKUBREW_HOME"
     "$SHIM_DIR/raku" --version
-    install_zef
-    "$SHIM_DIR/zef" --version
     exit 0
 fi
 
@@ -100,10 +82,7 @@ fi
 # shim list is current even if rakubrew's logic changes.
 "$RAKUBREW_HOME/bin/rakubrew" rehash
 
-# Install zef via the shim (replaces rakubrew's build-zef, which
-# has a version-resolution bug).
-install_zef
-
-# Smoke check.
+# Smoke check. zef is installed by install-zef.sh in the workflow
+# after the cache save — it intentionally isn't part of this
+# script (see header).
 "$SHIM_DIR/raku" --version
-"$SHIM_DIR/zef" --version
