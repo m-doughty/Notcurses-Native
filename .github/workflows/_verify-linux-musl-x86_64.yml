@@ -1,0 +1,40 @@
+# Reusable workflow: verify the linux-x86_64-musl prebuilt
+# installs + loads on Alpine. apk's `raku` package gives us a
+# native musl Rakudo (lags upstream by 1-2 minor versions but
+# adequate for verify purposes). No source-build needed.
+#
+# Why docker-run from a native ubuntu-22.04 host instead of GHA's
+# `container:` directive: GHA's Node 24 JS-action runtime needs
+# glibc — alpine ships musl, so actions/checkout etc. can't run
+# inside an alpine container. Checkout natively on ubuntu; only
+# the install + prove6 invocations run inside alpine.
+
+name: _verify-linux-musl-x86_64
+
+on:
+  workflow_call:
+
+env:
+  NOTCURSES_NATIVE_REQUIRE_SHIM: '1'
+
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with: { submodules: recursive }
+
+      - name: Pull alpine:3.20
+        run: docker pull alpine:3.20
+
+      - name: Verify prebuilt + source-build in alpine:3.20 container
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" -w /work \
+            -e NOTCURSES_NATIVE_REQUIRE_SHIM \
+            -e TERM=xterm \
+            -e COLORTERM=truecolor \
+            -e LANG=C.UTF-8 \
+            -e LC_ALL=C.UTF-8 \
+            alpine:3.20 \
+            sh -c 'apk add --no-cache bash >/dev/null && bash scripts/ci/verify-linux-musl.sh'

@@ -1,0 +1,57 @@
+# Reusable workflow: verify the linux-x86_64-glibc prebuilt
+# installs + loads + decodes on a current Ubuntu LTS. Tests that
+# the manylinux2014-built (glibc 2.17 floor) bundle loads cleanly
+# on a glibc 2.35 host — the actual user happy path for most
+# Linux distros from 2020 onward.
+#
+# setup-raku@v1 ships native x86_64 Rakudo for ubuntu-22.04.
+
+name: _verify-linux-glibc-x86_64
+
+on:
+  workflow_call:
+
+env:
+  TERM: xterm
+  COLORTERM: truecolor
+  LANG: en_US.UTF-8
+  LC_ALL: en_US.UTF-8
+  NOTCURSES_NATIVE_REQUIRE_SHIM: '1'
+
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with: { submodules: recursive }
+
+      - uses: Raku/setup-raku@v1
+        with: { raku-version: 'latest' }
+
+      - name: zef install (prebuilt path)
+        run: zef install --/test .
+
+      - name: zef install App::Prove6
+        run: zef install --/test App::Prove6
+
+      - name: prove6 (prebuilt path)
+        run: prove6 --verbose -I lib -I t/lib t
+
+      - name: prove (xt — terminal-dependent, prebuilt path)
+        run: prove -e 'raku -I lib -I t/lib' --verbose xt/*.rakutest
+
+      - name: Install apt deps for source-build pass
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            cmake pkg-config \
+            libncurses-dev libunistring-dev libdeflate-dev \
+            libavformat-dev libavcodec-dev libavdevice-dev \
+            libavutil-dev libswscale-dev
+
+      - name: zef install (source-build path)
+        env: { NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1' }
+        run: zef install --/test --force-install .
+
+      - name: prove6 (source-build path)
+        run: prove6 --verbose -I lib -I t/lib t

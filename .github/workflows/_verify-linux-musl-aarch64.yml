@@ -1,0 +1,34 @@
+# Reusable workflow: verify the linux-aarch64-musl prebuilt
+# installs + loads on Alpine aarch64. Same shape as the x86_64
+# musl lane — just runs on `ubuntu-22.04-arm` so docker-run pulls
+# the native aarch64 alpine image.
+
+name: _verify-linux-musl-aarch64
+
+on:
+  workflow_call:
+
+env:
+  NOTCURSES_NATIVE_REQUIRE_SHIM: '1'
+
+jobs:
+  verify:
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v6
+        with: { submodules: recursive }
+
+      - name: Pull alpine:3.20
+        run: docker pull alpine:3.20
+
+      - name: Verify prebuilt + source-build in alpine:3.20 container
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" -w /work \
+            -e NOTCURSES_NATIVE_REQUIRE_SHIM \
+            -e TERM=xterm \
+            -e COLORTERM=truecolor \
+            -e LANG=C.UTF-8 \
+            -e LC_ALL=C.UTF-8 \
+            alpine:3.20 \
+            sh -c 'apk add --no-cache bash >/dev/null && bash scripts/ci/verify-linux-musl.sh'

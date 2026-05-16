@@ -1,0 +1,92 @@
+# Reusable workflow: verify the macos-x86_64 prebuilt installs +
+# loads on a Rosetta'd x86_64 Rakudo. The macos-14 runner is arm64;
+# we install Rosetta + source-build x86_64 Rakudo under it (no
+# Raku/setup-raku@v1 prebuilt for x86_64 macOS).
+#
+# Wrapping every Raku/zef invocation in `arch -x86_64` guarantees
+# we're testing the x86_64 prebuilt as a real Intel-Mac user would —
+# the Rakudo process is x86_64, NativeCall loads x86_64 dylibs, etc.
+
+name: _verify-macos-x86_64
+
+on:
+  workflow_call:
+
+env:
+  TERM: xterm
+  COLORTERM: truecolor
+  LANG: en_US.UTF-8
+  LC_ALL: en_US.UTF-8
+  NOTCURSES_NATIVE_REQUIRE_SHIM: '1'
+  RAKUDO_VERSION: '2025.10'
+
+jobs:
+  verify:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v6
+        with: { submodules: recursive }
+
+      - name: Install Rosetta
+        run: softwareupdate --install-rosetta --agree-to-license || true
+
+      - name: Install x86_64 Homebrew + Rakudo build deps
+        run: |
+          set -euxo pipefail
+          if [[ ! -x /usr/local/bin/brew ]]; then
+            arch -x86_64 /bin/bash -c \
+              "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
+              < /dev/null
+          fi
+          # Rakudo's Configure.pl + the build itself need perl, git,
+          # make. macOS already has perl/git via Xcode CLT but those
+          # are arm64-native; arch -x86_64 on a fat (universal)
+          # binary uses the x86_64 slice automatically. For safety
+          # install x86_64 brew versions too.
+          arch -x86_64 /usr/local/bin/brew install --overwrite python@3.14
+          arch -x86_64 /usr/local/bin/brew install perl git
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+
+      - name: Cache source-built Rakudo
+        id: rakudo-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.rakubrew
+          key: rakudo-macos-x86_64-${{ env.RAKUDO_VERSION }}
+
+      - name: Build x86_64 Rakudo under Rosetta (rakubrew)
+        run: |
+          # arch -x86_64 wraps the whole rakubrew/Configure.pl/make
+          # process so NQP+MoarVM+Rakudo all build as x86_64. Even
+          # if cache restored, the script's idempotent short-circuit
+          # checks (already-built) skip the expensive part.
+          arch -x86_64 bash scripts/ci/build-rakudo.sh
+
+      - name: Add Rakudo to PATH
+        run: echo "$HOME/.rakubrew/versions/moar-${{ env.RAKUDO_VERSION }}/bin" >> "$GITHUB_PATH"
+
+      - name: Verify Rakudo arch is x86_64
+        run: |
+          file "$(which raku)" | tee /tmp/raku-arch
+          grep -q 'x86_64' /tmp/raku-arch
+
+      - name: zef install (prebuilt path)
+        run: arch -x86_64 zef install --/test .
+
+      - name: zef install App::Prove6
+        run: arch -x86_64 zef install --/test App::Prove6
+
+      - name: prove6 (prebuilt path)
+        run: arch -x86_64 prove6 --verbose -I lib -I t/lib t
+
+      - name: Install x86_64 brew deps for source-build pass
+        run: |
+          arch -x86_64 /usr/local/bin/brew install \
+            cmake pkg-config ffmpeg ncurses libunistring libdeflate
+
+      - name: zef install (source-build path)
+        env: { NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1' }
+        run: arch -x86_64 zef install --/test --force-install .
+
+      - name: prove6 (source-build path)
+        run: arch -x86_64 prove6 --verbose -I lib -I t/lib t

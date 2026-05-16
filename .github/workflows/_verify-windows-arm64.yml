@@ -1,0 +1,67 @@
+# Reusable workflow: verify the windows-arm64 prebuilt installs +
+# loads on Windows ARM. Raku/setup-raku@v1 has no Windows ARM64
+# prebuilt, so we source-build Rakudo via rakubrew inside MSYS2
+# CLANGARM64 — the same MSYS2 environment we use to build the
+# prebuilt. Build takes ~10-20 min on first run; cached after.
+#
+# Upstream notcurses-tester is broken on Windows so we don't run
+# prove6 — successful zef install is what verifies the bundle.
+
+name: _verify-windows-arm64
+
+on:
+  workflow_call:
+
+env:
+  NOTCURSES_NATIVE_REQUIRE_SHIM: '1'
+  RAKUDO_VERSION: '2025.10'
+
+jobs:
+  verify:
+    runs-on: windows-11-arm
+    defaults:
+      run:
+        shell: 'msys2 {0}'
+    steps:
+      - uses: actions/checkout@v6
+        with: { submodules: recursive }
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          path-type: inherit
+          install: >-
+            base-devel
+            perl
+            curl
+            git
+            mingw-w64-clang-aarch64-cmake
+            mingw-w64-clang-aarch64-ffmpeg
+            mingw-w64-clang-aarch64-libdeflate
+            mingw-w64-clang-aarch64-libunistring
+            mingw-w64-clang-aarch64-ncurses
+            mingw-w64-clang-aarch64-ninja
+            mingw-w64-clang-aarch64-toolchain
+
+      - name: Cache source-built Rakudo
+        id: rakudo-cache
+        uses: actions/cache@v4
+        with:
+          # MSYS2 maps $HOME to a Windows path; rakubrew installs
+          # there. Path is captured by cache.
+          path: ~/.rakubrew
+          key: rakudo-windows-arm64-${{ env.RAKUDO_VERSION }}
+
+      - name: Build ARM64 Rakudo from source (rakubrew)
+        run: bash scripts/ci/build-rakudo.sh
+
+      - name: Add Rakudo to PATH
+        run: echo "$HOME/.rakubrew/versions/moar-${{ env.RAKUDO_VERSION }}/bin" >> "$GITHUB_PATH"
+
+      - name: zef install (prebuilt path)
+        run: zef install --/test .
+
+      - name: zef install (source-build path)
+        env: { NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1' }
+        run: zef install --/test --force-install .

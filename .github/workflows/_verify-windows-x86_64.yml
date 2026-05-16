@@ -1,0 +1,51 @@
+# Reusable workflow: verify the windows-x86_64 prebuilt installs +
+# loads on a current Windows runner. setup-raku@v1 ships native
+# x86_64 Rakudo for windows-2022.
+#
+# Upstream notcurses-tester is broken on Windows (per
+# doc/notcurses.md, "Microsoft Windows" section), so we don't run
+# prove6 here — successful `zef install` exercises Build.rakumod's
+# prebuilt-download + DLL-load + symbol-resolution path, which is
+# what would fail in practice if the prebuilt were broken.
+
+name: _verify-windows-x86_64
+
+on:
+  workflow_call:
+
+env:
+  NOTCURSES_NATIVE_REQUIRE_SHIM: '1'
+
+jobs:
+  verify:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: 'msys2 {0}'
+    steps:
+      - uses: actions/checkout@v6
+        with: { submodules: recursive }
+
+      - uses: Raku/setup-raku@v1
+        with: { raku-version: 'latest' }
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          path-type: inherit
+          install: >-
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-libdeflate
+            mingw-w64-ucrt-x86_64-libunistring
+            mingw-w64-ucrt-x86_64-ncurses
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-toolchain
+
+      - name: zef install (prebuilt path)
+        run: zef install --/test .
+
+      - name: zef install (source-build path)
+        env: { NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1' }
+        run: zef install --/test --force-install .
