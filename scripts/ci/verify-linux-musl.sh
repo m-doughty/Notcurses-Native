@@ -48,10 +48,12 @@ cd /work
 # built from a cached $RAKUBREW_HOME).
 bash scripts/ci/build-rakudo.sh
 
-# Put the just-built Rakudo on PATH.
-RAKUDO_VERSION="${RAKUDO_VERSION:-2026.03}"
+# Put rakubrew's shims dir on PATH. The shim wrappers there
+# dispatch raku/zef/etc. to the active version (set via
+# `rakubrew switch` inside build-rakudo.sh). Predictable path
+# regardless of rakubrew's per-version install layout.
 RAKUBREW_HOME="${RAKUBREW_HOME:-$HOME/.rakubrew}"
-export PATH="$RAKUBREW_HOME/versions/moar-$RAKUDO_VERSION/bin:$PATH"
+export PATH="$RAKUBREW_HOME/shims:$PATH"
 raku --version
 zef --version
 

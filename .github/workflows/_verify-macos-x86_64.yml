@@ -62,8 +62,10 @@ jobs:
           # checks (already-built) skip the expensive part.
           arch -x86_64 bash scripts/ci/build-rakudo.sh
 
-      - name: Add Rakudo to PATH
-        run: echo "$HOME/.rakubrew/versions/moar-${{ env.RAKUDO_VERSION }}/bin" >> "$GITHUB_PATH"
+      - name: Add Rakudo shims to PATH
+        # rakubrew (in shim mode) routes raku/zef/etc. through
+        # shims/, its canonical entry-point.
+        run: echo "$HOME/.rakubrew/shims" >> "$GITHUB_PATH"
 
       - name: Verify Rakudo arch is x86_64
         run: |
