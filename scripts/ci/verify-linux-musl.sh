@@ -1,36 +1,54 @@
 #!/usr/bin/env bash
-# Verify the linux-<arch>-musl prebuilt notcurses archive loads + works
-# INSIDE an alpine:3.20 container. Runs from
+# Verify the linux-<arch>-musl prebuilt notcurses archive loads +
+# works INSIDE an alpine:3.20 container. Runs from
 # `docker run -v $PWD:/work -w /work alpine:3.20 bash scripts/ci/verify-linux-musl.sh`.
 #
-# Same docker-run reasoning as build-linux-musl.sh — JS actions
-# (Raku/setup-raku, actions/checkout) can't run in alpine, so the
-# native host does checkout and dispatches into this script.
+# Why source-build Rakudo instead of `apk add rakudo`: Alpine's
+# package-repo Rakudo lags upstream by a few minor versions and
+# (as of 3.20) is too old to accept a `Callable` in NativeCall's
+# `is native(...)` trait — which Notcurses::Native uses for its
+# state-cached lazy lib-path resolution. apk Rakudo fails to
+# precompile `Notcurses::Native::Direct` with "Too many positionals
+# passed; expected 2 arguments but got 3" during `zef install`.
+# Source-built current Rakudo via rakubrew handles the modern
+# Callable-native signature correctly.
 #
-# Tests both install paths:
-#   1. Prebuilt: zef install --/test .   (proves the archive loads +
-#      its symbols resolve self-contained against musl).
-#   2. Source-build: NOTCURSES_NATIVE_BUILD_FROM_SOURCE=1 reinstall
-#      (proves Build.rakumod's CMake fallback works on musl with the
-#      apk-supplied ffmpeg/ncurses/etc.).
+# Caller is expected to:
+#   * Bind-mount $PWD to /work (workspace).
+#   * Set RAKUDO_VERSION (matches the cache key).
+#   * Optionally bind-mount /root/.rakubrew to a host cache dir.
 
 set -euxo pipefail
 
-# Alpine doesn't ship Raku/zef by default. The apk packages are a
-# few releases behind upstream Rakudo but that's fine for verify
-# purposes — we're testing "does the binary load + do basic things
-# work", not Rakudo-version-specific behaviour.
-#
-# Build deps are needed for the source-build pass below — install
-# them all upfront so the container only does one apk roundtrip.
+# Build deps:
+#   * bash, coreutils, findutils, tar, git, curl — script + zef.
+#   * perl, build-base, make — rakubrew's Configure.pl + Rakudo
+#     build (gcc, ld, etc.).
+#   * cmake, pkgconf, patchelf — for the source-build pass.
+#   * ffmpeg-dev + ncurses-dev + libunistring-dev + libdeflate-dev —
+#     notcurses' build-time deps when we exercise
+#     NOTCURSES_NATIVE_BUILD_FROM_SOURCE.
+#   * linux-headers, musl-dev — needed for any C compile inside
+#     the container.
 apk add --no-cache \
-    bash coreutils findutils tar git \
-    rakudo zef \
-    cmake make pkgconf patchelf \
+    bash coreutils findutils tar git curl \
+    perl build-base make \
+    cmake pkgconf patchelf \
     gcc g++ musl-dev linux-headers \
     ffmpeg-dev ncurses-dev libunistring-dev libdeflate-dev
 
 cd /work
+
+# Source-build Rakudo (idempotent — short-circuits if already
+# built from a cached $RAKUBREW_HOME).
+bash scripts/ci/build-rakudo.sh
+
+# Put the just-built Rakudo on PATH.
+RAKUDO_VERSION="${RAKUDO_VERSION:-2026.03}"
+RAKUBREW_HOME="${RAKUBREW_HOME:-$HOME/.rakubrew}"
+export PATH="$RAKUBREW_HOME/versions/moar-$RAKUDO_VERSION/bin:$PATH"
+raku --version
+zef --version
 
 # Prebuilt path — Build.rakumod downloads
 # notcurses-linux-<arch>-musl.tar.gz from the release referenced

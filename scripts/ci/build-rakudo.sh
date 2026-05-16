@@ -5,14 +5,14 @@
 #   * macOS x86_64 (Intel/Rosetta — setup-raku gives arm64 Rakudo
 #     on the macos-14 runner; we want x86_64 Rakudo under Rosetta).
 #   * Linux glibc aarch64 (no aarch64 prebuilt in setup-raku).
+#   * Linux musl x86_64 + aarch64 (Alpine's `apk add rakudo` is
+#     too old to accept `Callable` in NativeCall's `is native(...)`
+#     trait, which Notcurses::Native uses for lazy lib-path
+#     resolution — apk's Rakudo fails to precompile our deps).
 #   * Windows arm64 (no ARM64 prebuilt in setup-raku).
 #
-# musl Linux lanes use Alpine's `apk add raku zef` instead — much
-# faster than source-building and the apk version is recent enough
-# for our purposes.
-#
 # Honours:
-#   $RAKUDO_VERSION  — defaults to 2025.10. Pin in workflow env
+#   $RAKUDO_VERSION  — defaults to 2026.03. Pin in workflow env
 #                      for cache-key stability.
 #   $RAKUBREW_HOME   — defaults to $HOME/.rakubrew. actions/cache
 #                      can persist this directory between runs so
@@ -27,7 +27,7 @@
 # built (cache hit OR previous failed-step rerun).
 set -euxo pipefail
 
-RAKUDO_VERSION="${RAKUDO_VERSION:-2025.10}"
+RAKUDO_VERSION="${RAKUDO_VERSION:-2026.03}"
 export RAKUBREW_HOME="${RAKUBREW_HOME:-$HOME/.rakubrew}"
 
 # Cache hit / already-installed short circuit.
@@ -52,6 +52,17 @@ mkdir -p "$RAKUBREW_HOME"
 if [[ ! -x "$RAKUBREW_HOME/bin/rakubrew" ]]; then
     curl -fsSL https://rakubrew.org/install-on-perl.sh | sh
 fi
+
+# Switch to shim mode. rakubrew refuses to `build` if it's still
+# in its default 'env' mode and no shell hook has been installed
+# (the build command short-circuits with "The shell hook required
+# to run rakubrew in either 'env' mode or with the 'shell' command
+# seems not to be installed"). We have no interactive ~/.bashrc to
+# source in CI, so shim mode — which just drops binaries into
+# $RAKUBREW_HOME/shims/ as if it were a normal PATH dir — is the
+# correct choice. Idempotent: re-running on a shim-mode rakubrew
+# is a no-op.
+"$RAKUBREW_HOME/bin/rakubrew" mode shim
 
 # Build Rakudo with MoarVM backend. The first run takes ~10-20 min
 # (NQP + MoarVM + Rakudo all from source); subsequent CI runs hit
