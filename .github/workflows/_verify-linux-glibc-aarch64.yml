@@ -41,13 +41,23 @@ jobs:
       - name: Build Rakudo from source (rakubrew)
         run: bash scripts/ci/build-rakudo.sh
 
-      - name: Add Rakudo shims to PATH
-        # rakubrew (in shim mode) puts dispatch wrappers in shims/
-        # that route raku/zef/etc. to the active version's binaries.
-        # This is rakubrew's canonical entry-point; the version's
-        # actual install dir (versions/moar-X/install/bin/) is an
-        # implementation detail we don't depend on.
-        run: echo "$HOME/.rakubrew/shims" >> "$GITHUB_PATH"
+      - name: Add Rakudo shims + site-bin to PATH
+        # Two dirs:
+        #   1. shims/ — rakubrew's dispatch wrappers for raku/zef
+        #      (created by `rakubrew build` + `rehash`).
+        #   2. install/share/perl6/site/bin — where `zef install`
+        #      puts module-provided binaries (App::Prove6's
+        #      `prove6` lands here). rakubrew doesn't auto-rehash
+        #      after each `zef install`, so binaries installed
+        #      via zef after the build aren't shimmed unless we
+        #      explicitly run `rakubrew rehash` (which we'd need
+        #      to do after every zef install). Adding the site-bin
+        #      dir directly to PATH avoids that maintenance burden
+        #      and matches how setup-raku configures PATH for
+        #      lanes that don't use rakubrew.
+        run: |
+          echo "$HOME/.rakubrew/shims" >> "$GITHUB_PATH"
+          echo "$HOME/.rakubrew/versions/moar-${{ env.RAKUDO_VERSION }}/install/share/perl6/site/bin" >> "$GITHUB_PATH"
 
       - name: zef install (prebuilt path)
         run: zef install --/test .

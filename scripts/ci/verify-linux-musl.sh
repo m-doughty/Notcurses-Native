@@ -48,12 +48,17 @@ cd /work
 # built from a cached $RAKUBREW_HOME).
 bash scripts/ci/build-rakudo.sh
 
-# Put rakubrew's shims dir on PATH. The shim wrappers there
-# dispatch raku/zef/etc. to the active version (set via
-# `rakubrew switch` inside build-rakudo.sh). Predictable path
-# regardless of rakubrew's per-version install layout.
+# Put rakubrew's shims dir + zef's site-bin on PATH:
+#   * shims/ — rakubrew's dispatch wrappers for raku/zef (set up
+#     by build-rakudo.sh).
+#   * install/share/perl6/site/bin — zef-installed module bins
+#     (App::Prove6's `prove6`, etc.). rakubrew doesn't auto-rehash
+#     after each `zef install` so binaries installed later in
+#     this script aren't shimmed; adding site-bin to PATH
+#     directly sidesteps the rehash dance.
+RAKUDO_VERSION="${RAKUDO_VERSION:-2026.03}"
 RAKUBREW_HOME="${RAKUBREW_HOME:-$HOME/.rakubrew}"
-export PATH="$RAKUBREW_HOME/shims:$PATH"
+export PATH="$RAKUBREW_HOME/shims:$RAKUBREW_HOME/versions/moar-$RAKUDO_VERSION/install/share/perl6/site/bin:$PATH"
 raku --version
 zef --version
 

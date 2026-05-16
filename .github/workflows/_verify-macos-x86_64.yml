@@ -62,10 +62,13 @@ jobs:
           # checks (already-built) skip the expensive part.
           arch -x86_64 bash scripts/ci/build-rakudo.sh
 
-      - name: Add Rakudo shims to PATH
-        # rakubrew (in shim mode) routes raku/zef/etc. through
-        # shims/, its canonical entry-point.
-        run: echo "$HOME/.rakubrew/shims" >> "$GITHUB_PATH"
+      - name: Add Rakudo shims + site-bin to PATH
+        # shims/ for raku/zef (rakubrew-managed). site-bin for
+        # zef-installed module bins like prove6 (rakubrew doesn't
+        # auto-rehash after `zef install` so those aren't shimmed).
+        run: |
+          echo "$HOME/.rakubrew/shims" >> "$GITHUB_PATH"
+          echo "$HOME/.rakubrew/versions/moar-${{ env.RAKUDO_VERSION }}/install/share/perl6/site/bin" >> "$GITHUB_PATH"
 
       - name: Verify Rakudo arch is x86_64
         run: |
