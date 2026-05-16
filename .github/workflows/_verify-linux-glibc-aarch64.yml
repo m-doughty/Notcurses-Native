@@ -36,21 +36,38 @@ jobs:
         # test failure doesn't invalidate the ~10-20 min Rakudo build.
         # save runs immediately after a successful build, before the
         # zef install / prove6 / xt steps that can fail independently.
+        #
+        # Cache key has a `-rakudo-only-v2` suffix to invalidate any
+        # pre-v2 caches that included stale zef module state under
+        # `versions/moar-*/install/share/perl6/site/`. Those caused
+        # `zef install` to short-circuit ("All candidates are
+        # currently installed") on a hit, which skipped
+        # Build.rakumod and left `~/.local/share/Notcurses-Native/`
+        # unstaged → dlopen failed at test time.
         id: rakudo-cache
         uses: actions/cache/restore@v4
         with:
           path: ~/.rakubrew
-          key: rakudo-linux-aarch64-${{ env.RAKUDO_VERSION }}
+          key: rakudo-linux-aarch64-${{ env.RAKUDO_VERSION }}-rakudo-only-v2
 
       - name: Build Rakudo from source (rakubrew)
         run: bash scripts/ci/build-rakudo.sh
+
+      - name: Strip zef module state — we cache Rakudo only, not installs
+        # Belt-and-braces against a dirty restored cache: even with the
+        # bumped key, any future tweak that accidentally captures
+        # site/ should still produce a clean test environment.
+        # `Notcurses::Native` and `App::Prove6` get reinstalled fresh
+        # in the next steps (exercising Build.rakumod + the bundle
+        # download), which is what we want to verify.
+        run: rm -rf ~/.rakubrew/versions/moar-*/install/share/perl6/site || true
 
       - name: Save Rakudo cache (build succeeded — independent of tests)
         if: steps.rakudo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ~/.rakubrew
-          key: rakudo-linux-aarch64-${{ env.RAKUDO_VERSION }}
+          key: rakudo-linux-aarch64-${{ env.RAKUDO_VERSION }}-rakudo-only-v2
 
       - name: Add Rakudo shims + site-bin to PATH
         # Two dirs:

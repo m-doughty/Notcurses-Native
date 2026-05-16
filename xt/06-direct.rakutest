@@ -66,7 +66,15 @@ subtest 'Direct mode cursor' => {
 
 subtest 'Direct mode output' => {
 	plan 2;
-	ok ncdirect_putstr($ncd, 0, 'Hello Direct') > 0, "putstr wrote columns";
+	# ncdirect_putstr returns the underlying fputs() return value.
+	# POSIX only requires "non-negative on success, EOF (-1) on
+	# failure" — and the two libcs diverge:
+	#   glibc fputs → 1 (or larger) on success
+	#   musl  fputs → 0 on success
+	# Both are conformant; only `>= 0` is portable. (Despite the
+	# name, ncdirect_putstr does NOT return columns written — that's
+	# ncdirect_putegc, which returns its own utf8_egc_len.)
+	ok ncdirect_putstr($ncd, 0, 'Hello Direct') >= 0, "putstr succeeded";
 	is ncdirect_flush($ncd), 0, 'Flush succeeded';
 };
 

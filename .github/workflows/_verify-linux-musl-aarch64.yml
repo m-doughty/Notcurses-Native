@@ -25,11 +25,14 @@ jobs:
         with: { submodules: recursive }
 
       - name: Restore cached Rakudo (alpine aarch64)
+        # Key has `-rakudo-only-v2` suffix to invalidate caches that
+        # carried stale zef state. See the x86_64 musl lane for the
+        # full root-cause writeup.
         id: rakubrew-cache
         uses: actions/cache/restore@v4
         with:
           path: _ci-cache/rakubrew-alpine-aarch64
-          key: rakubrew-alpine-aarch64-${{ env.RAKUDO_VERSION }}
+          key: rakubrew-alpine-aarch64-${{ env.RAKUDO_VERSION }}-rakudo-only-v2
 
       - name: Pull alpine:3.20
         run: docker pull alpine:3.20
@@ -48,12 +51,15 @@ jobs:
       - name: Fix cache permissions before save (docker ran as root)
         run: sudo chown -R "$(id -u):$(id -g)" _ci-cache/rakubrew-alpine-aarch64
 
+      - name: Strip zef module state — we cache Rakudo only, not installs
+        run: rm -rf _ci-cache/rakubrew-alpine-aarch64/versions/moar-*/install/share/perl6/site || true
+
       - name: Save Rakudo cache (build succeeded — independent of tests)
         if: steps.rakubrew-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: _ci-cache/rakubrew-alpine-aarch64
-          key: rakubrew-alpine-aarch64-${{ env.RAKUDO_VERSION }}
+          key: rakubrew-alpine-aarch64-${{ env.RAKUDO_VERSION }}-rakudo-only-v2
 
       - name: Run tests in alpine:3.20 (flaky phase)
         run: |

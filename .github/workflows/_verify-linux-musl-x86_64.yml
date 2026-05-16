@@ -37,11 +37,17 @@ jobs:
         with: { submodules: recursive }
 
       - name: Restore cached Rakudo (alpine x86_64)
+        # Key has `-rakudo-only-v2` suffix to invalidate caches that
+        # carried stale zef state in
+        # `versions/moar-*/install/share/perl6/site/`. With that
+        # stale state, `zef install` short-circuits ("All candidates
+        # are currently installed") and Build.rakumod never stages
+        # the prebuilt notcurses bundle → dlopen fails at test time.
         id: rakubrew-cache
         uses: actions/cache/restore@v4
         with:
           path: _ci-cache/rakubrew-alpine-x86_64
-          key: rakubrew-alpine-x86_64-${{ env.RAKUDO_VERSION }}
+          key: rakubrew-alpine-x86_64-${{ env.RAKUDO_VERSION }}-rakudo-only-v2
 
       - name: Pull alpine:3.20
         run: docker pull alpine:3.20
@@ -63,6 +69,12 @@ jobs:
         # cache save. chown back to the runner user before save.
         run: sudo chown -R "$(id -u):$(id -g)" _ci-cache/rakubrew-alpine-x86_64
 
+      - name: Strip zef module state — we cache Rakudo only, not installs
+        # Belt-and-braces with the bumped cache key. Strip happens at
+        # the host level (not inside docker) — the bind-mount makes
+        # this safe and avoids spinning up an extra container.
+        run: rm -rf _ci-cache/rakubrew-alpine-x86_64/versions/moar-*/install/share/perl6/site || true
+
       - name: Save Rakudo cache (build succeeded — independent of tests)
         # Save here, immediately after a successful Rakudo build,
         # so a downstream test failure doesn't invalidate the
@@ -71,7 +83,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: _ci-cache/rakubrew-alpine-x86_64
-          key: rakubrew-alpine-x86_64-${{ env.RAKUDO_VERSION }}
+          key: rakubrew-alpine-x86_64-${{ env.RAKUDO_VERSION }}-rakudo-only-v2
 
       - name: Run tests in alpine:3.20 (flaky phase)
         run: |

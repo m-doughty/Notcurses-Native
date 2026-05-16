@@ -47,23 +47,29 @@ jobs:
       - name: Restore source-built Rakudo
         # restore + save split (not actions/cache@v4) so a downstream
         # test failure doesn't invalidate the ~10-20 min Rakudo build.
+        # Key has `-rakudo-only-v2` suffix to invalidate caches that
+        # carried stale zef state in site/ — see the linux-aarch64
+        # lane for the full root-cause writeup.
         id: rakudo-cache
         uses: actions/cache/restore@v4
         with:
           # MSYS2 maps $HOME to a Windows path; rakubrew installs
           # there. Path is captured by cache.
           path: ~/.rakubrew
-          key: rakudo-windows-arm64-${{ env.RAKUDO_VERSION }}
+          key: rakudo-windows-arm64-${{ env.RAKUDO_VERSION }}-rakudo-only-v2
 
       - name: Build ARM64 Rakudo from source (rakubrew)
         run: bash scripts/ci/build-rakudo.sh
+
+      - name: Strip zef module state — we cache Rakudo only, not installs
+        run: rm -rf ~/.rakubrew/versions/moar-*/install/share/perl6/site || true
 
       - name: Save Rakudo cache (build succeeded — independent of tests)
         if: steps.rakudo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ~/.rakubrew
-          key: rakudo-windows-arm64-${{ env.RAKUDO_VERSION }}
+          key: rakudo-windows-arm64-${{ env.RAKUDO_VERSION }}-rakudo-only-v2
 
       - name: Add Rakudo shims + site-bin to PATH
         # shims/ for raku/zef (rakubrew-managed). site-bin for
