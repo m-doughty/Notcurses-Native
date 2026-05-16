@@ -24,6 +24,14 @@ if [[ ! -x "$SHIM_DIR/raku" ]]; then
     exit 1
 fi
 
+# Prepend shims to PATH for this script. zef's installed wrapper at
+# `site/bin/zef` does `exec rakudo "$@"` (not `exec raku`) and reads
+# `rakudo` from PATH — without shims on PATH the wrapper fails with
+# `exec: rakudo: not found`. The calling workflow step's PATH may
+# not yet include shims (e.g., the `Add shims to PATH` step might
+# run after this one), so be self-sufficient and prepend here.
+export PATH="$SHIM_DIR:$PATH"
+
 # Bootstrap zef directly from upstream — rakubrew's `build-zef`
 # subcommand has a version-resolution bug ("Couldn't find version
 # moar-X.Y" right after `build` produces it), so clone the repo
