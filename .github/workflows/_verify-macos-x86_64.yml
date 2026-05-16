@@ -70,10 +70,23 @@ jobs:
           echo "$HOME/.rakubrew/shims" >> "$GITHUB_PATH"
           echo "$HOME/.rakubrew/versions/moar-${{ env.RAKUDO_VERSION }}/install/share/perl6/site/bin" >> "$GITHUB_PATH"
 
-      - name: Verify Rakudo arch is x86_64
+      - name: Verify Rakudo runs as x86_64 under Rosetta
+        # `which raku` resolves to rakubrew's shim — a Perl-script
+        # dispatch wrapper, not the binary. `file` on the shim
+        # reports "Perl script text", which never contains "x86_64".
+        # Ask raku itself instead: `$*KERNEL.hardware` is sourced
+        # from uname(2), and Rosetta lies to the x86_64 process to
+        # report "x86_64" (whereas an arm64 raku here would report
+        # "arm64"). The `arch -x86_64` wrap is paranoid but matches
+        # how every subsequent step runs raku/zef/prove6.
         run: |
-          file "$(which raku)" | tee /tmp/raku-arch
-          grep -q 'x86_64' /tmp/raku-arch
+          set -e
+          detected=$(arch -x86_64 raku -e 'print $*KERNEL.hardware')
+          echo "Rakudo reports hardware: $detected"
+          [ "$detected" = "x86_64" ] || {
+            echo "❌ Expected x86_64 (Rosetta), got '$detected' — Rakudo build wasn't wrapped in arch -x86_64?"
+            exit 1
+          }
 
       - name: zef install (prebuilt path)
         run: arch -x86_64 zef install --/test .
