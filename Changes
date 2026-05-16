@@ -2,6 +2,94 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.3.4  2026-05-16T04:01:59+01:00
+    - Build.rakumod: drop $MIN-GLIBC from v2.35 to v2.28. The Linux
+      glibc lanes are rebased onto manylinux_2_28 containers
+      (quay.io/pypa/manylinux_2_28_{x86_64,aarch64}, RHEL 8 baseline)
+      so the prebuilts now load on every glibc Linux distro under
+      active maintenance in 2026 — RHEL 8+, Ubuntu 18.10+, Debian
+      10+. Previously the 2.35 floor meant Ubuntu 20.04 / Debian 11
+      users fell back to a 5-15 min CMake source build. (manylinux2014
+      / RHEL 7 / glibc 2.17 was the first target but pypa retired it
+      in March 2025 and its CentOS 7 yum mirrors are decaying after
+      the June 2024 EOL — manylinux_2_28 is the maintained successor.)
+    - Build.rakumod: add libc axis to detect-platform. Linux keys
+      now carry a libc suffix (`linux-x86_64-glibc`,
+      `linux-x86_64-musl`, etc.); non-Linux keys unchanged. New
+      `detect-libc` method probes `/lib/ld-musl-*.so.1` then falls
+      back to `!detect-glibc-version`. Implicitly fixes a silent bug
+      where musl users (Alpine / Postmarket OS / Void) were
+      downloading the glibc artefact and segfaulting at first dlopen
+      because `ldd --version` returns non-zero on musl, which
+      short-circuited the glibc-too-old guard.
+    - %PLATFORM-SLUGS: add linux-x86_64-musl, linux-aarch64-musl,
+      linux-x86_64-glibc, linux-aarch64-glibc keys (the glibc entries
+      are renamed from the previous `linux-<arch>` keys). The musl
+      lanes are built in alpine:3.20 containers (musl 1.2.5 headers,
+      1.20+ runtime floor per notcurses' declared support level).
+    - Unknown-platform diagnostic now reports the detected libc on
+      Linux, so a user on an unsupported libc-arch combination can
+      see exactly which axis didn't match.
+    - %PLATFORM-SLUGS: add 'darwin-x86_64' => 'macos-x86_64' so Intel
+      Macs (Mac Pro 2013, iMac Pro, the 2016-2020 Intel MacBook Pro
+      line, Mac Pro 2019) and Hackintoshes get a prebuilt download
+      instead of a 5-15 min CMake source build. The CI repo
+      (m-doughty/Notcurses-Native) produces the artefact on an arm64
+      GHA runner under Rosetta 2 — clang under Rosetta emits ordinary
+      x86_64 Mach-O that native Intel Macs run identically. Pinned at
+      MACOSX_DEPLOYMENT_TARGET=10.15 (Catalina) so the artefact loads
+      on every Intel Mac Apple supports back to ~2012 hardware. The
+      build path was chosen because GitHub's macos-13 native-x86_64
+      runner is on its way out; arm64-with-Rosetta is the long-lived
+      option. Side effect: x86_64 Rakudo running under Rosetta on
+      Apple Silicon now gets a working prebuilt too instead of
+      falling through to source build — not the audience this lane
+      targets, but a free win.
+    - NOTE: this version (0.3.4) still ships BINARY_TAG=r5. The
+      darwin-x86_64 slug-map entry only becomes useful once the
+      m-doughty/Notcurses-Native CI repo publishes a binaries-
+      notcurses-3.0.17-r6 release that includes the new
+      notcurses-macos-x86_64.tar.gz artefact; until then, Intel Mac
+      installs will still take the source-build fallback (just like
+      pre-0.3.4). When r6 ships, BINARY_TAG → r6 + resources/
+      checksums.txt update happen as a single follow-up commit
+      (resources/checksums.txt has the procedure documented at the
+      top of the file). That commit cuts 0.3.5.
+    - Build.rakumod unknown-platform diagnostic: dropped the
+      Apple-Silicon-Rosetta hint introduced in 0.3.3. With
+      darwin-x86_64 now mapped, that case never reaches the
+      `without $plat` branch — the hint was unreachable and would
+      have misled anyone hitting the diagnostic for an actually-novel
+      platform.
+    - t/16-build-detect-platform.rakutest: updated darwin/x86_64
+      assertion (now expects 'macos-x86_64') and added darwin-x86_64
+      to known-platform-keys expected set. Unknown-platform Str:U
+      coverage stays via the freebsd/riscv64 case.
+    - Build.rakumod: fix `zef install` aborting with "Type check failed
+      for return value; expected Str but got Any" on platforms not
+      mapped in %PLATFORM-SLUGS. The headline case is x86_64 Rakudo
+      running under Rosetta on Apple Silicon, which reports
+      $*KERNEL.hardware = 'x86_64' → key 'darwin-x86_64' → unmapped.
+      Root cause: the slug-map hash was untyped, so missing-key lookups
+      returned `Any` (not `Str`) and tripped detect-platform's `--> Str`
+      constraint before the intended source-build fallback at line 102
+      could fire. Typed the hash `my Str %PLATFORM-SLUGS`. While here,
+      promoted `!detect-platform` to a public `detect-platform(:$os,
+      :$hardware --> Str)` so tests can inject kernel pairs without
+      having to override `$*KERNEL`, and added `detect-platform-key` /
+      `known-platform-keys` helpers used by the unknown-platform
+      diagnostic.
+    - Build.rakumod: the unknown-platform warning now lists the exact
+      key that was looked up (e.g. 'darwin-x86_64'), the values of
+      $*KERNEL.name / $*KERNEL.hardware, the full set of platforms
+      that DO have prebuilts, and an Apple-Silicon-under-Rosetta hint.
+      Saves the next person an hour of staring at the previous
+      one-line message.
+    - t/16-build-detect-platform.rakutest: new regression test
+      covering every entry in %PLATFORM-SLUGS plus the
+      darwin-x86_64 (Rosetta) and freebsd-riscv64 (fully unknown)
+      fall-throughs. Would have failed on 0.3.2.
+
 0.3.2  2026-05-12T16:55:21+01:00
     - lib/Notcurses/Native.rakumod: convert the `$nc-lib`,
       `$ffi-lib`, `$core-lib`, `$shim-lib` library-path bindings

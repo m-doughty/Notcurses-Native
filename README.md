@@ -311,11 +311,76 @@ INSTALLATION
 
     zef install Notcurses::Native
 
+On supported platforms this downloads a prebuilt self-contained archive from GitHub Releases, SHA256-verifies it against a checksum baked into the dist, and stages it into the user's XDG data dir. **No system packages are touched.** See **PREBUILT BINARIES** below for the platform matrix.
+
+If you're on an unsupported platform, the build falls back to compiling notcurses from source via CMake — see **BUILD REQUIREMENTS** above for the dev packages that needs.
+
 Installation runs `t/` tests only — pure-Raku channel math and input struct tests that don't need a terminal. The full terminal-dependent test suite lives in `xt/` and can be run manually:
 
     prove -e 'raku -I lib -I t/lib' xt/*.rakutest
 
 `prove` (Perl 5) is recommended for `xt/` tests because [prove6 has a bug](https://github.com/Raku/tap-harness6/issues/64) where terminal escape sequences from C libraries corrupt its TAP parser.
+
+PREBUILT BINARIES
+=================
+
+Each prebuilt archive contains the notcurses libraries plus every non-system runtime dependency, with linker paths (`@loader_path` on macOS, `$ORIGIN` on Linux, sibling-DLL on Windows) rewritten so the binaries find each other inside the staged directory without touching the host system's libraries.
+
+Supported platforms
+-------------------
+
+  * **macOS arm64** (Apple Silicon, macOS 11.0 Big Sur and newer)
+
+  * **macOS x86_64** (Intel Mac / Hackintosh, macOS 10.15 Catalina and newer)
+
+  * **Linux x86_64 glibc** — manylinux_2_28 baseline (glibc 2.28; RHEL 8+ / Ubuntu 18.10+ / Debian 10+ / Fedora 28+ / Arch / Manjaro)
+
+  * **Linux aarch64 glibc** — same baseline
+
+  * **Linux x86_64 musl** — alpine:3.20 baseline (musl 1.20+; Alpine 3.13+ / Postmarket OS / Void / Adelie)
+
+  * **Linux aarch64 musl** — same baseline
+
+  * **Windows x86_64** — mingw-w64 / UCRT
+
+  * **Windows arm64** — clang / UCRT (**not CI-verified**; see below)
+
+The CI release pipeline runs a codec capability probe against every artefact before publish: dlopens the bundled `libavcodec`, confirms the accelerated decoder libraries (`libdav1d`, `libvpx`, `libvpx-vp9`, `libopus`) are registered, and actually decodes PNG / JPEG / BMP fixtures end-to-end. A build with a misconfigured or broken libavcodec doesn't reach the release.
+
+**Windows arm64 caveat:** we build the prebuilt and ship it, but the end-to-end Raku verify lane is currently disabled. Rakudo's source-build path (rakubrew → MoarVM) fails on Windows ARM64 MSYS2 CLANGARM64 — NQP's `Configure.pl` probe trips on a perl-output parse — and `setup-raku@v1` has no native Windows ARM64 prebuilt yet, so there's no Rakudo to test against in CI. The bundle audit on the build side (objdump-based import-table walk, sibling-DLL self-containment check) still runs, so a broken bundle would still fail the release. Users on Windows ARM64 are encouraged to report issues — see [https://github.com/invisietch/data-pipes/issues](https://github.com/invisietch/data-pipes/issues).
+
+Codec coverage
+--------------
+
+Every prebuilt bundles libavcodec configured with:
+
+  * **`libdav1d`** — AV1 video decode, ~10× faster than ffmpeg's internal AV1 decoder for 4K content
+
+  * **`libvpx`** — VP8 / VP9 video decode
+
+  * **`libopus`** — Opus audio decode
+
+Image formats (PNG, JPEG, GIF, WebP, TIFF, BMP, etc.) and the other common video / audio codecs (H.264, HEVC, MPEG-4, MP3, AAC, Vorbis, FLAC, …) use ffmpeg's internal decoders — same code path on every platform.
+
+Source-build fallback
+---------------------
+
+For platforms outside the matrix (FreeBSD, OpenBSD, i686, riscv64, ppc64le, …) or when you explicitly set `NOTCURSES_NATIVE_BUILD_FROM_SOURCE=1`, Notcurses::Native compiles notcurses from source via CMake. That path needs the system packages listed in **BUILD REQUIREMENTS**. The source build takes 5–15 minutes depending on the machine; the prebuilt download path is seconds.
+
+Environment knobs
+-----------------
+
+  * `NOTCURSES_NATIVE_BUILD_FROM_SOURCE=1` — skip the prebuilt download and always compile from source.
+
+  * `NOTCURSES_NATIVE_BINARY_ONLY=1` — refuse to fall back to source build; fail loudly if no prebuilt is available for this platform. Useful in CI where source-build is undesired.
+
+  * `NOTCURSES_NATIVE_BINARY_URL=I<url>` — override the GitHub Release base URL (point at a mirror).
+
+  * `NOTCURSES_NATIVE_CACHE_DIR=I<path>` — override the prebuilt-download cache directory.
+
+  * `NOTCURSES_NATIVE_DATA_DIR=I<path>` — override the staged-libs directory (defaults to XDG_DATA_HOME).
+
+  * `NOTCURSES_NATIVE_LIB_DIR=I<path>` — at runtime, load notcurses from this directory instead of the staged data dir (escape hatch for custom builds).
 
 EXAMPLES
 ========
