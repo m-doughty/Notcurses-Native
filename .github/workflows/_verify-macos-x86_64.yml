@@ -79,6 +79,13 @@ jobs:
       - name: prove6 (prebuilt path)
         run: arch -x86_64 prove6 --verbose -I lib -I t/lib t
 
+      - name: prove (xt — terminal-dependent, prebuilt path)
+        # Perl's `prove` (the orchestrator) doesn't need to be
+        # x86_64 — it just forks the -e command per test file. The
+        # `raku` invocation IS x86_64 via `arch -x86_64`, which is
+        # what loads the bundled prebuilt under test.
+        run: prove -e 'arch -x86_64 raku -I lib -I t/lib' --verbose xt/*.rakutest
+
       - name: Install x86_64 brew deps for source-build pass
         run: |
           arch -x86_64 /usr/local/bin/brew install \

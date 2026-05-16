@@ -30,17 +30,33 @@ set -euxo pipefail
 RAKUDO_VERSION="${RAKUDO_VERSION:-2026.03}"
 export RAKUBREW_HOME="${RAKUBREW_HOME:-$HOME/.rakubrew}"
 
-# Cache hit / already-installed short circuit.
-if [[ -x "$RAKUBREW_HOME/versions/moar-$RAKUDO_VERSION/bin/raku" ]]; then
-    echo "✅ Rakudo $RAKUDO_VERSION already installed at $RAKUBREW_HOME"
-    "$RAKUBREW_HOME/versions/moar-$RAKUDO_VERSION/bin/raku" --version
-    # Also confirm zef is there.
-    if [[ -x "$RAKUBREW_HOME/versions/moar-$RAKUDO_VERSION/bin/zef" ]]; then
-        "$RAKUBREW_HOME/versions/moar-$RAKUDO_VERSION/bin/zef" --version || true
-    else
-        # zef can drift out of sync with a cached Rakudo. Reinstall.
-        "$RAKUBREW_HOME/bin/rakubrew" build-zef "moar-$RAKUDO_VERSION"
+RAKU_BIN_DIR="$RAKUBREW_HOME/versions/moar-$RAKUDO_VERSION/bin"
+
+# Install zef manually using the freshly-built (or cached) Raku.
+# rakubrew has a `build-zef` action but it sometimes fails to find
+# the version it just installed ("Couldn't find version moar-X.Y" —
+# inconsistent version-resolution between `build` and `build-zef`
+# observed empirically). Bypass by bootstrapping zef directly: clone
+# the repo, then run zef-from-source to install zef-as-a-module.
+# That's literally the official upstream bootstrap recipe.
+install_zef() {
+    if [[ -x "$RAKU_BIN_DIR/zef" ]]; then
+        echo "  zef already present at $RAKU_BIN_DIR/zef"
+        return 0
     fi
+    local zef_src=/tmp/zef-bootstrap
+    rm -rf "$zef_src"
+    git clone --depth=1 https://github.com/ugexe/zef.git "$zef_src"
+    (cd "$zef_src" && "$RAKU_BIN_DIR/raku" -I . bin/zef install .)
+    rm -rf "$zef_src"
+}
+
+# Cache hit / already-installed short circuit.
+if [[ -x "$RAKU_BIN_DIR/raku" ]]; then
+    echo "✅ Rakudo $RAKUDO_VERSION already installed at $RAKUBREW_HOME"
+    "$RAKU_BIN_DIR/raku" --version
+    install_zef
+    "$RAKU_BIN_DIR/zef" --version || true
     exit 0
 fi
 
@@ -69,15 +85,15 @@ fi
 # the actions/cache restore and skip this entirely.
 "$RAKUBREW_HOME/bin/rakubrew" build "moar-$RAKUDO_VERSION"
 
-# Install zef into this Rakudo's site dir so subsequent
-# `zef install` calls work.
-"$RAKUBREW_HOME/bin/rakubrew" build-zef "moar-$RAKUDO_VERSION"
-
 # Activate it (sets a `current` symlink rakubrew uses for `raku`
 # shim resolution — irrelevant for our direct PATH-based usage,
 # but harmless).
 "$RAKUBREW_HOME/bin/rakubrew" switch "moar-$RAKUDO_VERSION"
 
+# Install zef via the bootstrap helper defined above (replaces
+# rakubrew's build-zef, which has a version-resolution bug).
+install_zef
+
 # Smoke check.
-"$RAKUBREW_HOME/versions/moar-$RAKUDO_VERSION/bin/raku" --version
-"$RAKUBREW_HOME/versions/moar-$RAKUDO_VERSION/bin/zef" --version
+"$RAKU_BIN_DIR/raku" --version
+"$RAKU_BIN_DIR/zef" --version

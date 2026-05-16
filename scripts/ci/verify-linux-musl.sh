@@ -32,10 +32,15 @@ set -euxo pipefail
 #     the container.
 apk add --no-cache \
     bash coreutils findutils tar git curl \
-    perl build-base make \
+    perl perl-utils build-base make \
     cmake pkgconf patchelf \
     gcc g++ musl-dev linux-headers \
     ffmpeg-dev ncurses-dev libunistring-dev libdeflate-dev
+
+# perl-utils ships `prove` (Perl 5's test harness). The arm64-mac
+# reference lane runs `prove -e 'raku -I lib -I t/lib' xt/*.rakutest`
+# for terminal-dependent tests; we mirror that here so every
+# non-Windows lane has the same coverage.
 
 cd /work
 
@@ -57,6 +62,7 @@ zef --version
 zef install --/test .
 zef install --/test App::Prove6
 prove6 --verbose -I lib -I t/lib t
+prove -e 'raku -I lib -I t/lib' --verbose xt/*.rakutest
 
 # Source-build path — refuse the prebuilt and exercise the CMake
 # fallback. apk-installed ffmpeg/ncurses/libunistring/libdeflate

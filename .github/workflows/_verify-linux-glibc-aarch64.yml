@@ -53,6 +53,9 @@ jobs:
       - name: prove6 (prebuilt path)
         run: prove6 --verbose -I lib -I t/lib t
 
+      - name: prove (xt — terminal-dependent, prebuilt path)
+        run: prove -e 'raku -I lib -I t/lib' --verbose xt/*.rakutest
+
       - name: Install apt deps for source-build pass
         run: |
           sudo apt-get install -y --no-install-recommends \
