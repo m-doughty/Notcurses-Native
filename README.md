@@ -1,4 +1,4 @@
-[![Actions Status](https://github.com/m-doughty/Notcurses-Native/actions/workflows/test.yml/badge.svg)](https://github.com/m-doughty/Notcurses-Native/actions)
+[![Actions Status](https://github.com/m-doughty/Notcurses-Native/actions/workflows/ci.yml/badge.svg)](https://github.com/m-doughty/Notcurses-Native/actions)
 
 NAME
 ====
