@@ -47,9 +47,11 @@ jobs:
           arch -x86_64 /usr/local/bin/brew install perl git
           echo "/usr/local/bin" >> "$GITHUB_PATH"
 
-      - name: Cache source-built Rakudo
+      - name: Restore source-built Rakudo
+        # restore + save split (not actions/cache@v4) so a downstream
+        # test failure doesn't invalidate the ~10-20 min Rakudo build.
         id: rakudo-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.rakubrew
           key: rakudo-macos-x86_64-${{ env.RAKUDO_VERSION }}
@@ -61,6 +63,13 @@ jobs:
           # if cache restored, the script's idempotent short-circuit
           # checks (already-built) skip the expensive part.
           arch -x86_64 bash scripts/ci/build-rakudo.sh
+
+      - name: Save Rakudo cache (build succeeded — independent of tests)
+        if: steps.rakudo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.rakubrew
+          key: rakudo-macos-x86_64-${{ env.RAKUDO_VERSION }}
 
       - name: Add Rakudo shims + site-bin to PATH
         # shims/ for raku/zef (rakubrew-managed). site-bin for

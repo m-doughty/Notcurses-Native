@@ -44,9 +44,11 @@ jobs:
             mingw-w64-clang-aarch64-ninja
             mingw-w64-clang-aarch64-toolchain
 
-      - name: Cache source-built Rakudo
+      - name: Restore source-built Rakudo
+        # restore + save split (not actions/cache@v4) so a downstream
+        # test failure doesn't invalidate the ~10-20 min Rakudo build.
         id: rakudo-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           # MSYS2 maps $HOME to a Windows path; rakubrew installs
           # there. Path is captured by cache.
@@ -55,6 +57,13 @@ jobs:
 
       - name: Build ARM64 Rakudo from source (rakubrew)
         run: bash scripts/ci/build-rakudo.sh
+
+      - name: Save Rakudo cache (build succeeded — independent of tests)
+        if: steps.rakudo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.rakubrew
+          key: rakudo-windows-arm64-${{ env.RAKUDO_VERSION }}
 
       - name: Add Rakudo shims + site-bin to PATH
         # shims/ for raku/zef (rakubrew-managed). site-bin for

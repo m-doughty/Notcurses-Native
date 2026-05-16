@@ -31,15 +31,26 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential perl curl git ca-certificates
 
-      - name: Cache source-built Rakudo
+      - name: Restore source-built Rakudo
+        # restore + save split (not actions/cache@v4) so a downstream
+        # test failure doesn't invalidate the ~10-20 min Rakudo build.
+        # save runs immediately after a successful build, before the
+        # zef install / prove6 / xt steps that can fail independently.
         id: rakudo-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.rakubrew
           key: rakudo-linux-aarch64-${{ env.RAKUDO_VERSION }}
 
       - name: Build Rakudo from source (rakubrew)
         run: bash scripts/ci/build-rakudo.sh
+
+      - name: Save Rakudo cache (build succeeded — independent of tests)
+        if: steps.rakudo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.rakubrew
+          key: rakudo-linux-aarch64-${{ env.RAKUDO_VERSION }}
 
       - name: Add Rakudo shims + site-bin to PATH
         # Two dirs:

@@ -1,56 +1,50 @@
 #!/usr/bin/env bash
-# Verify the linux-<arch>-musl prebuilt notcurses archive loads +
-# works INSIDE an alpine:3.20 container. Runs from
-# `docker run -v $PWD:/work -w /work alpine:3.20 bash scripts/ci/verify-linux-musl.sh`.
+# Test phase of the musl verify lane — runs INSIDE the same
+# alpine:3.20 container as `prep-musl-rakudo.sh`, but separated so
+# a test failure doesn't bust the Rakudo build cache (Rakudo
+# source-builds for ~10-20 min on first run).
 #
-# Why source-build Rakudo instead of `apk add rakudo`: Alpine's
+# Assumes prep-musl-rakudo.sh already ran (Rakudo built under
+# $RAKUBREW_HOME, which is bind-mounted to a host cache dir).
+#
+# Runs from:
+#   docker run -v "$PWD:/work" -w /work \
+#     -v "$PWD/_ci-cache/rakubrew-alpine-<arch>:/root/.rakubrew" \
+#     -e RAKUDO_VERSION=... -e RAKUBREW_HOME=/root/.rakubrew \
+#     alpine:3.20 bash scripts/ci/verify-musl-tests.sh
+#
+# Why source-built Rakudo (not `apk add rakudo`): Alpine's
 # package-repo Rakudo lags upstream by a few minor versions and
 # (as of 3.20) is too old to accept a `Callable` in NativeCall's
 # `is native(...)` trait — which Notcurses::Native uses for its
 # state-cached lazy lib-path resolution. apk Rakudo fails to
 # precompile `Notcurses::Native::Direct` with "Too many positionals
 # passed; expected 2 arguments but got 3" during `zef install`.
-# Source-built current Rakudo via rakubrew handles the modern
-# Callable-native signature correctly.
-#
-# Caller is expected to:
-#   * Bind-mount $PWD to /work (workspace).
-#   * Set RAKUDO_VERSION (matches the cache key).
-#   * Optionally bind-mount /root/.rakubrew to a host cache dir.
 
 set -euxo pipefail
 
-# Build deps:
-#   * bash, coreutils, findutils, tar, git, curl — script + zef.
-#   * perl, build-base, make — rakubrew's Configure.pl + Rakudo
-#     build (gcc, ld, etc.).
-#   * cmake, pkgconf, patchelf — for the source-build pass.
-#   * ffmpeg-dev + ncurses-dev + libunistring-dev + libdeflate-dev —
+# Test-phase deps:
+#   * bash, coreutils, findutils, tar, git, curl — script + zef + xt.
+#   * perl, perl-utils — `prove` (Perl 5's harness) for the xt/
+#     pass; matches arm64-mac reference lane.
+#   * cmake, pkgconf, patchelf — source-build pass needs them.
+#   * gcc, g++, musl-dev, linux-headers, make, build-base —
+#     NativeCall-driven C builds inside the source-build pass.
+#   * ffmpeg-dev, ncurses-dev, libunistring-dev, libdeflate-dev —
 #     notcurses' build-time deps when we exercise
 #     NOTCURSES_NATIVE_BUILD_FROM_SOURCE.
-#   * linux-headers, musl-dev — needed for any C compile inside
-#     the container.
 apk add --no-cache \
-    bash coreutils findutils tar git curl \
+    bash coreutils findutils tar git curl ca-certificates \
     perl perl-utils build-base make \
     cmake pkgconf patchelf \
     gcc g++ musl-dev linux-headers \
     ffmpeg-dev ncurses-dev libunistring-dev libdeflate-dev
 
-# perl-utils ships `prove` (Perl 5's test harness). The arm64-mac
-# reference lane runs `prove -e 'raku -I lib -I t/lib' xt/*.rakutest`
-# for terminal-dependent tests; we mirror that here so every
-# non-Windows lane has the same coverage.
-
 cd /work
-
-# Source-build Rakudo (idempotent — short-circuits if already
-# built from a cached $RAKUBREW_HOME).
-bash scripts/ci/build-rakudo.sh
 
 # Put rakubrew's shims dir + zef's site-bin on PATH:
 #   * shims/ — rakubrew's dispatch wrappers for raku/zef (set up
-#     by build-rakudo.sh).
+#     by prep-musl-rakudo.sh / build-rakudo.sh).
 #   * install/share/perl6/site/bin — zef-installed module bins
 #     (App::Prove6's `prove6`, etc.). rakubrew doesn't auto-rehash
 #     after each `zef install` so binaries installed later in
