@@ -1,6 +1,7 @@
 use NativeCall;
 use Notcurses::Native::Types;
 use Notcurses::Native;
+use Notcurses::Native::Str;
 
 unit module Notcurses::Native::Widgets;
 
@@ -62,15 +63,20 @@ sub ncselector_additem(NcselectorHandle $n, NcselectorItem $item --> int32)
 sub ncselector_delitem(NcselectorHandle $n, Str $item --> int32)
 	is native(&core-lib) is export { * }
 
+#| OWNED-BY-LIBRARY: returns a pointer to the selector's internal option
+#| storage. Caller MUST NOT free.
 sub ncselector_selected(NcselectorHandle $n --> Str)
 	is native(&core-lib) is export { * }
 
 sub ncselector_plane(NcselectorHandle $n --> NcplaneHandle)
 	is native(&core-lib) is export { * }
 
+#| OWNED-BY-LIBRARY: advances the selection AND returns a pointer to
+#| the now-selected internal option string. Caller MUST NOT free.
 sub ncselector_previtem(NcselectorHandle $n --> Str)
 	is native(&core-lib) is export { * }
 
+#| OWNED-BY-LIBRARY: same contract as ncselector_previtem.
 sub ncselector_nextitem(NcselectorHandle $n --> Str)
 	is native(&core-lib) is export { * }
 
@@ -163,9 +169,12 @@ sub ncmenu_previtem(NcmenuHandle $n --> int32)
 sub ncmenu_item_set_status(NcmenuHandle $n, Str $section, Str $item, bool $enabled --> int32)
 	is native(&core-lib) is export { * }
 
+#| OWNED-BY-LIBRARY: returns a pointer to the menu's internal item
+#| description. Caller MUST NOT free.
 sub ncmenu_selected(NcmenuHandle $n, Ncinput $ni --> Str)
 	is native(&core-lib) is export { * }
 
+#| OWNED-BY-LIBRARY: same contract as ncmenu_selected.
 sub ncmenu_mouse_selected(NcmenuHandle $n, Ncinput $click, Ncinput $ni --> Str)
 	is native(&core-lib) is export { * }
 
@@ -228,6 +237,7 @@ sub nctabbed_content_plane(NctabbedHandle $nt --> NcplaneHandle)
 sub nctab_cb(NctabHandle $t --> Pointer)
 	is native(&core-lib) is export { * }
 
+#| OWNED-BY-LIBRARY: tab's internal name buffer. Caller MUST NOT free.
 sub nctab_name(NctabHandle $t --> Str)
 	is native(&core-lib) is export { * }
 
@@ -283,6 +293,8 @@ sub nctabbed_selchan(NctabbedHandle $nt --> uint64)
 sub nctabbed_sepchan(NctabbedHandle $nt --> uint64)
 	is native(&ffi-lib) is export { * }
 
+#| OWNED-BY-LIBRARY: separator string set at create time. Caller MUST
+#| NOT free.
 sub nctabbed_separator(NctabbedHandle $nt --> Str)
 	is native(&core-lib) is export { * }
 
@@ -411,8 +423,13 @@ sub ncreader_move_down(NcreaderHandle $n --> int32)
 sub ncreader_write_egc(NcreaderHandle $n, Str $egc --> int32)
 	is native(&core-lib) is export { * }
 
-sub ncreader_contents(NcreaderHandle $n --> Str)
-	is native(&core-lib) is export { * }
+# Returns malloc'd buffer of the reader's current contents; caller frees.
+sub _ncreader_contents_raw(NcreaderHandle $n --> Pointer)
+	is native(&core-lib) is symbol('ncreader_contents') { * }
+
+sub ncreader_contents(NcreaderHandle $n --> Str) is export {
+	strdup-copy-and-free(_ncreader_contents_raw($n))
+}
 
 # contents is char** output
 sub ncreader_destroy(NcreaderHandle $n, Pointer $contents)

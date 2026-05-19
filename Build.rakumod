@@ -41,6 +41,15 @@
 #|   NOTCURSES_NATIVE_LIB_DIR=<path>       (runtime) load libs from this
 #|                                         dir instead of the staged
 #|                                         data dir
+#|   NOTCURSES_NATIVE_VENDOR_DIR=<path>    use this local notcurses source
+#|                                         tree instead of fetching the
+#|                                         pinned commit from the fork at
+#|                                         build time. Required for
+#|                                         airgapped installs; also useful
+#|                                         when iterating on the fork
+#|                                         locally without push cycles.
+#|                                         No SHA verification — caller
+#|                                         is responsible for the tree.
 #|
 #| Linux prebuilts:
 #|
@@ -369,6 +378,40 @@ class Build {
         $tag;
     }
 
+    #| Parse NOTCURSES_FORK at the dist root for the source-build pin.
+    #| Returns a Map with `url` (fork repo URL) and `sha` (40-char hex
+    #| commit). Lines starting with `#` and blank lines are ignored;
+    #| every other line must be `key=value`. Dies if the file is missing,
+    #| malformed, or the SHA is the wrong shape.
+    method !notcurses-fork-pin($dist-path --> Map) {
+        my IO::Path $file = "$dist-path/NOTCURSES_FORK".IO;
+        unless $file.e {
+            die "❌ Missing NOTCURSES_FORK file at { $file }. This file "
+              ~ "must contain `url=…` and `sha=…` lines naming the "
+              ~ "upstream fork and pinned commit used for source builds.";
+        }
+        my %pin;
+        for $file.slurp.lines -> Str $line {
+            my Str $trimmed = $line.trim;
+            next if $trimmed eq '' || $trimmed.starts-with('#');
+            unless $trimmed ~~ /^ (<-[=]>+) '=' (.+) $/ {
+                die "❌ Malformed line in NOTCURSES_FORK: '$line' "
+                  ~ "(expected `key=value`).";
+            }
+            %pin{ ~$0.trim } = ~$1.trim;
+        }
+        for <url sha> -> Str $k {
+            unless %pin{$k}:exists && %pin{$k}.chars {
+                die "❌ NOTCURSES_FORK missing required key `$k`.";
+            }
+        }
+        unless %pin<sha> ~~ /^ <[0..9a..f]> ** 40 $/ {
+            die "❌ NOTCURSES_FORK sha=… must be a 40-char lowercase hex "
+              ~ "commit SHA, got '%pin<sha>'.";
+        }
+        %pin.Map;
+    }
+
     method !expected-sha($dist-path, Str $artifact --> Str) {
         my IO::Path $file = "$dist-path/resources/checksums.txt".IO;
         return Str unless $file.e;
@@ -402,15 +445,115 @@ class Build {
 
     # --- Source compile path (CMake, ffmpeg, etc.) ----------------------
 
-    #| Build notcurses from the vendored source via CMake. Matches the
+    #| Resolve the notcurses source tree to build from. Two paths:
+    #|
+    #|   1. NOTCURSES_NATIVE_VENDOR_DIR=<path> — use this local checkout
+    #|      verbatim, no clone, no SHA check. Dev escape hatch for
+    #|      iterating on the fork without push cycles, and the only
+    #|      way to install in an airgapped environment. Caller owns
+    #|      the tree's contents.
+    #|
+    #|   2. (default) git-fetch the URL + SHA pinned in NOTCURSES_FORK
+    #|      at the dist root, into a per-SHA subdirectory of the cache.
+    #|      Uses `git init` + `fetch --depth 1 origin <SHA>` (GitHub
+    #|      allows fetching arbitrary reachable commits), then
+    #|      `checkout FETCH_HEAD`, then verifies HEAD matches the
+    #|      pinned SHA. Cached per-SHA so bumping the pin invalidates
+    #|      the cache automatically.
+    method !ensure-notcurses-source($dist-path --> IO::Path) {
+        with %*ENV<NOTCURSES_NATIVE_VENDOR_DIR> -> Str $local {
+            my IO::Path $dir = $local.IO;
+            unless $dir.d && "$dir/CMakeLists.txt".IO.e {
+                die "❌ NOTCURSES_NATIVE_VENDOR_DIR=$local is not a "
+                  ~ "notcurses source tree (no CMakeLists.txt found).";
+            }
+            say "Using NOTCURSES_NATIVE_VENDOR_DIR=$local as source tree.";
+            return $dir;
+        }
+
+        my %pin = self!notcurses-fork-pin($dist-path);
+        my Str $sha = %pin<sha>;
+        my Str $url = %pin<url>;
+
+        my Str $cache-base-str = %*ENV<NOTCURSES_NATIVE_CACHE_DIR>
+            // %*ENV<XDG_CACHE_HOME>
+            // "{%*ENV<HOME> // '.'}/.cache";
+        my IO::Path $src-dir =
+            "$cache-base-str/Notcurses-Native-source/$sha".IO;
+
+        if $src-dir.d && "$src-dir/CMakeLists.txt".IO.e {
+            # Verify HEAD still matches the pin (defends against an
+            # aborted earlier fetch that left a partial tree on disk).
+            my Str $head = self!git-rev-parse-head($src-dir) // '';
+            if $head eq $sha {
+                say "Reusing cached notcurses source at $src-dir.";
+                return $src-dir;
+            }
+            note "⚠️  Cached source at $src-dir has wrong HEAD "
+               ~ "($head), re-cloning.";
+            run 'rm', '-rf', $src-dir.Str;
+        }
+
+        $src-dir.mkdir;
+        say "Fetching notcurses source from $url @ $sha...";
+
+        my @git-steps = (
+            ('git', 'init', '--quiet', $src-dir.Str),
+            ('git', '-C', $src-dir.Str, 'remote', 'add', 'origin', $url),
+            ('git', '-C', $src-dir.Str, '-c', 'protocol.version=2',
+                'fetch', '--depth', '1', '--quiet', 'origin', $sha),
+            ('git', '-C', $src-dir.Str, 'checkout', '--quiet',
+                'FETCH_HEAD'),
+        );
+        for @git-steps -> @cmd {
+            my $proc = run |@cmd, :out, :err;
+            my $out = $proc.out.slurp(:close);
+            my $err = $proc.err.slurp(:close);
+            unless $proc.exitcode == 0 {
+                run 'rm', '-rf', $src-dir.Str;
+                die "❌ Failed to fetch notcurses source: "
+                  ~ "{ @cmd.join(' ') }\n"
+                  ~ "stdout: $out\nstderr: $err\n"
+                  ~ "If you're offline or behind a firewall that blocks "
+                  ~ "github.com, set NOTCURSES_NATIVE_VENDOR_DIR=/path/"
+                  ~ "to/local/notcurses/clone to use a pre-staged "
+                  ~ "source tree.";
+            }
+        }
+
+        # Belt-and-braces: confirm HEAD matches the pinned SHA. Should
+        # be tautological after a fetch-by-SHA + checkout FETCH_HEAD,
+        # but cheap defense against a corrupted clone.
+        my Str $head = self!git-rev-parse-head($src-dir) // '';
+        unless $head eq $sha {
+            die "❌ Source clone HEAD ($head) does not match pinned SHA "
+              ~ "($sha). Refusing to build from unverified source.";
+        }
+        say "✅ Fetched notcurses source → $src-dir.";
+        $src-dir;
+    }
+
+    #| `git rev-parse HEAD` in $dir. Returns the trimmed SHA on success,
+    #| `Str` type object on any failure.
+    method !git-rev-parse-head(IO::Path $dir --> Str) {
+        my $proc = run 'git', '-C', $dir.Str, 'rev-parse', 'HEAD',
+                       :out, :err;
+        my Str $out = $proc.out.slurp(:close).trim;
+        $proc.err.slurp(:close);
+        return Str unless $proc.exitcode == 0;
+        $out;
+    }
+
+    #| Build notcurses from source via CMake. Matches the
     #| per-platform build recipe used by the CI workflow. Requires
-    #| cmake + a C toolchain + system ffmpeg / ncurses / libunistring
-    #| / libdeflate dev headers (see docs/Readme.rakudoc for distro-
-    #| specific install commands).
+    #| cmake + git + a C toolchain + system ffmpeg / ncurses /
+    #| libunistring / libdeflate dev headers (see docs/Readme.rakudoc
+    #| for distro-specific install commands).
     method !compile-from-source($dist-path, IO::Path $stage) {
         self!check-toolchain;
 
-        my Str $vendor = "$dist-path/vendor/notcurses";
+        my IO::Path $vendor-io = self!ensure-notcurses-source($dist-path);
+        my Str $vendor = $vendor-io.Str;
         my Str $build-dir = "$vendor/build";
         my Str $os = $*KERNEL.name.lc;
         my Str $ext = $os ~~ /darwin/ ?? 'dylib'
@@ -646,6 +789,17 @@ class Build {
     }
 
     method !check-toolchain() {
+        my $git-rc = run 'git', '--version', :out, :err;
+        $git-rc.out.slurp(:close);
+        $git-rc.err.slurp(:close);
+        unless $git-rc.exitcode == 0 {
+            die "❌ git not found in PATH. The source-build fallback "
+              ~ "fetches notcurses fresh from the pinned fork at build "
+              ~ "time. To skip the fetch (airgapped install or local "
+              ~ "fork iteration), set NOTCURSES_NATIVE_VENDOR_DIR=/path/"
+              ~ "to/notcurses/source.";
+        }
+
         my $rc = run 'cmake', '--version', :out, :err;
         $rc.out.slurp(:close);
         $rc.err.slurp(:close);

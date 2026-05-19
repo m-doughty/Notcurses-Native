@@ -1,6 +1,7 @@
 use NativeCall;
 use Notcurses::Native::Types;
 use Notcurses::Native;
+use Notcurses::Native::Str;
 
 unit module Notcurses::Native::Cell;
 
@@ -153,12 +154,24 @@ sub nccell_load_ucs32(NcplaneHandle $n, Nccell $c, uint32 $u --> int32)
 
 # === Cell extract/strdup ===
 
-sub nccell_extract(NcplaneHandle $n, Nccell $c, uint16 $stylemask is rw, uint64 $channels is rw --> Str)
-	is native(&ffi-lib) is export { * }
+# nccell_extract and nccell_strdup return heap-allocated EGC strings
+# that the caller must free.
+sub _nccell_extract_raw(NcplaneHandle $n, Nccell $c, uint16 $stylemask is rw, uint64 $channels is rw --> Pointer)
+	is native(&ffi-lib) is symbol('nccell_extract') { * }
 
-sub nccell_strdup(NcplaneHandle $n, Nccell $c --> Str)
-	is native(&ffi-lib) is export { * }
+sub nccell_extract(NcplaneHandle $n, Nccell $c, uint16 $stylemask is rw, uint64 $channels is rw --> Str) is export {
+	strdup-copy-and-free(_nccell_extract_raw($n, $c, $stylemask, $channels))
+}
 
+sub _nccell_strdup_raw(NcplaneHandle $n, Nccell $c --> Pointer)
+	is native(&ffi-lib) is symbol('nccell_strdup') { * }
+
+sub nccell_strdup(NcplaneHandle $n, Nccell $c --> Str) is export {
+	strdup-copy-and-free(_nccell_strdup_raw($n, $c))
+}
+
+#| OWNED-BY-LIBRARY: returns a pointer into the cell's egcpool inside the
+#| owning plane. Caller MUST NOT free. `--> Str` is safe — Raku copies.
 sub nccell_extended_gcluster(NcplaneHandle $n, Nccell $c --> Str)
 	is native(&core-lib) is export { * }
 

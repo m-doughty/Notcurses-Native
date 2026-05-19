@@ -1,6 +1,7 @@
 use NativeCall;
 use Notcurses::Native::Types;
 use Notcurses::Native;
+use Notcurses::Native::Str;
 
 unit module Notcurses::Native::Plane;
 
@@ -68,6 +69,8 @@ sub ncplane_resizecb(NcplaneHandle $n --> Pointer)
 sub ncplane_set_name(NcplaneHandle $n, Str $name --> int32)
 	is native(&core-lib) is export { * }
 
+#| OWNED-BY-LIBRARY: returns a pointer to the plane's internal name
+#| storage. Caller MUST NOT free. `--> Str` is safe — Raku copies.
 sub ncplane_name(NcplaneHandle $n --> Str)
 	is native(&core-lib) is export { * }
 
@@ -173,20 +176,35 @@ sub ncplane_rotate_cw(NcplaneHandle $n --> int32)
 sub ncplane_rotate_ccw(NcplaneHandle $n --> int32)
 	is native(&core-lib) is export { * }
 
-sub ncplane_at_cursor(NcplaneHandle $n, uint16 $stylemask is rw, uint64 $channels is rw --> Str)
-	is native(&core-lib) is export { * }
+# ncplane_at_cursor / at_yx / contents all return heap-allocated EGC
+# strings the caller must free.
+
+sub _ncplane_at_cursor_raw(NcplaneHandle $n, uint16 $stylemask is rw, uint64 $channels is rw --> Pointer)
+	is native(&core-lib) is symbol('ncplane_at_cursor') { * }
+
+sub ncplane_at_cursor(NcplaneHandle $n, uint16 $stylemask is rw, uint64 $channels is rw --> Str) is export {
+	strdup-copy-and-free(_ncplane_at_cursor_raw($n, $stylemask, $channels))
+}
 
 sub ncplane_at_cursor_cell(NcplaneHandle $n, Nccell $c --> int32)
 	is native(&core-lib) is export { * }
 
-sub ncplane_at_yx(NcplaneHandle $n, int32 $y, int32 $x, uint16 $stylemask is rw, uint64 $channels is rw --> Str)
-	is native(&core-lib) is export { * }
+sub _ncplane_at_yx_raw(NcplaneHandle $n, int32 $y, int32 $x, uint16 $stylemask is rw, uint64 $channels is rw --> Pointer)
+	is native(&core-lib) is symbol('ncplane_at_yx') { * }
+
+sub ncplane_at_yx(NcplaneHandle $n, int32 $y, int32 $x, uint16 $stylemask is rw, uint64 $channels is rw --> Str) is export {
+	strdup-copy-and-free(_ncplane_at_yx_raw($n, $y, $x, $stylemask, $channels))
+}
 
 sub ncplane_at_yx_cell(NcplaneHandle $n, int32 $y, int32 $x, Nccell $c --> int32)
 	is native(&core-lib) is export { * }
 
-sub ncplane_contents(NcplaneHandle $n, int32 $begy, int32 $begx, uint32 $leny, uint32 $lenx --> Str)
-	is native(&core-lib) is export { * }
+sub _ncplane_contents_raw(NcplaneHandle $n, int32 $begy, int32 $begx, uint32 $leny, uint32 $lenx --> Pointer)
+	is native(&core-lib) is symbol('ncplane_contents') { * }
+
+sub ncplane_contents(NcplaneHandle $n, int32 $begy, int32 $begx, uint32 $leny, uint32 $lenx --> Str) is export {
+	strdup-copy-and-free(_ncplane_contents_raw($n, $begy, $begx, $leny, $lenx))
+}
 
 sub ncplane_set_userptr(NcplaneHandle $n, Pointer $opaque --> Pointer)
 	is native(&core-lib) is export { * }

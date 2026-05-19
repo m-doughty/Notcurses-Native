@@ -1,5 +1,6 @@
 use NativeCall;
 use Notcurses::Native::Types;
+use Notcurses::Native::Str;
 
 unit module Notcurses::Native;
 
@@ -118,20 +119,24 @@ sub _resolve-lib(Str $name --> Str) {
 #
 # Same Raku-%*ENV-doesn't-reach-C-getenv issue as Vips-Native:
 # ncurses reads TERMINFO_DIRS via getenv(3), so we call setenv(3)
-# directly via NativeCall.
+# directly via NativeCall. Uses the unified libc resolver in
+# Notcurses::Native::Str so musl Alpine + glibc Linux + macOS all
+# pick the right library without per-call redeclaration.
+sub _setenv_c(Str, Str, int32 --> int32)
+    is native(&libc-name) is symbol('setenv') { * }
+
 sub _setenv-c(Str $name, Str $value) {
     %*ENV{$name} = $value;
     return if $*DISTRO.is-win;
-    use NativeCall;
-    my sub mac_setenv(Str, Str, int32 --> int32)
-        is native('c') is symbol('setenv') { * };
-    my sub linux_setenv(Str, Str, int32 --> int32)
-        is native('libc.so.6') is symbol('setenv') { * };
-    if $*KERNEL.name.lc ~~ /darwin/ {
-        mac_setenv($name, $value, 1);
-    }
-    else {
-        linux_setenv($name, $value, 1);
+    my $rv = _setenv_c($name, $value, 1);
+    if $rv != 0 {
+        # Stays in stderr — fires before notcurses_init takes the
+        # terminal, so it's visible. Don't throw: missing TERMINFO_DIRS
+        # is recoverable in some configurations (compiled-in default
+        # path may work), and a hard die here masks the surrounding
+        # ncurses error which is more useful.
+        note "Notcurses::Native: setenv($name) returned $rv; "
+           ~ "ncurses may not see the value via getenv(3).";
     }
 }
 
@@ -187,6 +192,8 @@ sub shim-lib is export { state $r = _resolve-lib('libnotcurses_native_shim'); $r
 
 # === Version ===
 
+#| OWNED-BY-LIBRARY: static version string baked into libnotcurses;
+#| caller MUST NOT free.
 sub notcurses_version(--> Str)
 	is native(&core-lib) is export { * }
 

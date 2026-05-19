@@ -20,6 +20,7 @@
     "Notcurses::Native::Direct": "lib/Notcurses/Native/Direct.rakumod",
     "Notcurses::Native::Input": "lib/Notcurses/Native/Input.rakumod",
     "Notcurses::Native::Plane": "lib/Notcurses/Native/Plane.rakumod",
+    "Notcurses::Native::Str": "lib/Notcurses/Native/Str.rakumod",
     "Notcurses::Native::Types": "lib/Notcurses/Native/Types.rakumod",
     "Notcurses::Native::Visual": "lib/Notcurses/Native/Visual.rakumod",
     "Notcurses::Native::Widgets": "lib/Notcurses/Native/Widgets.rakumod"

@@ -1,0 +1,16 @@
+# Pinned upstream fork + commit SHA for the source-build fallback.
+# Build.rakumod fetches this exact commit via `git init` + fetch-by-SHA
+# so a moving branch can never silently change what we build.
+#
+# When bumping:
+#   1. Push the new commit to the URL below.
+#   2. Update the sha= line to the new HEAD.
+#   3. Sync vendor/notcurses to match (CI prebuilt lanes still read
+#      from vendor; collapse onto the fetch once CI is migrated).
+#   4. Bump BINARY_TAG so consumers re-pull the prebuilt that
+#      embeds the new patch.
+#
+# Lines starting with `#` and blank lines are ignored. Keys are
+# case-sensitive; `url=` and `sha=` are required.
+url=https://github.com/m-doughty/notcurses.git
+sha=276d665f0ac63178f20dfaccdae1b318734fe5d2

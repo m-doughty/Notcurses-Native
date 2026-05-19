@@ -1,6 +1,7 @@
 use NativeCall;
 use Notcurses::Native::Types;
 use Notcurses::Native;
+use Notcurses::Native::Str;
 
 unit module Notcurses::Native::Context;
 
@@ -14,8 +15,14 @@ sub ncstrwidth(Str $egcs, int32 $validbytes is rw, int32 $validwidth is rw --> i
 sub notcurses_ucs32_to_utf8(CArray[uint32] $ucs32, uint32 $ucs32count, CArray[uint8] $resultbuf, size_t $buflen --> int32)
 	is native(&core-lib) is export { * }
 
-sub ncwcsrtombs(CArray[int32] $src --> Str)
-	is native(&ffi-lib) is export { * }
+# ncwcsrtombs returns a malloc'd buffer the caller must free. Binding as
+# `--> Str` would let NativeCall decode-and-leak the original pointer.
+sub _ncwcsrtombs_raw(CArray[int32] $src --> Pointer)
+	is native(&ffi-lib) is symbol('ncwcsrtombs') { * }
+
+sub ncwcsrtombs(CArray[int32] $src --> Str) is export {
+	strdup-copy-and-free(_ncwcsrtombs_raw($src))
+}
 
 # === Lex/string conversions for enums ===
 
@@ -25,12 +32,15 @@ sub notcurses_lex_margins(Str $op, NotcursesOptions $opts --> int32)
 sub notcurses_lex_blitter(Str $op, int32 $blitter is rw --> int32)
 	is native(&core-lib) is export { * }
 
+#| OWNED-BY-LIBRARY: returns a pointer to a static string literal inside
+#| libnotcurses; caller MUST NOT free. `--> Str` is safe — Raku copies.
 sub notcurses_str_blitter(int32 $blitter --> Str)
 	is native(&core-lib) is export { * }
 
 sub notcurses_lex_scalemode(Str $op, int32 $scalemode is rw --> int32)
 	is native(&core-lib) is export { * }
 
+#| OWNED-BY-LIBRARY: static string literal; caller MUST NOT free.
 sub notcurses_str_scalemode(int32 $scalemode --> Str)
 	is native(&core-lib) is export { * }
 
@@ -54,9 +64,32 @@ sub ncpile_render(NcplaneHandle $n --> int32)
 sub ncpile_rasterize(NcplaneHandle $n --> int32)
 	is native(&core-lib) is export { * }
 
-# buf is char** (output), buflen is size_t* (output)
+# buf is char** (output), buflen is size_t* (output). The buffer written
+# into *buf is malloc'd by notcurses and the caller MUST free(3) it. Raw
+# binding kept exported for callers who want to manage the lifecycle
+# themselves; prefer `ncpile-render-to-string` below for a wrapper that
+# decodes and frees in one step.
 sub ncpile_render_to_buffer(NcplaneHandle $p, CArray[Pointer] $buf, CArray[size_t] $buflen --> int32)
 	is native(&core-lib) is export { * }
+
+#|( Render a pile to an in-memory string and own the buffer lifecycle.
+    Returns the rendered escape-sequence string, or C<Str> (type
+    object) on render failure. Frees the malloc'd buffer before
+    returning; the caller does not need to free anything. )
+sub ncpile-render-to-string(NcplaneHandle $p --> Str) is export {
+	my $buf-out = CArray[Pointer].new(Pointer);
+	my $len-out = CArray[size_t].new(0);
+	my $rv = ncpile_render_to_buffer($p, $buf-out, $len-out);
+	return Str if $rv < 0;
+
+	my $ptr = $buf-out[0];
+	return Str unless $ptr.defined && +$ptr;
+
+	# nativecast copies the C string into a Raku-owned Str. After this
+	# point the malloc'd buffer is safe to free.
+	LEAVE { c-free($ptr) }
+	nativecast(Str, $ptr)
+}
 
 # fp is FILE*
 sub ncpile_render_to_file(NcplaneHandle $p, Pointer $fp --> int32)
@@ -87,8 +120,13 @@ sub notcurses_linesigs_enable(NotcursesHandle $n --> int32)
 sub notcurses_stddim_yx_const(NotcursesHandle $nc, uint32 $y is rw, uint32 $x is rw --> NcplaneHandle)
 	is native(&ffi-lib) is export { * }
 
-sub notcurses_at_yx(NotcursesHandle $nc, uint32 $yoff, uint32 $xoff, uint16 $stylemask is rw, uint64 $channels is rw --> Str)
-	is native(&core-lib) is export { * }
+# Returns a heap-allocated EGC string that the caller must free.
+sub _notcurses_at_yx_raw(NotcursesHandle $nc, uint32 $yoff, uint32 $xoff, uint16 $stylemask is rw, uint64 $channels is rw --> Pointer)
+	is native(&core-lib) is symbol('notcurses_at_yx') { * }
+
+sub notcurses_at_yx(NotcursesHandle $nc, uint32 $yoff, uint32 $xoff, uint16 $stylemask is rw, uint64 $channels is rw --> Str) is export {
+	strdup-copy-and-free(_notcurses_at_yx_raw($nc, $yoff, $xoff, $stylemask, $channels))
+}
 
 # === Palette ===
 
@@ -121,8 +159,13 @@ sub notcurses_supported_styles(NotcursesHandle $nc --> uint16)
 sub notcurses_palette_size(NotcursesHandle $nc --> uint32)
 	is native(&core-lib) is export { * }
 
-sub notcurses_detected_terminal(NotcursesHandle $nc --> Str)
-	is native(&core-lib) is export { * }
+# Returns a heap-allocated terminal name that the caller must free.
+sub _notcurses_detected_terminal_raw(NotcursesHandle $nc --> Pointer)
+	is native(&core-lib) is symbol('notcurses_detected_terminal') { * }
+
+sub notcurses_detected_terminal(NotcursesHandle $nc --> Str) is export {
+	strdup-copy-and-free(_notcurses_detected_terminal_raw($nc))
+}
 
 sub notcurses_capabilities(NotcursesHandle $n --> Nccapabilities)
 	is native(&core-lib) is export { * }
@@ -167,18 +210,40 @@ sub ncfadectx_free(NcfadectxHandle $nctx)
 # === Metric formatting ===
 # uintmax_t maps to uint64 on 64-bit platforms
 # buf must be a pre-allocated char buffer (CArray[uint8])
+#
+# These return a pointer INTO the caller's $buf (not malloc'd). The
+# returned Str must not be freed; it shares lifetime with $buf. Bind as
+# Pointer and wrap with `borrowed-str-from-pointer` so NativeCall
+# doesn't auto-decode-and-leak (or worse: decode-and-double-free if
+# someone runs $buf through Str-typed slots).
 
-sub ncnmetric(uint64 $val, size_t $s, uint64 $decimal, CArray[uint8] $buf, int32 $omitdec, uint64 $mult, int32 $uprefix --> Str)
-	is native(&core-lib) is export { * }
+sub _ncnmetric_raw(uint64 $val, size_t $s, uint64 $decimal, CArray[uint8] $buf, int32 $omitdec, uint64 $mult, int32 $uprefix --> Pointer)
+	is native(&core-lib) is symbol('ncnmetric') { * }
 
-sub ncqprefix(uint64 $val, uint64 $decimal, CArray[uint8] $buf, int32 $omitdec --> Str)
-	is native(&ffi-lib) is export { * }
+sub ncnmetric(uint64 $val, size_t $s, uint64 $decimal, CArray[uint8] $buf, int32 $omitdec, uint64 $mult, int32 $uprefix --> Str) is export {
+	borrowed-str-from-pointer(_ncnmetric_raw($val, $s, $decimal, $buf, $omitdec, $mult, $uprefix))
+}
 
-sub nciprefix(uint64 $val, uint64 $decimal, CArray[uint8] $buf, int32 $omitdec --> Str)
-	is native(&ffi-lib) is export { * }
+sub _ncqprefix_raw(uint64 $val, uint64 $decimal, CArray[uint8] $buf, int32 $omitdec --> Pointer)
+	is native(&ffi-lib) is symbol('ncqprefix') { * }
 
-sub ncbprefix(uint64 $val, uint64 $decimal, CArray[uint8] $buf, int32 $omitdec --> Str)
-	is native(&ffi-lib) is export { * }
+sub ncqprefix(uint64 $val, uint64 $decimal, CArray[uint8] $buf, int32 $omitdec --> Str) is export {
+	borrowed-str-from-pointer(_ncqprefix_raw($val, $decimal, $buf, $omitdec))
+}
+
+sub _nciprefix_raw(uint64 $val, uint64 $decimal, CArray[uint8] $buf, int32 $omitdec --> Pointer)
+	is native(&ffi-lib) is symbol('nciprefix') { * }
+
+sub nciprefix(uint64 $val, uint64 $decimal, CArray[uint8] $buf, int32 $omitdec --> Str) is export {
+	borrowed-str-from-pointer(_nciprefix_raw($val, $decimal, $buf, $omitdec))
+}
+
+sub _ncbprefix_raw(uint64 $val, uint64 $decimal, CArray[uint8] $buf, int32 $omitdec --> Pointer)
+	is native(&ffi-lib) is symbol('ncbprefix') { * }
+
+sub ncbprefix(uint64 $val, uint64 $decimal, CArray[uint8] $buf, int32 $omitdec --> Str) is export {
+	borrowed-str-from-pointer(_ncbprefix_raw($val, $decimal, $buf, $omitdec))
+}
 
 # === Default colors ===
 
@@ -189,15 +254,28 @@ sub notcurses_default_background(NotcursesHandle $nc, uint32 $bg is rw --> int32
 	is native(&core-lib) is export { * }
 
 # === System info ===
+# All three return heap-allocated strings the caller must free.
 
-sub notcurses_accountname( --> Str)
-	is native(&core-lib) is export { * }
+sub _notcurses_accountname_raw( --> Pointer)
+	is native(&core-lib) is symbol('notcurses_accountname') { * }
 
-sub notcurses_hostname( --> Str)
-	is native(&core-lib) is export { * }
+sub notcurses_accountname( --> Str) is export {
+	strdup-copy-and-free(_notcurses_accountname_raw())
+}
 
-sub notcurses_osversion( --> Str)
-	is native(&core-lib) is export { * }
+sub _notcurses_hostname_raw( --> Pointer)
+	is native(&core-lib) is symbol('notcurses_hostname') { * }
+
+sub notcurses_hostname( --> Str) is export {
+	strdup-copy-and-free(_notcurses_hostname_raw())
+}
+
+sub _notcurses_osversion_raw( --> Pointer)
+	is native(&core-lib) is symbol('notcurses_osversion') { * }
+
+sub notcurses_osversion( --> Str) is export {
+	strdup-copy-and-free(_notcurses_osversion_raw())
+}
 
 # === Debug ===
 # debugfp is FILE*

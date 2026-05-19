@@ -1,6 +1,7 @@
 use NativeCall;
 use Notcurses::Native::Types;
 use Notcurses::Native;
+use Notcurses::Native::Str;
 
 unit module Notcurses::Native::Direct;
 
@@ -57,8 +58,13 @@ sub ncdirect_putegc(NcdirectHandle $nc, uint64 $channels, Str $utf8, int32 $sbyt
 sub ncdirect_flush(NcdirectHandle $nc --> int32)
 	is native(&core-lib) is export { * }
 
-sub ncdirect_readline(NcdirectHandle $nc, Str $prompt --> Str)
-	is native(&core-lib) is export { * }
+# Returns a malloc'd input line that the caller must free.
+sub _ncdirect_readline_raw(NcdirectHandle $nc, Str $prompt --> Pointer)
+	is native(&core-lib) is symbol('ncdirect_readline') { * }
+
+sub ncdirect_readline(NcdirectHandle $nc, Str $prompt --> Str) is export {
+	strdup-copy-and-free(_ncdirect_readline_raw($nc, $prompt))
+}
 
 # === Printf (variadic) ===
 
@@ -203,8 +209,13 @@ sub ncdirect_stream(NcdirectHandle $n, Str $filename, Pointer $streamer, Ncvisua
 
 # === Capabilities ===
 
-sub ncdirect_detected_terminal(NcdirectHandle $n --> Str)
-	is native(&core-lib) is export { * }
+# Returns a malloc'd terminal name that the caller must free.
+sub _ncdirect_detected_terminal_raw(NcdirectHandle $n --> Pointer)
+	is native(&core-lib) is symbol('ncdirect_detected_terminal') { * }
+
+sub ncdirect_detected_terminal(NcdirectHandle $n --> Str) is export {
+	strdup-copy-and-free(_ncdirect_detected_terminal_raw($n))
+}
 
 sub ncdirect_capabilities(NcdirectHandle $n --> Nccapabilities)
 	is native(&core-lib) is export { * }
