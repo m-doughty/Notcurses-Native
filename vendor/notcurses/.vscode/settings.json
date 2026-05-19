@@ -1,3 +1,0 @@
-{
-    "cmake.configureSettings": { "USE_PANDOC": "off", "USE_DOCTEST": "off" }
-}

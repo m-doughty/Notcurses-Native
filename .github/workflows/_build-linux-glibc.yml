@@ -41,6 +41,21 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Read pinned notcurses SHA from NOTCURSES_FORK
+        id: ncpin
+        run: |
+          sha=$(awk -F= '/^sha=/{print $2}' NOTCURSES_FORK)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Cache notcurses source checkout (per-SHA)
+        uses: actions/cache@v4
+        with:
+          path: _ci-cache/notcurses-source
+          # Pin-keyed so bumping NOTCURSES_FORK invalidates the cache
+          # automatically. No fallback restore-keys — a stale half-
+          # checkout is worse than re-fetching (~5s shallow clone).
+          key: notcurses-source-${{ steps.ncpin.outputs.sha }}
+
       - name: Cache source-built ffmpeg + libdeflate
         uses: actions/cache@v4
         with:

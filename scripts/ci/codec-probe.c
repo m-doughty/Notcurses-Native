@@ -13,7 +13,7 @@
  *      decoder.
  *
  *   2. Actual decode of PNG, JPEG, BMP fixtures. Reads
- *      $WORKSPACE_DIR/vendor/notcurses/data/{chunli44.png,
+ *      $NOTCURSES_DATA_DIR/{chunli44.png,
  *      tetris-background.jpg, warmech.bmp} into memory, feeds each
  *      to libavcodec's internal decoder for that format, requires
  *      a frame back. Catches:
@@ -209,9 +209,9 @@ struct fixture {
 };
 
 static int decode_fixture(struct ff_api *api, const struct fixture *fx,
-                          const char *workspace_dir) {
+                          const char *data_dir) {
     char full_path[1024];
-    snprintf(full_path, sizeof(full_path), "%s/%s", workspace_dir, fx->workspace_relpath);
+    snprintf(full_path, sizeof(full_path), "%s/%s", data_dir, fx->workspace_relpath);
 
     FILE *f = fopen(full_path, "rb");
     if (!f) {
@@ -290,22 +290,22 @@ static const char *REQUIRED_DECODERS[] = {
     NULL,
 };
 
-/* ---------- decode fixtures ---------- */
+/* ---------- decode fixtures (paths relative to NOTCURSES_DATA_DIR) ---------- */
 static const struct fixture FIXTURES[] = {
-    { "PNG",  "vendor/notcurses/data/chunli44.png",          "png"   },
-    { "JPEG", "vendor/notcurses/data/tetris-background.jpg", "mjpeg" },
-    { "BMP",  "vendor/notcurses/data/warmech.bmp",           "bmp"   },
+    { "PNG",  "chunli44.png",          "png"   },
+    { "JPEG", "tetris-background.jpg", "mjpeg" },
+    { "BMP",  "warmech.bmp",           "bmp"   },
     { NULL, NULL, NULL }
 };
 
 int main(int argc, char **argv) {
     (void)argc;
-    const char *workspace_dir = getenv("WORKSPACE_DIR");
-    if (argc > 1) workspace_dir = argv[1];
-    if (!workspace_dir || !*workspace_dir) {
-        fprintf(stderr, "FAIL: WORKSPACE_DIR not set (and no argv[1] either).\n");
-        fprintf(stderr, "  run-codec-probe.sh is supposed to set it to the\n");
-        fprintf(stderr, "  workspace root before invoking the probe.\n");
+    const char *data_dir = getenv("NOTCURSES_DATA_DIR");
+    if (argc > 1) data_dir = argv[1];
+    if (!data_dir || !*data_dir) {
+        fprintf(stderr, "FAIL: NOTCURSES_DATA_DIR not set (and no argv[1] either).\n");
+        fprintf(stderr, "  run-codec-probe.sh is supposed to set it to\n");
+        fprintf(stderr, "  $NOTCURSES_SRC_DIR/data before invoking the probe.\n");
         return 2;
     }
 
@@ -392,7 +392,7 @@ int main(int argc, char **argv) {
     for (int i = 0; FIXTURES[i].display_name; i++) {
         printf("  decoding %s (%s)...\n", FIXTURES[i].display_name,
                FIXTURES[i].workspace_relpath);
-        if (decode_fixture(&api, &FIXTURES[i], workspace_dir) == 0) {
+        if (decode_fixture(&api, &FIXTURES[i], data_dir) == 0) {
             printf("  ✅ %s decoded successfully\n", FIXTURES[i].display_name);
         } else {
             fprintf(stderr, "  ❌ %s FAILED to decode\n", FIXTURES[i].display_name);

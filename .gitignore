@@ -8,7 +8,8 @@ lib/.precomp
 *.log core *.core
 Notcurses-Native-*
 NUL
-vendor/notcurses/build/
+_ci-cache/
+bundle/
 resources/lib/*.dylib
 resources/lib/*.so
 resources/lib/*.dll

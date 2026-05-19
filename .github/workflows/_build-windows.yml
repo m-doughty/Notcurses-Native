@@ -65,7 +65,7 @@ jobs:
           # the toolchain). Retries hit cache and finish in seconds.
           cache: true
           install: >-
-            zip
+            zip git
             mingw-w64-${{ inputs.arch == 'arm64' && 'clang-aarch64' || 'ucrt-x86_64' }}-cmake
             mingw-w64-${{ inputs.arch == 'arm64' && 'clang-aarch64' || 'ucrt-x86_64' }}-ninja
             mingw-w64-${{ inputs.arch == 'arm64' && 'clang-aarch64' || 'ucrt-x86_64' }}-toolchain
@@ -75,10 +75,16 @@ jobs:
             mingw-w64-${{ inputs.arch == 'arm64' && 'clang-aarch64' || 'ucrt-x86_64' }}-ncurses
             mingw-w64-${{ inputs.arch == 'arm64' && 'clang-aarch64' || 'ucrt-x86_64' }}-pkgconf
 
+      - name: Fetch notcurses source (NOTCURSES_FORK pin)
+        run: bash scripts/ci/fetch-notcurses-source.sh
+
       - name: Configure + build notcurses
         run: |
           set -euxo pipefail
-          cd vendor/notcurses
+          # MSYS2 bash sees $NOTCURSES_SRC_DIR from $GITHUB_ENV in
+          # POSIX form already — GHA normalises env values written
+          # via `>> $GITHUB_ENV` per shell convention.
+          cd "$NOTCURSES_SRC_DIR"
           mkdir -p build
           cmake -B build -S . -G Ninja $CMAKE_FLAGS
 
@@ -102,22 +108,22 @@ jobs:
       # Windows is different from macOS/Linux: MinGW (and MSVC) require
       # every symbol resolved at link time — no equivalent of macOS's
       # -undefined dynamic_lookup or GNU ld's --unresolved-symbols.
-      # We link against vendor/notcurses/build's libnotcurses-core.dll.a
+      # We link against $NOTCURSES_SRC_DIR/build's libnotcurses-core.dll.a
       # import lib instead. At runtime the shim's import table resolves
       # to the libnotcurses-core.dll sibling in the same archive
       # directory (Windows DLL search order finds same-dir DLLs first).
       - name: Compile perf shim
         run: |
           set -euxo pipefail
-          import_lib=$(find vendor/notcurses/build \
+          import_lib=$(find "$NOTCURSES_SRC_DIR/build" \
                          -name 'libnotcurses-core.dll.a' -type f | head -1)
           if [[ -z "$import_lib" ]]; then
             echo "❌ Couldn't find libnotcurses-core.dll.a import lib"
-            find vendor/notcurses/build -name '*.dll.a' -type f
+            find "$NOTCURSES_SRC_DIR/build" -name '*.dll.a' -type f
             exit 1
           fi
           cc -O2 -shared \
-            -I vendor/notcurses/include \
+            -I "$NOTCURSES_SRC_DIR/include" \
             -o bundle/libnotcurses_native_shim.dll \
             src/notcurses_native_shim.c \
             "$import_lib"

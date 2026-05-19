@@ -9,6 +9,10 @@
 # bundle musl's loader / libc (alpine systems already have them;
 # bundling would produce a 2-libc conflict).
 #
+# Reads the notcurses build dir from $NOTCURSES_SRC_DIR/build —
+# caller (build-linux-*.sh) sets this after fetch-notcurses-source.sh
+# resolves the pinned SHA.
+#
 # Designed to run INSIDE a build container (manylinux2014 for glibc,
 # alpine:3.20 for musl) — needs ldd, patchelf, strip on PATH. The
 # extra LD_LIBRARY_PATH the caller may have exported (to point at
@@ -16,16 +20,23 @@
 
 set -euxo pipefail
 
-mkdir -p bundle
-cd vendor/notcurses/build
+: "${NOTCURSES_SRC_DIR:?must be set — call scripts/ci/fetch-notcurses-source.sh first}"
 
-for lib in libnotcurses libnotcurses-core libnotcurses-ffi; do
-  found=$(find . -name "${lib}.so.*" -type f | sort | tail -1)
-  [[ -z "$found" ]] && found=$(find . -name "${lib}.so" -type f | head -1)
-  cp "$found" "../../../bundle/${lib}.so"
-done
+# Capture the workspace root BEFORE we cd into the build dir, so
+# absolute-path copies don't depend on `cd ../../..` relative
+# math (the build dir lives under _ci-cache/notcurses-source/<sha>/
+# which isn't a fixed depth from the workspace).
+workspace="$PWD"
+mkdir -p "$workspace/bundle"
 
-cd ../../..
+(
+  cd "$NOTCURSES_SRC_DIR/build"
+  for lib in libnotcurses libnotcurses-core libnotcurses-ffi; do
+    found=$(find . -name "${lib}.so.*" -type f | sort | tail -1)
+    [[ -z "$found" ]] && found=$(find . -name "${lib}.so" -type f | head -1)
+    cp "$found" "$workspace/bundle/${lib}.so"
+  done
+)
 
 # Skiplist: stay-dynamic system libraries. Bundling these would
 # produce crt clashes / loader conflicts.

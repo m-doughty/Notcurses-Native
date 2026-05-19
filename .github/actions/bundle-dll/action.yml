@@ -6,13 +6,12 @@ description: >-
   ldd sometimes misses on CLANGARM64.
 
   Caller must already have:
-    - notcurses built under vendor/notcurses/build/
+    - notcurses built under $NOTCURSES_SRC_DIR/build/ (the value
+      written by scripts/ci/fetch-notcurses-source.sh into
+      $GITHUB_ENV)
     - The MSYS2 default shell active (msys2 {0})
     - `bundle/` writable
     - msys2 ldd + timeout + sed on PATH
-
-  Behaviour deliberately unchanged from the original build-binaries.yml
-  inline block — this action is a pure lift.
 
 runs:
   using: composite
@@ -21,8 +20,16 @@ runs:
       shell: 'msys2 {0}'
       run: |
         set -euxo pipefail
-        mkdir -p bundle
-        cd vendor/notcurses/build
+        : "${NOTCURSES_SRC_DIR:?must be set — call scripts/ci/fetch-notcurses-source.sh first}"
+        # Convert any \ path GHA may have put in NOTCURSES_SRC_DIR
+        # (the env propagation goes through GitHub's Windows-style
+        # interpolation) into POSIX form for MSYS2's bash.
+        if command -v cygpath >/dev/null 2>&1; then
+          NOTCURSES_SRC_DIR=$(cygpath -u "$NOTCURSES_SRC_DIR")
+        fi
+        workspace="$PWD"
+        mkdir -p "$workspace/bundle"
+        cd "$NOTCURSES_SRC_DIR/build"
 
         # MinGW DLL naming varies: libfoo-N.dll, libfoo.dll, foo.dll.
         # BUT: `notcurses` is a prefix of `notcurses-core` and
@@ -41,11 +48,11 @@ runs:
             find . -iname "*${lib}*" -type f
             exit 1
           fi
-          cp "$found" "../../../bundle/lib${lib}.dll"
+          cp "$found" "$workspace/bundle/lib${lib}.dll"
           echo "Staged lib${lib}.dll (from $(basename $found))"
         done
 
-        cd ../../..
+        cd "$workspace"
 
         # On Windows, DLL search order finds siblings in the same
         # directory as the DLL being loaded — no rpath needed.

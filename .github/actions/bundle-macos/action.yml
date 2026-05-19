@@ -7,7 +7,9 @@ description: >-
   bundled dylib's LC_BUILD_VERSION minos to ensure it's <= the target.
 
   Macros calling this action must already have:
-    - notcurses built under vendor/notcurses/build/
+    - notcurses built under $NOTCURSES_SRC_DIR/build/ (the value
+      written by scripts/ci/fetch-notcurses-source.sh into
+      $GITHUB_ENV)
     - `bundle/` writable (empty is fine; action creates it if absent)
     - dylibbundler on PATH (from brew)
 
@@ -26,7 +28,7 @@ inputs:
       source-builds ffmpeg / ncurses / libunistring / libdeflate into
       a workspace cache dir (so the bundle can target macOS 10.15 —
       brew x86_64 bottles target 14+); dylibbundler needs to be told
-      where to find those .dylibs in addition to vendor/notcurses/build.
+      where to find those .dylibs in addition to $NOTCURSES_SRC_DIR/build.
       Empty default = arm64 lane uses brew bottles via the system
       paths dylibbundler already knows.
     required: false
@@ -41,6 +43,7 @@ runs:
         EXTRA_SEARCH_PATH: ${{ inputs.extra-search-path }}
       run: |
         set -euxo pipefail
+        : "${NOTCURSES_SRC_DIR:?must be set — call scripts/ci/fetch-notcurses-source.sh first}"
         mkdir -p bundle
 
         # Only stage the two ENTRY-POINT libs:
@@ -54,7 +57,7 @@ runs:
         # bundle/x.dylib` and fail with "identical files not copied"
         # because dylibbundler doesn't recognise already-bundled deps.
         for lib in libnotcurses libnotcurses-ffi; do
-          real=$(find vendor/notcurses/build -name "${lib}.*.dylib" -type f ! -type l | sort | tail -1)
+          real=$(find "$NOTCURSES_SRC_DIR/build" -name "${lib}.*.dylib" -type f ! -type l | sort | tail -1)
           if [[ -z "$real" ]]; then
             echo "❌ Could not find real file for $lib"
             exit 1
@@ -77,13 +80,13 @@ runs:
         # absolute Cellar paths (no @rpath round-tripping).
         #
         # -s flags:
-        #   * vendor/notcurses/build — for libnotcurses-core.3.dylib
+        #   * $NOTCURSES_SRC_DIR/build — for libnotcurses-core.3.dylib
         #     (cmake leaves it as a SONAME symlink in the build dir).
         #   * EXTRA_SEARCH_PATH (x86_64 lane only): the lib dir of
         #     our workspace cache, where source-built ffmpeg /
         #     ncurses / libunistring / libdeflate live. dylibbundler
         #     resolves their @rpath references via this -s.
-        bundler_paths=( -s vendor/notcurses/build )
+        bundler_paths=( -s "$NOTCURSES_SRC_DIR/build" )
         if [[ -n "${EXTRA_SEARCH_PATH:-}" ]]; then
             bundler_paths+=( -s "$EXTRA_SEARCH_PATH" )
         fi

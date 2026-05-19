@@ -24,10 +24,18 @@ set -euxo pipefail
 # entry shell, but we want bash for the build to match the script
 # header.
 apk add --no-cache \
-    bash coreutils findutils tar \
+    bash coreutils findutils tar git \
     cmake make pkgconf patchelf \
     gcc g++ musl-dev linux-headers \
     ffmpeg-dev ncurses-dev libunistring-dev libdeflate-dev
+
+# Fetch notcurses source from the pinned NOTCURSES_FORK SHA. Cache
+# under /work/_ci-cache so actions/cache on the host can persist
+# the checkout. Same SHA-keyed path Build.rakumod uses for the
+# install-time source-build fallback.
+export NOTCURSES_SRC_CACHE="${NOTCURSES_SRC_CACHE:-/work/_ci-cache/notcurses-source}"
+NOTCURSES_SRC_DIR=$(bash scripts/ci/fetch-notcurses-source.sh)
+export NOTCURSES_SRC_DIR
 cmake --version
 # No `ldd --version` on musl; the loader prints its info if invoked
 # directly, but only as a side-effect.
@@ -45,11 +53,12 @@ CMAKE_FLAGS=(
   -DCMAKE_BUILD_TYPE=Release
 )
 
-cd vendor/notcurses
-mkdir -p build
-cmake -B build -S . "${CMAKE_FLAGS[@]}"
-cmake --build build -j"$(nproc)"
-cd ../..
+(
+  cd "$NOTCURSES_SRC_DIR"
+  mkdir -p build
+  cmake -B build -S . "${CMAKE_FLAGS[@]}"
+  cmake --build build -j"$(nproc)"
+)
 
 # Bundle .so files + transitive ldd deps into bundle/ with
 # $ORIGIN rpath. EXTRA_SKIP_LIBS keeps musl's loader / libc out of
@@ -60,7 +69,7 @@ EXTRA_SKIP_LIBS='ld-musl-*.so.1 libc.musl-*.so.1' \
 
 # Compile the perf shim. Same model as the glibc lane.
 cc -O2 -shared -fPIC \
-  -I vendor/notcurses/include \
+  -I "$NOTCURSES_SRC_DIR/include" \
   -Wl,-soname,libnotcurses_native_shim.so \
   -o bundle/libnotcurses_native_shim.so \
   src/notcurses_native_shim.c \

@@ -67,6 +67,9 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Fetch notcurses source (NOTCURSES_FORK pin)
+        run: bash scripts/ci/fetch-notcurses-source.sh
+
       - name: Emit arch dispatch helper
         run: |
           set -euxo pipefail
@@ -186,7 +189,7 @@ jobs:
       - name: Configure + build notcurses
         run: |
           set -euxo pipefail
-          cd vendor/notcurses
+          cd "$NOTCURSES_SRC_DIR"
           mkdir -p build
 
           if [[ "${{ inputs.arch }}" == "x86_64" ]]; then
@@ -254,7 +257,7 @@ jobs:
             -Wl,-headerpad_max_install_names \
             -install_name '@loader_path/libnotcurses_native_shim.dylib' \
             -undefined dynamic_lookup \
-            -I vendor/notcurses/include \
+            -I "$NOTCURSES_SRC_DIR/include" \
             -o bundle/libnotcurses_native_shim.dylib \
             src/notcurses_native_shim.c
           # Sequoia hard-rejects unsigned dylibs at first page access —

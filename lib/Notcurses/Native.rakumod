@@ -25,9 +25,9 @@ unit module Notcurses::Native;
 #      path to a directory containing all the libs. Escape hatch for
 #      developers compiling notcurses themselves.
 #
-#      CRITICAL: the libnotcurses we ship is patched (see
-#      vendor/notcurses src/lib/visual.c for the
-#      ncvisual_blit_internal begy/begx fix at 0.3.0). The patch is
+#      CRITICAL: the libnotcurses we ship is patched (see the fork
+#      pinned by NOTCURSES_FORK for the ncvisual_blit_internal
+#      begy/begx fix at 0.3.0, in src/lib/visual.c). The patch is
 #      ABI-compatible at the C-symbol level — every export has the
 #      same signature — but BEHAVIOURALLY divergent: a clipped
 #      sprixel blit on vanilla 3.0.17 renders the top of the source
@@ -36,11 +36,10 @@ unit module Notcurses::Native;
 #      avatar / image that's clipped at a viewport edge.
 #
 #      If you're using the override, point it at a notcurses build
-#      that includes the same patch (the vendored source under
-#      vendor/notcurses/ in this distribution is the reference).
-#      The shim ($shim-lib) must also be present in the same
-#      directory for Selkie's batched copy path to engage — see
-#      src/notcurses_native_shim.c.
+#      that includes the same patch (the fork at the URL/SHA in
+#      NOTCURSES_FORK is the reference). The shim ($shim-lib) must
+#      also be present in the same directory for Selkie's batched
+#      copy path to engage — see src/notcurses_native_shim.c.
 #   2. $NOTCURSES_NATIVE_DATA_DIR — base dir for the staged install
 #      (defaults to $XDG_DATA_HOME, falling back to platform-typical).
 #      Combined with BINARY_TAG to pick the version-matched libs.

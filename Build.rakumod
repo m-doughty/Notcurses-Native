@@ -962,7 +962,34 @@ class Build {
 
         $stage.mkdir;
 
-        my $inc = "$dist-path/vendor/notcurses/include";
+        # The notcurses headers + (Windows) import lib live in the
+        # source tree resolved by !ensure-notcurses-source: either
+        # NOTCURSES_NATIVE_VENDOR_DIR, or the per-SHA git-fetch cache
+        # under $NOTCURSES_NATIVE_CACHE_DIR / XDG_CACHE_HOME. Fetch is
+        # lazy — only happens when we actually need to (re)compile,
+        # so prebuilt-with-shim installs (the 99% case) never hit git.
+        # Non-fatal on fetch failure: the perf cost falls back to
+        # Selkie's Raku per-cell merge with a one-shot warning, same
+        # as a missing C toolchain below.
+        my IO::Path $nc-src;
+        my $fetch-error;
+        {
+            CATCH {
+                default {
+                    $fetch-error = .message;
+                }
+            }
+            $nc-src = self!ensure-notcurses-source($dist-path);
+        }
+        if $fetch-error {
+            note "⚠️  Skipping shim compile — couldn't resolve notcurses "
+               ~ "source for include headers: $fetch-error";
+            note "    Set NOTCURSES_NATIVE_VENDOR_DIR=<path> to point at "
+               ~ "a local checkout, or ensure git is available so the "
+               ~ "pinned SHA can be fetched.";
+            return;
+        }
+        my Str $inc = "{$nc-src}/include";
 
         # Windows needs an import lib to satisfy link-time symbol
         # resolution (no equivalent of -undefined dynamic_lookup).
@@ -975,13 +1002,13 @@ class Build {
         # !merge-widget-plane uses its Raku-side fallback path.
         my $import-lib;
         if $*DISTRO.is-win {
-            my $build-dir = "$dist-path/vendor/notcurses/build";
+            my $build-dir = "{$nc-src}/build";
             with $build-dir.IO.&{ .e ?? .dir(test => /'libnotcurses-core.dll.a'$/) !! () }.first {
                 $import-lib = .Str;
             }
             without $import-lib {
                 note "⚠️  Skipping Windows shim compile — no "
-                   ~ "libnotcurses-core.dll.a in vendor/notcurses/build "
+                   ~ "libnotcurses-core.dll.a in $build-dir "
                    ~ "(only present after a from-source build). The "
                    ~ "shim normally ships pre-compiled in the prebuilt "
                    ~ "archive; if the prebuilt didn't include it, "

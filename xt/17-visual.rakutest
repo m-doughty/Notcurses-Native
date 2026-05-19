@@ -159,8 +159,9 @@ subtest 'ncvisual_media_defblitter and polyfill' => {
 # ncvisual_blit_internal correctly. Upstream notcurses 3.0.17 silently
 # dropped begy/begx for any path that resized the source (sprixel
 # blitters consume from data[0]; cell blitters mixed input-space
-# offsets with output-space buffers — see vendor/notcurses/src/lib/
-# internal.h FIXME on `blitterargs`). Our patched ncvisual_blit_internal
+# offsets with output-space buffers — see src/lib/internal.h FIXME on
+# `blitterargs` in the fork pinned by NOTCURSES_FORK). Our patched
+# ncvisual_blit_internal
 # pre-crops the source so every downstream path sees an exact-region
 # buffer.
 #

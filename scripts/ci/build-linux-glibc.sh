@@ -19,6 +19,15 @@ set -euxo pipefail
 CACHE_DIR="${CACHE_DIR:-/work/_ci-cache/manylinux_2_28}"
 mkdir -p "$CACHE_DIR"
 
+# Fetch notcurses source from the pinned NOTCURSES_FORK SHA.
+# manylinux_2_28 ships git, so no apk/dnf install needed first.
+# Set NOTCURSES_SRC_CACHE under /work so actions/cache on the host
+# can persist the checkout across runs (same key bumping rules as
+# the ffmpeg cache — keyed on the SHA itself).
+export NOTCURSES_SRC_CACHE="${NOTCURSES_SRC_CACHE:-/work/_ci-cache/notcurses-source}"
+NOTCURSES_SRC_DIR=$(bash scripts/ci/fetch-notcurses-source.sh)
+export NOTCURSES_SRC_DIR
+
 # System packages via dnf:
 #   * pkgconfig, patchelf, ncurses-devel, libunistring-devel:
 #     base build/runtime needs.
@@ -102,11 +111,12 @@ CMAKE_FLAGS=(
   -DCMAKE_BUILD_TYPE=Release
 )
 
-cd vendor/notcurses
-mkdir -p build
-cmake -B build -S . "${CMAKE_FLAGS[@]}"
-cmake --build build -j"$(nproc)"
-cd ../..
+(
+  cd "$NOTCURSES_SRC_DIR"
+  mkdir -p build
+  cmake -B build -S . "${CMAKE_FLAGS[@]}"
+  cmake --build build -j"$(nproc)"
+)
 
 # Bundle .so files + transitive ldd deps into bundle/ with
 # $ORIGIN rpath. No EXTRA_SKIP_LIBS — default skiplist covers
@@ -120,7 +130,7 @@ bash scripts/ci/bundle-elf.sh
 # same path it was compiled against, not whatever else might be
 # loaded in the host process.
 cc -O2 -shared -fPIC \
-  -I vendor/notcurses/include \
+  -I "$NOTCURSES_SRC_DIR/include" \
   -Wl,-soname,libnotcurses_native_shim.so \
   -o bundle/libnotcurses_native_shim.so \
   src/notcurses_native_shim.c \

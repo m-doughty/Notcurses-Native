@@ -60,11 +60,12 @@ if ! ls bundle/libavcodec.* >/dev/null 2>&1 && \
     exit 1
 fi
 
-# Capture workspace root BEFORE we cd into bundle/, so the probe
-# can resolve fixture paths like
-# `$WORKSPACE_DIR/vendor/notcurses/data/chunli44.png` for its
-# decode tests.
-export WORKSPACE_DIR="$PWD"
+# Point the probe at the notcurses data dir (where the chunli44.png /
+# tetris / warmech fixtures live). Caller — build-linux-*.sh / the
+# macOS workflow / the Windows workflow — has already set
+# NOTCURSES_SRC_DIR via fetch-notcurses-source.sh.
+: "${NOTCURSES_SRC_DIR:?must be set — call scripts/ci/fetch-notcurses-source.sh first}"
+export NOTCURSES_DATA_DIR="$NOTCURSES_SRC_DIR/data"
 
 # Run the probe with bundle/ as CWD and library-search env pointing
 # at "." — combined this makes dlopen resolve libavcodec from the

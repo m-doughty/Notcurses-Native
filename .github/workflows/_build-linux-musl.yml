@@ -38,6 +38,18 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Read pinned notcurses SHA from NOTCURSES_FORK
+        id: ncpin
+        run: |
+          sha=$(awk -F= '/^sha=/{print $2}' NOTCURSES_FORK)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Cache notcurses source checkout (per-SHA)
+        uses: actions/cache@v4
+        with:
+          path: _ci-cache/notcurses-source
+          key: notcurses-source-${{ steps.ncpin.outputs.sha }}
+
       - name: Pull build image
         run: docker pull alpine:3.20
 
