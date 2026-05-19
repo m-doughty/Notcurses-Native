@@ -55,7 +55,13 @@ fi
 
 url=""
 sha=""
-while IFS= read -r line; do
+while IFS= read -r line || [[ -n "$line" ]]; do
+  # Strip trailing CR — git on Windows may check out NOTCURSES_FORK
+  # with CRLF line endings, and `read -r` leaves the \r intact, which
+  # pushes the SHA past 40 chars and trips the hex regex below.
+  # The `|| [[ -n "$line" ]]` keeps the last line if it's missing a
+  # trailing newline.
+  line="${line%$'\r'}"
   # Skip comments and blank lines (matches Build.rakumod's parser).
   case "$line" in
     \#*|'') continue ;;

@@ -41,7 +41,8 @@ jobs:
       - name: Read pinned notcurses SHA from NOTCURSES_FORK
         id: ncpin
         run: |
-          sha=$(awk -F= '/^sha=/{print $2}' NOTCURSES_FORK)
+          # tr -d '\r' defends against a stray CRLF checkout.
+          sha=$(awk -F= '/^sha=/{print $2}' NOTCURSES_FORK | tr -d '\r')
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Cache notcurses source checkout (per-SHA)

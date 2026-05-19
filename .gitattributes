@@ -1,0 +1,16 @@
+# Force LF line endings for files parsed by both Raku
+# (Build.rakumod) and POSIX shell scripts (scripts/ci/fetch-notcurses-
+# source.sh). Windows checkouts with core.autocrlf=true would otherwise
+# convert these to CRLF, leaving a trailing \r on every line and
+# tripping the 40-char SHA hex check in fetch-notcurses-source.sh.
+
+NOTCURSES_FORK    text eol=lf
+BINARY_TAG        text eol=lf
+
+# Shell scripts always LF (bash and msys2 bash both refuse to source
+# CRLF-tainted scripts cleanly on some platforms).
+*.sh              text eol=lf
+
+# CMake and YAML — also parsed by tools sensitive to trailing whitespace.
+*.yml             text eol=lf
+*.yaml            text eol=lf
