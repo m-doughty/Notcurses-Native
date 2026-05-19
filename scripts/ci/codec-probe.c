@@ -13,7 +13,7 @@
  *      decoder.
  *
  *   2. Actual decode of PNG, JPEG, BMP fixtures. Reads
- *      $NOTCURSES_DATA_DIR/{chunli44.png,
+ *      $NOTCURSES_DATA_DIR/{chunli01.png,
  *      tetris-background.jpg, warmech.bmp} into memory, feeds each
  *      to libavcodec's internal decoder for that format, requires
  *      a frame back. Catches:
@@ -290,9 +290,19 @@ static const char *REQUIRED_DECODERS[] = {
     NULL,
 };
 
-/* ---------- decode fixtures (paths relative to NOTCURSES_DATA_DIR) ---------- */
+/* ---------- decode fixtures (paths relative to NOTCURSES_DATA_DIR) ----------
+ *
+ * IMPORTANT: only reference REGULAR FILES here, not symlinks. The
+ * notcurses data/ dir has ~11 chunli* PNGs that are symlinks back to
+ * earlier frames (chunli32-37, chunli39, chunli41-44 → chunli30/40
+ * etc.). On Unix git checks those out as real symlinks; on Windows
+ * git's default `core.symlinks=false` materializes them as 12-byte
+ * text files containing the target's name, so opening one gets you
+ * "chunli40.png" as the file's first bytes and the PNG header check
+ * fails. chunli01.png is the canonical "definitely a regular file"
+ * pick. */
 static const struct fixture FIXTURES[] = {
-    { "PNG",  "chunli44.png",          "png"   },
+    { "PNG",  "chunli01.png",          "png"   },
     { "JPEG", "tetris-background.jpg", "mjpeg" },
     { "BMP",  "warmech.bmp",           "bmp"   },
     { NULL, NULL, NULL }
