@@ -2,6 +2,129 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.4.0  2026-05-20T09:19:16+01:00
+    - CI fix: codec-probe PNG fixture moved from chunli44.png →
+      chunli01.png. The notcurses repo has ~11 chunli* PNGs that are
+      symlinks to earlier frames (chunli32-37, 39, 41-44 → others).
+      On Unix git checks them out as real symlinks; on Windows git's
+      default core.symlinks=false materializes each as a 12-byte
+      text file containing the target's name, so the codec probe
+      opened "chunli40.png" as content, libavcodec read 8 bytes,
+      saw "chunli40" instead of the PNG magic 89 50 4E 47 0D 0A 1A
+      0A, and rejected the file with "Invalid PNG signature
+      0x6368756E6C693430". chunli01.png is a regular file and works
+      identically on every lane. Header comment in codec-probe.c
+      now warns future authors to pick regular files only.
+    - CI fix: fetch-notcurses-source.sh now strips trailing \r from
+      each parsed line of NOTCURSES_FORK before applying the 40-char
+      lowercase-hex SHA check. Windows checkouts with
+      core.autocrlf=true (default for Git for Windows) were leaving
+      a CR on the SHA, pushing it to 41 chars and failing the regex
+      with "sha=… must be a 40-char lowercase hex string." `read -r`
+      strips \n but not \r, so the fix is one `${line%$'\r'}` trim
+      per iteration. Linux glibc/musl workflows' `awk` SHA extraction
+      gains a `tr -d '\r'` for the same belt-and-braces reason.
+      Primary fix: new top-level .gitattributes pins NOTCURSES_FORK
+      / BINARY_TAG / *.sh / *.yml / *.yaml to `text eol=lf` so fresh
+      checkouts no longer get CRLF in the first place. Existing
+      clones renormalize via `git add --renormalize .` (or the
+      bash/awk hardening covers them transparently).
+    - vendor/notcurses/ deleted from the repo. Build.rakumod's shim-
+      compile path now resolves include headers (and the Windows
+      import lib) by calling !ensure-notcurses-source — the same SHA-
+      keyed git fetch the source-build fallback uses, wrapped in a
+      try{} so prebuilt-only installs that hit the shim short-circuit
+      don't trigger an unnecessary fetch. Selkie's
+      `examples/viewported-card-list.raku` previously reached into
+      the sibling Notcurses-Native vendor/notcurses/data/ dir for
+      sample images; Selkie 0.7.5+ vendors the 10 referenced images
+      under its own examples/data/ tree. .gitignore drops the now-
+      meaningless `vendor/notcurses/build/` entry.
+    - CI/CD: all four prebuilt-binary lanes (macOS arm64/x86_64,
+      Linux glibc x86_64/aarch64, Linux musl x86_64/aarch64, Windows
+      x86_64/arm64) and the bundle / codec-probe helpers now fetch
+      notcurses from the SHA pinned in NOTCURSES_FORK instead of
+      reading from vendor/notcurses. Single source of truth — both
+      install-time (Build.rakumod) and release-time (CI) build from
+      the exact same commit, so no more "I bumped NOTCURSES_FORK
+      and forgot to sync vendor/notcurses" drift. New shared script
+      scripts/ci/fetch-notcurses-source.sh mirrors Build.rakumod's
+      !ensure-notcurses-source: git init + fetch-by-SHA into
+      $NOTCURSES_SRC_CACHE/<sha>/, idempotent reuse on cache-hit,
+      writes NOTCURSES_SRC_DIR=<path> to $GITHUB_ENV when running
+      under GHA. Workflows cache the per-SHA checkout via
+      actions/cache keyed on the pin so bumping NOTCURSES_FORK auto-
+      invalidates. Migrations:
+        * scripts/ci/build-linux-glibc.sh + build-linux-musl.sh +
+          bundle-elf.sh now consume $NOTCURSES_SRC_DIR. musl lane
+          adds `git` to its `apk add` list.
+        * .github/workflows/_build-{macos,windows}.yml gain a
+          "Fetch notcurses source" step; subsequent steps use
+          $NOTCURSES_SRC_DIR. Windows lane adds `git` to its msys2
+          install set.
+        * .github/actions/bundle-{dll,macos}/action.yml read
+          $NOTCURSES_SRC_DIR/build instead of vendor/notcurses/build.
+          bundle-dll converts the Windows-style env value through
+          cygpath for MSYS2 bash; bundle-elf captures $workspace
+          before cd'ing into the build dir so absolute-path copies
+          don't depend on `cd ../../..` relative math.
+        * scripts/ci/codec-probe.c switches from $WORKSPACE_DIR + a
+          hardcoded vendor/notcurses/data relpath to a single
+          $NOTCURSES_DATA_DIR env var (set by run-codec-probe.sh to
+          $NOTCURSES_SRC_DIR/data). FIXTURES paths now bare basenames.
+        * NOTCURSES_FORK header updated — drops the now-obsolete
+          "CI prebuilt lanes still read from vendor; collapse onto
+          the fetch once CI is migrated" caveat.
+        * .gitignore: ignore _ci-cache/ and bundle/.
+      Escape hatch unchanged: NOTCURSES_NATIVE_VENDOR_DIR=<path>
+      short-circuits the fetch for fork iteration / airgapped builds.
+    - new module lib/Notcurses/Native/Str.rakumod with three helpers:
+      libc-name() (musl/glibc/macOS/Windows libc resolver shared with
+      Native.rakumod's setenv path), strdup-copy-and-free() (decodes
+      a malloc'd C char* and frees via libc free), and
+      borrowed-str-from-pointer() (decodes a pointer into caller-
+      provided storage without freeing). Used to fix the memory-leak
+      class below.
+    - memory leak fix: every binding that returned a heap-allocated
+      char* and was declared `--> Str` silently leaked the original
+      malloc'd pointer at every call. MoarVM's NativeCall copies the
+      bytes into a Raku Str and does NOT free the source. Affected
+      functions in Context.rakumod (ncwcsrtombs, notcurses_at_yx,
+      notcurses_detected_terminal, notcurses_accountname,
+      notcurses_hostname, notcurses_osversion), Cell.rakumod
+      (nccell_extract, nccell_strdup), Plane.rakumod
+      (ncplane_at_cursor, ncplane_at_yx, ncplane_contents),
+      Direct.rakumod (ncdirect_readline, ncdirect_detected_terminal),
+      and Widgets.rakumod (ncreader_contents). Each now rebinds to
+      `--> Pointer` under a `_<name>_raw` symbol and exposes the
+      public name as a Raku wrapper that calls strdup-copy-and-free.
+    - pointer-into-buf returns (Context.rakumod's ncnmetric, ncqprefix,
+      nciprefix, ncbprefix family) rebind similarly but route through
+      borrowed-str-from-pointer so the caller's CArray[uint8] $buf
+      isn't double-freed.
+    - library-owned static pointer returns (notcurses_str_blitter,
+      notcurses_str_scalemode, notcurses_version, ncplane_name,
+      ncselector_selected/previtem/nextitem, ncmenu_selected/
+      mouse_selected, nctab_name, nctabbed_separator,
+      nccell_extended_gcluster) keep their `--> Str` binding and
+      gain an `OWNED-BY-LIBRARY` Pod comment so a future audit
+      doesn't flag them as leaks.
+    - new API: ncpile-render-to-string(NcplaneHandle --> Str) in
+      Context.rakumod. Owns the malloc'd buffer lifecycle for
+      ncpile_render_to_buffer — no more "caller forgets to free
+      the output pointer" leaks for snapshot/rendering consumers.
+      The raw ncpile_render_to_buffer binding stays exported for
+      callers who want to manage the lifecycle themselves.
+    - behavior fix: setenv(3) failures in lib/Notcurses/Native.rakumod
+      now `note` to stderr instead of being silently ignored. Pre-fix,
+      a libc setenv failure (ENOMEM/EINVAL) silently desynced %*ENV
+      and the C environment — ncurses then couldn't find terminfo and
+      notcurses_core_init failed with a vague error. The libc resolver
+      replaces the previous hardcoded 'libc.so.6' so musl Alpine /
+      distroless containers no longer dlopen-fail at module load.
+      The per-call redeclaration of mac_setenv / linux_setenv is
+      gone too — one module-level binding now serves every call.
+
 0.3.4  2026-05-16T04:01:59+01:00
     - Build.rakumod: drop $MIN-GLIBC from v2.35 to v2.28. The Linux
       glibc lanes are rebased onto manylinux_2_28 containers
