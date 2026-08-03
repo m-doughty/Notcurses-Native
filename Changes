@@ -2,6 +2,9 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.4.1  2026-08-03T17:00:29+01:00
+    - Use notcurses with patch to support tmux 3.4
+
 0.4.0  2026-05-20T09:19:16+01:00
     - CI fix: codec-probe PNG fixture moved from chunli44.png →
       chunli01.png. The notcurses repo has ~11 chunli* PNGs that are
@@ -37,7 +40,7 @@ Revision history for Notcurses::Native
       don't trigger an unnecessary fetch. Selkie's
       `examples/viewported-card-list.raku` previously reached into
       the sibling Notcurses-Native vendor/notcurses/data/ dir for
-      sample images; Selkie 0.7.5+ vendors the 10 referenced images
+      sample images; Selkie 0.8.0+ vendors the 10 referenced images
       under its own examples/data/ tree. .gitignore drops the now-
       meaningless `vendor/notcurses/build/` entry.
     - CI/CD: all four prebuilt-binary lanes (macOS arm64/x86_64,

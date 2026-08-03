@@ -14,3 +14,4 @@ bundle/
 resources/lib/*.dylib
 resources/lib/*.so
 resources/lib/*.dll
+*.log

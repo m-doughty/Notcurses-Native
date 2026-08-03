@@ -24,12 +24,12 @@
 # @loader_path (macOS) / $ORIGIN (Linux) / sibling DLL layout
 # (Windows) so they load from the same resources/lib/ directory.
 
-12258849748bd8ea7c70f3dd81d717076aaa842ecabe1e9d1d6521ca0bfc93bc  notcurses-windows-x86_64.zip
-1bac30faf8c7077c03fc52b3f3de2bffc46b635aea581c03bdee809e9bc814d5  notcurses-linux-aarch64-musl.tar.gz
-1eeaa769196120bc3f5b95da979c44bc5602ea0c6917420fa3320b183889d842  notcurses-linux-x86_64-musl.tar.gz
-53d110438de5157a2201f28d5480385147b5ab1297c64c09a9e172d261712df6  notcurses-macos-x86_64.tar.gz
-65c32133b349e50d5b966c64828331be8f02e7dec7f03d9f86caf3b4315ab47f  notcurses-linux-aarch64-glibc.tar.gz
-70d6b91fa9ccc832fcd5ee36c43be3339653958dc60015774c0f88849b23a286  notcurses-linux-x86_64-glibc.tar.gz
-9c0d7cdb3dce49ff24495fe58c38cbb7ea03dd3d939eee7c9dbcb0dcb7445ad9  notcurses-windows-arm64.zip
-ae537735f326298c030b1a5641bf84c8d0f31beca2243895dc605ad3fd801c6b  notcurses-macos-arm64.tar.gz
+1df9b1563d5d32100467af67212985b238098ef2eeaaec43ebaf115848f2c63f  notcurses-linux-aarch64-musl.tar.gz
+1f498045f917e524277d4abbc7daf1a029b6adb91bd80b803607fbb91fd14e31  notcurses-windows-x86_64.zip
+470154211fec29d576fb556377a92df659bfa3bc37714fafdbdfb718985ee61a  notcurses-linux-x86_64-glibc.tar.gz
+69c073ad54fc9f77fead56a222dac0c1d3b9987191e97800c9a4eb15310e6801  notcurses-macos-arm64.tar.gz
+8736671a4c09519a0897b0a8ac34af39ebd1cdcc720492916ca6cbabe44e2b79  notcurses-linux-aarch64-glibc.tar.gz
+acddc4dcb599274bbf4cba5d777c7e057231695487e01fe0d59ef0b34f61043a  notcurses-macos-x86_64.tar.gz
+d33c34e7e6732be36732e6e177efacb2244b6a99b31ff5e07d1ce46918ed5116  notcurses-windows-arm64.zip
+e6e8d4e82c98e52a9a1836458f2490a1b770ef8ad0a571eb8bba7e7614df7d6e  notcurses-linux-x86_64-musl.tar.gz
 
