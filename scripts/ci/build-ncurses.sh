@@ -34,8 +34,8 @@ mkdir -p "$PREFIX"
 JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 
 cd /tmp
-curl -fSL --retry 5 --retry-delay 10 --retry-all-errors -o ncurses.tar.gz "$URL" \
-    || curl -fSL --retry 5 --retry-delay 10 --retry-all-errors -o ncurses.tar.gz "$FALLBACK_URL"
+curl -fSL --retry 5 --retry-delay 10 -o ncurses.tar.gz "$URL" \
+    || curl -fSL --retry 5 --retry-delay 10 -o ncurses.tar.gz "$FALLBACK_URL"
 tar -xzf ncurses.tar.gz
 cd "ncurses-${VERSION}"
 

@@ -54,7 +54,7 @@ mkdir -p "$RAKUBREW_HOME"
 # (exported above). install-on-perl.sh needs perl + curl, both
 # universally available on every CI runner we use.
 if [[ ! -x "$RAKUBREW_HOME/bin/rakubrew" ]]; then
-    curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors https://rakubrew.org/install-on-perl.sh | sh
+    curl -fsSL --retry 5 --retry-delay 10 https://rakubrew.org/install-on-perl.sh | sh
 fi
 
 # Switch to shim mode. rakubrew refuses to `build` if it's still
