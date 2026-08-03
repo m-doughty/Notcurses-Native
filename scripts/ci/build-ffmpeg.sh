@@ -52,7 +52,7 @@ if ! command -v nasm >/dev/null 2>&1; then
 fi
 
 cd /tmp
-curl -fSL -o ffmpeg.tar.xz "$URL"
+curl -fSL --retry 5 --retry-delay 10 --retry-all-errors -o ffmpeg.tar.xz "$URL"
 tar -xJf ffmpeg.tar.xz
 cd "ffmpeg-${VERSION}"
 

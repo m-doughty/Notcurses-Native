@@ -27,7 +27,7 @@ mkdir -p "$PREFIX"
 JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 
 cd /tmp
-curl -fSL -o dav1d.tar.bz2 "$URL"
+curl -fSL --retry 5 --retry-delay 10 --retry-all-errors -o dav1d.tar.bz2 "$URL"
 tar -xjf dav1d.tar.bz2
 cd "dav1d-${VERSION}"
 
