@@ -142,6 +142,14 @@ nm -g --defined-only bundle/libnotcurses_native_shim.so \
     echo "❌ no notcurses_native_* exports — link silently failed."
     exit 1
   }
+# Sidecar for Build.rakumod's content-based freshness check: the
+# SHA-256 of the shim source this shim was compiled from. Without
+# it, installs fall back to a cross-machine mtime comparison that
+# always thinks the dist's source is newer than the packed shim
+# and recompiles (or, toolchain-less, warns and drops to the slow
+# per-cell path).
+sha256sum src/notcurses_native_shim.c | awk '{print $1}' \
+  > bundle/libnotcurses_native_shim.so.srchash
 
 # Release gate: confirm libavcodec actually got linked against
 # libdav1d / libvpx / libopus during ffmpeg's configure. Catches

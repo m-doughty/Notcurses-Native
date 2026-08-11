@@ -146,6 +146,15 @@ jobs:
             | grep -E 'T (_)?notcurses_native_' \
             || { echo "❌ shim DLL missing notcurses_native_* exports"; \
                  exit 1; }
+          # Sidecar for Build.rakumod's content-based freshness
+          # check: the SHA-256 of the shim source this shim was
+          # compiled from. Prebuilt-only Windows installs can't
+          # compile the shim at all (no import lib in the archive),
+          # so without this sidecar every reinstall takes the mtime
+          # fallback and hits the "skipping Windows shim compile"
+          # warning path.
+          sha256sum src/notcurses_native_shim.c | awk '{print $1}' \
+            > bundle/libnotcurses_native_shim.dll.srchash
 
       # Release gate: LoadLibrary avcodec-*.dll from bundle/, confirm
       # libdav1d / libvpx_vp8 / libvpx_vp9 / libopus are registered

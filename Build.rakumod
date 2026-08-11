@@ -925,14 +925,33 @@ class Build {
 
         EXPECTED CI BEHAVIOUR: the prebuilt release archives should
         ship libnotcurses_native_shim.{dylib,so,dll} pre-compiled
-        alongside the libnotcurses libs. The CI workflow that
-        produces those archives (m-doughty/Notcurses-Native repo,
-        not in-tree) needs a step that compiles src/notcurses_
-        native_shim.c with the same flags this method uses. When
-        the staged-libs dir already contains a shim at least as
-        new as the source, this method short-circuits — so users
-        installing a prebuilt never hit the compile path and don't
-        need a C toolchain.
+        alongside the libnotcurses libs, plus a sidecar
+        libnotcurses_native_shim.<ext>.srchash holding the SHA-256
+        (hex) of the src/notcurses_native_shim.c it was compiled
+        from. The CI lanes that produce those archives
+        (.github/workflows/_build-{macos,windows}.yml and
+        scripts/ci/build-linux-{glibc,musl}.sh) compile
+        src/notcurses_native_shim.c with the same flags this
+        method uses and write the sidecar next to it. When the
+        staged sidecar matches the shim source
+        this dist ships, this method short-circuits — so users
+        installing a prebuilt never hit the compile path and
+        don't need a C toolchain. The freshness check is
+        content-based on purpose: mtimes are meaningless across
+        machines. A dist tarball is packaged after the binary
+        pack is built, so on every fresh ecosystem install the
+        extracted source looked "newer than" the archive's shim
+        and silently forced the compile path — observed
+        2026-08-11 on a toolchain-less Alpine CI container, where
+        it surfaced as the per-cell-fallback warning despite the
+        musl pack shipping a perfectly good shim. Packs that
+        predate the sidecar fall back to the old mtime
+        comparison. Every successful local compile writes the
+        sidecar and parks a content-addressed copy of the shim
+        under <cache>/shims/<src-sha256>.<ext>, so a
+        toolchain-equipped machine compiles at most once per
+        (shim source, binary tag) even though !extract-archive
+        wipes the stage dir on every install.
 
         FALLBACK: when a prebuilt is unavailable (unknown platform
         / source-build path), or when this Build.rakumod is shipping
@@ -947,20 +966,56 @@ class Build {
                    !! $*DISTRO.is-win ?? 'dll'
                    !! 'so';
         my IO::Path $shim = $stage.add("libnotcurses_native_shim.$ext");
+        my IO::Path $sidecar = $stage.add("libnotcurses_native_shim.$ext.srchash");
         my Str $src = "$dist-path/src/notcurses_native_shim.c";
 
         return unless $src.IO.e;
 
-        # Skip rebuild when staged shim is already at least as new as
-        # the source. Mirror Vips-Native's same-named method.
+        my Str $src-hash = (try self!sha256($src.IO)) // Str;
+
+        # Skip rebuild when the staged shim was built from the same
+        # shim source this dist ships, per the .srchash sidecar (see
+        # method doc). Mirror Vips-Native's same-named method. The
+        # mtime branch only serves packs that predate the sidecar
+        # (and systems where hashing itself failed).
         if $shim.e {
-            my $src-mtime  = $src.IO.modified // 0;
-            my $shim-mtime = $shim.modified  // 0;
-            return if $shim-mtime >= $src-mtime;
-            say "🔁 Source newer than staged shim — recompiling.";
+            if $sidecar.e && $src-hash.defined {
+                my Str $packed = (try $sidecar.slurp.trim) // '';
+                return if $packed eq $src-hash;
+                say "🔁 Staged shim was built from different source — refreshing.";
+            }
+            else {
+                my $src-mtime  = $src.IO.modified // 0;
+                my $shim-mtime = $shim.modified  // 0;
+                return if $shim-mtime >= $src-mtime;
+                say "🔁 Source newer than staged shim — refreshing.";
+            }
         }
 
         $stage.mkdir;
+
+        # Content-addressed local build cache: every successful compile
+        # below also lands in <cache>/shims/<src-sha256>.<ext> (the
+        # cache dir is already keyed by BINARY_TAG). !extract-archive
+        # wipes the stage on every install, so a stamped sidecar alone
+        # cannot survive a reinstall — restoring from here means a
+        # machine that compiled once skips the git header fetch and
+        # the C toolchain requirement on every subsequent install.
+        # Keyed by content, so a shim-source edit can never hit a
+        # stale entry. Safe to relocate: the shim is built with a
+        # relative install-name / $ORIGIN rpath on every platform.
+        my IO::Path $shim-cache =
+            self!cache-dir(self!binary-tag($dist-path)).add('shims');
+        if $src-hash.defined {
+            my IO::Path $cached-shim = $shim-cache.add("$src-hash.$ext");
+            if $cached-shim.e {
+                $cached-shim.copy($shim);
+                $shim.chmod(0o755);
+                $sidecar.spurt("$src-hash\n");
+                say "✅ Restored Notcurses perf shim from build cache → $shim.";
+                return;
+            }
+        }
 
         # The notcurses headers + (Windows) import lib live in the
         # source tree resolved by !ensure-notcurses-source: either
@@ -1069,6 +1124,17 @@ class Build {
         $rc.out.slurp(:close);
         if $rc.exitcode == 0 {
             say "✅ Compiled Notcurses perf shim → $shim.";
+            # Stamp what we compiled (content match beats cross-machine
+            # mtime guesses) and park a copy in the build cache so the
+            # next install's wiped stage can restore instead of
+            # recompiling.
+            if $src-hash.defined {
+                try $sidecar.spurt("$src-hash\n");
+                try {
+                    $shim-cache.mkdir;
+                    $shim.copy($shim-cache.add("$src-hash.$ext"));
+                }
+            }
         }
         else {
             note "⚠️  Could not compile Notcurses perf shim ($shim): $err";
