@@ -266,7 +266,7 @@ class Build {
         copy $src, $dst;
     }
 
-    # --- Prebuilt binary path -------------------------------------------
+    # --- Prebuilt binary pathing ----------------------------------------
 
     method !try-prebuilt($dist-path, Str $plat, Str $binary-tag, IO::Path $stage --> Bool) {
         my Str $artifact = self!artifact-name($plat);

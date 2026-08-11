@@ -347,7 +347,7 @@ Supported platforms
 
 The CI release pipeline runs a codec capability probe against every artefact before publish: dlopens the bundled `libavcodec`, confirms the accelerated decoder libraries (`libdav1d`, `libvpx`, `libvpx-vp9`, `libopus`) are registered, and actually decodes PNG / JPEG / BMP fixtures end-to-end. A build with a misconfigured or broken libavcodec doesn't reach the release.
 
-**Windows arm64 caveat:** we build the prebuilt and ship it, but the end-to-end Raku verify lane is currently disabled. Rakudo's source-build path (rakubrew → MoarVM) fails on Windows ARM64 MSYS2 CLANGARM64 — NQP's `Configure.pl` probe trips on a perl-output parse — and `setup-raku@v1` has no native Windows ARM64 prebuilt yet, so there's no Rakudo to test against in CI. The bundle audit on the build side (objdump-based import-table walk, sibling-DLL self-containment check) still runs, so a broken bundle would still fail the release. Users on Windows ARM64 are encouraged to report issues — see [https://github.com/invisietch/data-pipes/issues](https://github.com/invisietch/data-pipes/issues).
+**Windows arm64 caveat:** we build the prebuilt and ship it, but the end-to-end Raku verify lane is currently disabled. Rakudo's source-build path (rakubrew → MoarVM) fails on Windows ARM64 MSYS2 CLANGARM64 — NQP's `Configure.pl` probe trips on a perl-output parse — and `setup-raku@v1` has no native Windows ARM64 prebuilt yet, so there's no Rakudo to test against in CI. The bundle audit on the build side (objdump-based import-table walk, sibling-DLL self-containment check) still runs, so a broken bundle would still fail the release. Users on Windows ARM64 are encouraged to report issues.
 
 Codec coverage
 --------------

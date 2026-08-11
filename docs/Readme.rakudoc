@@ -379,7 +379,7 @@ yet, so there's no Rakudo to test against in CI. The bundle audit
 on the build side (objdump-based import-table walk, sibling-DLL
 self-containment check) still runs, so a broken bundle would still
 fail the release. Users on Windows ARM64 are encouraged to report
-issues — see L<https://github.com/invisietch/data-pipes/issues>.
+issues.
 
 =head2 Codec coverage
 
