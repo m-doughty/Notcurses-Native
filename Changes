@@ -2,6 +2,24 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.4.3  2026-08-11T15:36:14+01:00
+    - Bump BINARY_TAG to binaries-notcurses-3.0.17-r9 — first pack
+      that ships the shim .srchash sidecars.
+    - Shim freshness is now content-based, not mtime-based. A
+      libnotcurses_native_shim.<ext>.srchash sidecar (SHA-256 of the
+      shim source) ships in the prebuilt packs and is written by every
+      local compile; mtimes are meaningless across machines, and the
+      old comparison made every fresh ecosystem install think the
+      dist's shim source was newer than the pack's prebuilt shim —
+      silently recompiling (or, without a C toolchain, warning and
+      falling back to the slow per-cell path despite a good shim in
+      the pack; observed on a toolchain-less Alpine CI container).
+    - Successful shim compiles are parked in a content-addressed
+      build cache (<cache>/shims/<src-sha256>.<ext>), so a machine
+      that compiled once never recompiles for the same shim source +
+      binary tag, even though extraction wipes the staged dir on
+      every install.
+
 0.4.2  2026-08-11T12:17:30+01:00
     - Clarify docs
 
