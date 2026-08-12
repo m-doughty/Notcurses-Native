@@ -13,6 +13,14 @@
 # may already contain a populated lib/ + include/ from a previous
 # run's actions/cache restore. If so, skip the ~10-min ffmpeg
 # source build. Otherwise build + populate.
+#
+# DEPS_ONLY=1 stops the script right after that codec chain is ready
+# (chowning $CACHE_DIR back to the host user first) instead of going
+# on to build notcurses. _build-linux-glibc.yml runs this script
+# twice on a cache miss — once with DEPS_ONLY=1, so it can save the
+# actions/cache entry immediately afterwards, before anything that
+# can still fail; once without, to do the notcurses build against the
+# now-warm cache. See the DEPS_ONLY branch below for why.
 
 set -euxo pipefail
 
@@ -112,6 +120,31 @@ pkg-config --modversion libdeflate
 pkg-config --modversion dav1d vpx opus
 pkg-config --modversion libavcodec libavformat libavutil libswscale libswresample
 
+# Escape hatch for the cache-split pattern the workflow uses:
+# _build-linux-glibc.yml runs this script ONCE with DEPS_ONLY=1 to
+# populate (or, on a cache hit, merely verify) $CACHE_DIR, saves the
+# actions/cache entry off the back of THAT docker run, and only then
+# runs this script a second time — cache warm — for the notcurses
+# build below. Splitting the docker invocation is what makes the
+# save actually happen: within a single `docker run`, a later
+# failure (notcurses build, bundling, the codec probe) would abort
+# the whole GHA step before a combined actions/cache action's post-
+# job save step ever gets to run, discarding the ~15-20 min codec
+# build that had already succeeded — which is exactly what happened
+# to the Windows lane in the r10 dispatch that motivated this split.
+#
+# chown here, not just at the very end of a full run: on the
+# DEPS_ONLY invocation this IS the end of the run, and $CACHE_DIR is
+# the one artefact the following host-side `actions/cache/save` step
+# needs to read — root-owned (this container runs as root against
+# the /work bind mount) is unreadable-enough to matter there, same
+# failure class as fix 2's bundle/ permission error.
+if [[ "${DEPS_ONLY:-}" == "1" ]]; then
+  chown -R "$(stat -c '%u:%g' /work)" "$CACHE_DIR"
+  echo "✅ DEPS_ONLY=1 — codec chain is ready in \$CACHE_DIR; skipping notcurses build."
+  exit 0
+fi
+
 CMAKE_FLAGS=(
   -DUSE_MULTIMEDIA=ffmpeg
   -DBUILD_FFI_LIBRARY=ON
@@ -192,3 +225,20 @@ sha256sum src/notcurses_native_shim.c | awk '{print $1}' \
 # build job fails, and release.yml's `needs:` chain refuses to
 # publish this artefact.
 bash scripts/ci/run-codec-probe.sh
+
+# This container runs as root against the /work bind mount, so
+# everything it created under /work — bundle/ above all — comes out
+# root-owned on the host. package-and-upload's emit-third-party-kit.sh
+# step runs AFTER this script, on the host, as the unprivileged
+# runner user, and needs to create bundle/LICENSES: root-owned,
+# group/other-writable-less directories made that a permission
+# denied rather than a licensing-kit write. Restore host ownership
+# before handing control back. $CACHE_DIR is included too, for the
+# benefit of a standalone `docker run ... build-linux-glibc.sh`
+# invocation that never went through the DEPS_ONLY split above (the
+# split path already chowned it at that point, so this is a no-op
+# there) — anything else this script writes under /work
+# (_ci-cache/notcurses-source, populated by fetch-notcurses-source.sh)
+# is container-read-only from here on and never written to by a
+# host-side step, so it does not need the same treatment.
+chown -R "$(stat -c '%u:%g' /work)" /work/bundle "$CACHE_DIR"

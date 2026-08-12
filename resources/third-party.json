@@ -173,9 +173,9 @@
       "project-url": "https://ffmpeg.org/",
       "source": {
         "kind": "tarball",
-        "url": "https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz",
-        "filename": "ffmpeg-8.1.2.tar.xz",
-        "sha256": "464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c",
+        "url": "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n8.1.2.tar.gz",
+        "filename": "ffmpeg-n8.1.2.tar.gz",
+        "sha256": "9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7",
         "attach-to-release": true
       },
       "binaries": {
@@ -201,7 +201,7 @@
           "required": true
         }
       },
-      "notes": "The copyleft library in the pack, and the reason the source tarball is attached to every binary release. Built decoder-only with no --enable-gpl and no --enable-nonfree, so the LGPL-2.1-or-later arm applies and none of the GPL-only parts are compiled in; scripts/ci/build-ffmpeg.sh asserts configure reported 'LGPL version 2.1 or later' and the Windows lane re-reads the licence string baked into the shipped avcodec. Windows uses ffmpeg's mingw32 naming (no lib prefix, SONAME major in the stem)."
+      "notes": "The copyleft library in the pack, and the reason the source tarball is attached to every binary release. Built decoder-only with no --enable-gpl and no --enable-nonfree, so the LGPL-2.1-or-later arm applies and none of the GPL-only parts are compiled in; scripts/ci/build-ffmpeg.sh asserts configure reported 'LGPL version 2.1 or later' and the Windows lane re-reads the licence string baked into the shipped avcodec. Windows uses ffmpeg's mingw32 naming (no lib prefix, SONAME major in the stem). Fetched from FFmpeg's own GitHub mirror rather than ffmpeg.org/releases: the r10 CI dispatch hit repeated connection timeouts/resets against ffmpeg.org from GitHub-hosted runners (reproduced locally too, so not a one-off), and ffmpeg.org has no CDN in front of it, so one flaky upstream host took every lane down at once. The GitHub tag archive is a sound substitute here specifically because ffmpeg checks `configure` into git rather than generating it via `make dist` — most projects' tag archives lack a buildable configure, ffmpeg's doesn't. The URL is a GitHub-generated tag archive, same caveat as libvpx's and dav1d's: see the dav1d note on what a hash mismatch means. filename is explicit for the same reason libvpx's is — `n8.1.2.tar.gz` on its own says nothing about what it is and would collide with the next project pinned at the same tag."
     },
 
     {

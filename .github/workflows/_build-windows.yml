@@ -217,9 +217,21 @@ jobs:
       # scripts, so any version bump or configure-flag change
       # invalidates it, and on the msystem name, so the UCRT64 and
       # CLANGARM64 prefixes can never be handed to each other.
-      - name: Cache source-built codec + ffmpeg chain
+      #
+      # restore/save split rather than the combined actions/cache: the
+      # combined action saves in a post step that only runs when the
+      # job SUCCEEDS. The r10 dispatch proved the cost right here —
+      # this lane built the entire libdeflate→dav1d→vpx→opus chain,
+      # died at the ffmpeg download, and saved nothing, so the next
+      # push re-paid the whole cold-cache build (~30 min UCRT64, more
+      # on CLANGARM64's emulated msys2-runtime). Saving explicitly,
+      # immediately after the source-build step and before "Verify
+      # source-built prefix" / "Configure + build notcurses" (either
+      # of which can still fail), keeps the cache whatever the rest of
+      # the job goes on to do.
+      - name: Restore source-built codec + ffmpeg chain
         id: win-deps
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.DEPS_PREFIX_REL }}
           key: ${{ env.MSYS_SUBSYSTEM }}-deps-${{ hashFiles('scripts/ci/build-libunistring.sh', 'scripts/ci/build-libdeflate.sh', 'scripts/ci/build-libdav1d.sh', 'scripts/ci/build-libvpx.sh', 'scripts/ci/build-libopus.sh', 'scripts/ci/build-ffmpeg.sh') }}
@@ -250,6 +262,13 @@ jobs:
           bash scripts/ci/build-libvpx.sh
           bash scripts/ci/build-libopus.sh
           bash scripts/ci/build-ffmpeg.sh
+
+      - name: Save source-built codec + ffmpeg chain
+        if: steps.win-deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.DEPS_PREFIX_REL }}
+          key: ${{ steps.win-deps.outputs.cache-primary-key }}
 
       # Runs on cache hit AND fresh build. On a fresh build it is
       # nearly redundant (the scripts self-check), but on a cache hit

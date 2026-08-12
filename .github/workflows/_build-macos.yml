@@ -18,12 +18,21 @@
 # LGPL license line at configure time so this can't silently regress.
 #
 # arm64 lane: native build. Deployment target = 11.0 (Big Sur, the
-# earliest macOS supporting Apple Silicon). Tools + the libs we do
-# NOT source-build (ncurses, libdeflate) still come from brew: arm64
-# bottles target 11.0+, which matches our floor. libunistring left
-# that list when it joined the source-built chain — it is LGPL and
-# ships inside the pack, so we need a pinned source tarball we can
-# hand a user, which a moving brew bottle can't be.
+# earliest macOS supporting Apple Silicon). Tools + the one library
+# we do NOT source-build (ncurses) still come from brew: arm64
+# bottles target 11.0+, which matches our floor. libunistring and
+# libdeflate left that list when they joined the source-built chain.
+# libunistring is LGPL and ships inside the pack, so we need a pinned
+# source tarball we can hand a user, which a moving brew bottle can't
+# be. libdeflate is MIT (no source duty), but it left for a build
+# reason instead: the workspace cache dir this lane's env block
+# points every lookup mechanism at (PKG_CONFIG_PATH, CMAKE_PREFIX_PATH,
+# CPATH — see the "Configure + build notcurses" step) never included
+# brew's include path, so notcurses' find_path(libdeflate.h) came up
+# empty even with the brew keg installed. Source-building it into the
+# same cache prefix as everything else fixes the lookup and makes
+# resources/third-party.json's "ours everywhere" libdeflate claim
+# actually true on this lane.
 #
 # x86_64 lane: Rosetta build on the same arm64 runner. Two complications:
 #
@@ -34,13 +43,14 @@
 #      $GITHUB_PATH so x86_64 toolchain binaries win.
 #
 #   2. Library deployment target. brew x86_64 bottles currently
-#      target macOS 14+ (brew's Intel CI runners are Sonoma+), so
-#      brew-installed ncurses / libdeflate would stamp
-#      LC_BUILD_VERSION minos=14.0 and fail our 10.15 audit. Fix:
-#      install brew x86_64 for *tools only* (cmake, pkg-config,
-#      nasm, dylibbundler — they don't end up in the bundle) and
-#      source-build those libraries too, into the same workspace
-#      cache dir with MACOSX_DEPLOYMENT_TARGET=10.15 in env.
+#      target macOS 14+ (brew's Intel CI runners are Sonoma+), so a
+#      brew-installed ncurses would stamp LC_BUILD_VERSION minos=14.0
+#      and fail our 10.15 audit. Fix: install brew x86_64 for *tools
+#      only* (cmake, pkg-config, nasm, dylibbundler — they don't end
+#      up in the bundle) and source-build that library (plus
+#      libdeflate, which both lanes now source-build regardless — see
+#      the arm64 note above) into the same workspace cache dir with
+#      MACOSX_DEPLOYMENT_TARGET=10.15 in env.
 #
 # The `host-arch` helper emitted below is the single seam between
 # the two: `exec "$@"` on arm64, `exec arch -x86_64 "$@"` on x86_64.
@@ -164,8 +174,10 @@ jobs:
             echo "BREW_PREFIX=/usr/local" >> "$GITHUB_ENV"
           else
             # arm64 lane: brew arm64 bottles target 11.0+, which
-            # matches our deployment-target floor, so ncurses and
-            # libdeflate can stay package-managed.
+            # matches our deployment-target floor, so ncurses can
+            # stay package-managed. libdeflate is NOT in this list —
+            # see the "Source-build libraries" step below for why it
+            # now source-builds on arm64 too.
             #
             # ffmpeg is deliberately NOT in this list any more (nor
             # x264/x265/etc, which only ever arrived as its
@@ -183,7 +195,7 @@ jobs:
             # under us and is garbage-collected; a pinned tarball with
             # a recorded SHA-256 in resources/third-party.json does
             # not. Both lanes source-build it below.
-            brew install cmake pkg-config ncurses libdeflate \
+            brew install cmake pkg-config ncurses \
               dylibbundler meson ninja
             echo "BREW_PREFIX=$(brew --prefix)" >> "$GITHUB_ENV"
           fi
@@ -194,18 +206,29 @@ jobs:
       # minos. First run pays ~15-20 min wallclock (mostly ffmpeg);
       # subsequent runs hit cache and skip the source builds
       # entirely.
-      - name: Cache source-built libraries
+      #
+      # restore/save split rather than the combined actions/cache: the
+      # combined action saves in a post step that only runs when the
+      # job SUCCEEDS. The r10 dispatch proved the cost on the Windows
+      # lane's equivalent cache — it built the entire libdeflate→
+      # dav1d→vpx→opus chain, died at the ffmpeg download, and saved
+      # nothing, so the next push re-paid the whole ~15-20 min build.
+      # Saving explicitly, immediately after the source-build step and
+      # before "Configure + build notcurses" (which is what can still
+      # fail afterwards), keeps the cache whatever the rest of the job
+      # goes on to do.
+      - name: Restore source-built libraries
         id: macos-libs
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: _ci-cache/macos-${{ inputs.arch }}
           # Hash all 7 source-build scripts — any version bump or
-          # config change invalidates the cache. arm64 only runs 5 of
-          # them (it keeps ncurses / libdeflate from brew), so a
-          # change to either of the other 2 invalidates its cache
-          # needlessly; that costs one rebuild and is far cheaper
-          # than the alternative failure mode of a per-lane script
-          # list drifting out of sync with the step below.
+          # config change invalidates the cache. arm64 only runs 6 of
+          # them (it keeps ncurses from brew), so a change to
+          # build-ncurses.sh invalidates its cache needlessly; that
+          # costs one rebuild and is far cheaper than the alternative
+          # failure mode of a per-lane script list drifting out of
+          # sync with the step below.
           key: macos-${{ inputs.arch }}-libs-${{ inputs.deployment-target }}-${{ hashFiles('scripts/ci/build-ffmpeg.sh', 'scripts/ci/build-libdeflate.sh', 'scripts/ci/build-libdav1d.sh', 'scripts/ci/build-libvpx.sh', 'scripts/ci/build-libopus.sh', 'scripts/ci/build-ncurses.sh', 'scripts/ci/build-libunistring.sh') }}
 
       - name: Source-build libraries
@@ -222,12 +245,26 @@ jobs:
           # Rosetta) reads MACOSX_DEPLOYMENT_TARGET from env and
           # stamps every dylib's LC_BUILD_VERSION minos accordingly.
           if [[ "${{ inputs.arch }}" == "x86_64" ]]; then
-            # x86_64 only: brew's x86_64 bottles of these two target
-            # macOS 14+, so they'd fail the 10.15 audit. arm64 takes
-            # them from brew instead.
-            host-arch bash scripts/ci/build-libdeflate.sh
+            # x86_64 only: brew's x86_64 bottle of ncurses targets
+            # macOS 14+, so it'd fail the 10.15 audit. arm64 takes it
+            # from brew instead.
             host-arch bash scripts/ci/build-ncurses.sh
           fi
+          # libdeflate — BOTH lanes now, but for two different
+          # reasons. x86_64 needs it for the same deployment-target
+          # reason as ncurses above. arm64 needs it because the cache-
+          # rooted env block below (PKG_CONFIG_PATH / CMAKE_PREFIX_PATH
+          # / CPATH, all pointed at $PREFIX = the workspace cache) no
+          # longer exposes brew's include path at all, so notcurses'
+          # `find_path(DEFLATE_INCLUDE_DIR libdeflate.h)` came up empty
+          # ("Couldn't find libdeflate.h") even with libdeflate
+          # installed via brew. Source-building it into the same
+          # prefix everything else lives in keeps every lookup
+          # mechanism consistent — and makes resources/third-party.json's
+          # libdeflate entry (which already claims "ours everywhere")
+          # actually true on arm64 rather than silently shipping
+          # brew's copy under our own manifest claim.
+          host-arch bash scripts/ci/build-libdeflate.sh
           # libunistring — BOTH lanes, for licensing rather than
           # deployment-target reasons: it is LGPL, it ships in the
           # pack, and a pinned tarball is the only way to still be
@@ -242,6 +279,13 @@ jobs:
           host-arch bash scripts/ci/build-libopus.sh
           host-arch bash scripts/ci/build-ffmpeg.sh
 
+      - name: Save source-built libraries
+        if: steps.macos-libs.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: _ci-cache/macos-${{ inputs.arch }}
+          key: ${{ steps.macos-libs.outputs.cache-primary-key }}
+
       - name: Configure + build notcurses
         run: |
           set -euxo pipefail
@@ -249,19 +293,23 @@ jobs:
           mkdir -p build
 
           # Both lanes: the source-built libs live in a per-arch
-          # workspace cache. ffmpeg's .pc files are under
-          # $CACHE/lib/pkgconfig (plus ncurses' + libdeflate's on
-          # x86_64, which source-builds those too).
+          # workspace cache. ffmpeg's + libdeflate's .pc/include files
+          # are under $CACHE (plus ncurses' too, on x86_64, which
+          # source-builds that as well).
           CACHE="${GITHUB_WORKSPACE}/_ci-cache/macos-${{ inputs.arch }}"
           export PKG_CONFIG_PATH="$CACHE/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
           export DYLD_LIBRARY_PATH="$CACHE/lib:${DYLD_LIBRARY_PATH:-}"
           export LIBRARY_PATH="$CACHE/lib:${LIBRARY_PATH:-}"
           # CMAKE_PREFIX_PATH for find_path / find_library /
           # find_package — notcurses' CMakeLists.txt locates
-          # libdeflate via raw find_path (not pkg-config like it
-          # uses for ffmpeg), so without this the x86_64 lane errors
-          # with "Couldn't find libdeflate.h" despite libdeflate
-          # being at $CACHE/include/.
+          # libdeflate via raw find_path (not pkg-config like it uses
+          # for ffmpeg), so without this BOTH lanes error with
+          # "Couldn't find libdeflate.h" despite libdeflate being at
+          # $CACHE/include/. This bit arm64 once already: the lane
+          # kept libdeflate on brew while this env block only ever
+          # pointed at $CACHE, and brew's own include path was never
+          # in it — CMAKE_PREFIX_PATH is what has to carry it, and now
+          # does, because libdeflate lives in $CACHE on both lanes.
           export CMAKE_PREFIX_PATH="$CACHE:${CMAKE_PREFIX_PATH:-}"
           # CPATH so direct cc -I resolution finds headers when
           # notcurses' build invokes the compiler outside CMake's
@@ -316,12 +364,12 @@ jobs:
         uses: ./.github/actions/bundle-macos
         with:
           # Only audit on the x86_64 lane. arm64's source-built
-          # ffmpeg + libunistring chain stamps minos=11.0 and would
-          # pass, but the two libs it still takes from brew (ncurses,
-          # libdeflate) are bottles built on whatever macOS brew's
-          # arm64 CI runs, so a strict 11.0 audit here would fail on
-          # deps this chunk isn't moving. Revisit if/when those two
-          # move to source-build as well.
+          # ffmpeg + libunistring + libdeflate chain stamps minos=11.0
+          # and would pass, but the one lib it still takes from brew
+          # (ncurses) is a bottle built on whatever macOS brew's arm64
+          # CI runs, so a strict 11.0 audit here would fail on a dep
+          # this chunk isn't moving. Revisit if/when that one moves to
+          # source-build as well.
           audit-min-macos: ${{ inputs.arch == 'x86_64' && '10.15' || '' }}
           # Point dylibbundler at the source-built lib dir so it can
           # resolve the @rpath references for libavcodec etc. into

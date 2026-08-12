@@ -59,8 +59,22 @@ set -euxo pipefail
 # distros and brew are shipping, so it's the one with the most
 # eyeballs on it, and a decode-only surface gains nothing from a
 # brand-new major. Revisit when 9.x has a couple of point releases.
+#
+# Fetched from ffmpeg's own GitHub mirror rather than ffmpeg.org:
+# the first r10 CI dispatch saw connection timeouts/resets against
+# ffmpeg.org from multiple GitHub-hosted runners (reproduced locally
+# too — not a one-off blip), and ffmpeg.org carries no CDN fronting,
+# so a single upstream host being flaky takes every lane down with
+# it. GitHub's tag archive is a legitimate substitute here (unlike a
+# bare source snapshot from most projects) because ffmpeg checks
+# `configure` into git — it's not an autotools output that only a
+# `make dist` tarball would carry. TAG uses ffmpeg's own release-tag
+# convention (`n` + version, e.g. `n8.1.2`); VERSION stays bare
+# because it also names this script's install layout below and is
+# what t/17 cross-checks resources/third-party.json against.
 VERSION='8.1.2'
-URL="https://ffmpeg.org/releases/ffmpeg-${VERSION}.tar.xz"
+TAG="n${VERSION}"
+URL="https://github.com/FFmpeg/FFmpeg/archive/refs/tags/${TAG}.tar.gz"
 PREFIX="${PREFIX:-/usr/local}"
 mkdir -p "$PREFIX"
 
@@ -126,9 +140,12 @@ case "$BUILD_ARCH" in
 esac
 
 cd /tmp
-curl -fSL --retry 5 --retry-delay 10 -o ffmpeg.tar.xz "$URL"
-tar -xJf ffmpeg.tar.xz
-cd "ffmpeg-${VERSION}"
+curl -fSL --retry 5 --retry-delay 10 -o ffmpeg.tar.gz "$URL"
+tar -xzf ffmpeg.tar.gz
+# GitHub's tag-archive top-level dir is `<org-repo-casing>-<tag>`, so
+# `FFmpeg-n8.1.2` here — not `ffmpeg-${VERSION}` the way ffmpeg.org's
+# own release tarball was named.
+cd "FFmpeg-${TAG}"
 
 # Configure flags:
 #   --disable-{static,doc,debug}    → smaller, faster build
@@ -316,4 +333,4 @@ PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
     pkg-config --modversion libavcodec libavformat libavutil libswscale libswresample
 
 cd /
-rm -rf "/tmp/ffmpeg-${VERSION}" /tmp/ffmpeg.tar.xz "$configure_log"
+rm -rf "/tmp/FFmpeg-${TAG}" /tmp/ffmpeg.tar.gz "$configure_log"

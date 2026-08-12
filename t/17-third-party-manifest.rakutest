@@ -345,4 +345,30 @@ is @on-disk.List, @referenced.List,
     }
 }
 
+# ffmpeg is the one component here whose source.kind=tarball URL does
+# NOT simply embed its bare VERSION: build-ffmpeg.sh fetches FFmpeg's
+# GitHub mirror by release *tag*, which is `n` + VERSION (`n8.1.2`),
+# not VERSION on its own. The generic tarball checks above only
+# assert the manifest url/filename *contain* the bare version string,
+# which `n8.1.2.tar.gz` trivially satisfies without actually proving
+# the tag prefix is right — so make that linkage explicit rather than
+# trusting the substring match to have caught a `n` typo or a
+# reversion to the old ffmpeg.org layout.
+{
+    my IO::Path $script = $root.child('scripts').child('ci').child('build-ffmpeg.sh');
+    my $ver = $script.slurp.lines.first(*.starts-with("VERSION="));
+    ok $ver.defined, 'build-ffmpeg.sh pins a VERSION';
+    if $ver.defined {
+        my $version = $ver.subst(/^ 'VERSION=' /, '').trim
+                          .subst(/^ \' /, '').subst(/ \' $/, '');
+        my $tag = "n$version";
+        my %c = %(@components.first(*.<id> eq 'ffmpeg') // {});
+        my %src = %(%c<source> // {});
+        ok (%src<url> // '').ends-with("/refs/tags/{$tag}.tar.gz"),
+            "ffmpeg manifest url names GitHub tag '$tag', matching build-ffmpeg.sh's TAG=n\\\$VERSION";
+        ok (%src<filename> // '').contains($tag),
+            "ffmpeg manifest filename names GitHub tag '$tag'";
+    }
+}
+
 done-testing;

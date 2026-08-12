@@ -76,8 +76,21 @@ jobs:
           # checkout is worse than re-fetching (~5s shallow clone).
           key: notcurses-source-${{ steps.ncpin.outputs.sha }}
 
-      - name: Cache source-built codec + ffmpeg chain
-        uses: actions/cache@v4
+      # restore/save split rather than the combined actions/cache: the
+      # combined action saves in a post step that only runs when the
+      # job SUCCEEDS. The r10 dispatch proved the cost on the Windows
+      # lane — it built the entire libdeflate→dav1d→vpx→opus chain,
+      # died at the ffmpeg download, and saved nothing, so the next
+      # push re-paid the whole ~15-20 min build. Saving explicitly,
+      # right after the docker run that builds the chain and BEFORE
+      # the docker run that builds notcurses (which is what can still
+      # fail afterwards), keeps the cache whatever that second run
+      # goes on to do. See scripts/ci/build-linux-glibc.sh's
+      # DEPS_ONLY branch, which is what lets this be its own docker
+      # invocation instead of a step buried inside the full build.
+      - name: Restore source-built codec + ffmpeg chain
+        id: glibc-deps
+        uses: actions/cache/restore@v4
         with:
           # Cached path is workspace-relative so the docker bind
           # mount picks it up automatically. The build script reads
@@ -94,11 +107,39 @@ jobs:
       - name: Pull build image
         run: docker pull quay.io/pypa/manylinux_2_28_${{ inputs.arch }}
 
+      - name: Build codec + ffmpeg chain (cache miss only)
+        if: steps.glibc-deps.outputs.cache-hit != 'true'
+        run: |
+          # $PWD on the runner is bind-mounted to /work in the
+          # container — so checkout's output AND the cache dir are
+          # visible to the build script. DEPS_ONLY=1 makes the script
+          # stop right after the codec chain is built (or, in
+          # practice here, always built — this step only runs on a
+          # cache miss) and chown $CACHE_DIR back to the runner user
+          # before exiting, so the save step below can read it.
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            -e CACHE_DIR=/work/_ci-cache/manylinux_2_28-${{ inputs.arch }} \
+            -e DEPS_ONLY=1 \
+            quay.io/pypa/manylinux_2_28_${{ inputs.arch }} \
+            bash scripts/ci/build-linux-glibc.sh
+
+      - name: Save source-built codec + ffmpeg chain
+        if: steps.glibc-deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: _ci-cache/manylinux_2_28-${{ inputs.arch }}
+          key: ${{ steps.glibc-deps.outputs.cache-primary-key }}
+
       - name: Build + bundle in manylinux_2_28 container
         run: |
           # $PWD on the runner is bind-mounted to /work in the
           # container — so checkout's output AND the cache dir are
-          # visible to the build script.
+          # visible to the build script. $CACHE_DIR is warm by now
+          # either way (restored above, or just built + saved), so
+          # this run's own internal cache-hit check skips straight to
+          # the notcurses build.
           docker run --rm \
             -v "$PWD:/work" \
             -w /work \
