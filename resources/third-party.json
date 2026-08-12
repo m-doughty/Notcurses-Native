@@ -4,17 +4,18 @@
     "Notcurses::Native prebuilt pack, with the licence it ships under and",
     "the exact source we built it from.",
     "",
-    "WHY THIS FILE EXISTS. The packs are binary redistributions. Two of the",
-    "libraries in them (FFmpeg, libunistring) are copyleft: conveying them in",
-    "binary form obliges us to be able to hand a recipient the corresponding",
-    "source for the exact binary they received. Several more are permissive but",
-    "still require their copyright notice and licence text to travel with the",
-    "binary. Neither duty is dischargeable from memory, so this file is the",
-    "machine-readable record and three things are generated from it:",
+    "WHY THIS FILE EXISTS. The packs are binary redistributions. Three of the",
+    "libraries in them (FFmpeg, libunistring, and libiconv on Windows) are",
+    "copyleft: conveying them in binary form obliges us to be able to hand a",
+    "recipient the corresponding source for the exact binary they received.",
+    "Several more are permissive but still require their copyright notice and",
+    "licence text to travel with the binary. Neither duty is dischargeable from",
+    "memory, so this file is the machine-readable record and three things are",
+    "generated from it:",
     "",
     "  * THIRD-PARTY.md and LICENSES/, written into every pack by",
     "    scripts/ci/emit-third-party-kit.sh (see .github/actions/package-and-upload).",
-    "  * The six source tarballs attached to each binary release, downloaded",
+    "  * The seven source tarballs attached to each binary release, downloaded",
     "    from the URLs below and verified against the sha256 below by",
     "    .github/workflows/_release-publish.yml.",
     "  * A release gate, scripts/ci/audit-third-party.sh, which runs in every",
@@ -363,41 +364,24 @@
     {
       "id": "libiconv",
       "name": "GNU libiconv",
-      "version": "MSYS2 package",
+      "version": "1.19",
       "spdx-license": "LGPL-2.1-or-later",
       "license-files": ["LGPL-2.1.txt"],
-      "copyright": "Copyright (C) 1999-2024 Free Software Foundation, Inc.",
+      "copyright": "Copyright (C) 1999-2025 Free Software Foundation, Inc.",
       "project-url": "https://www.gnu.org/software/libiconv/",
       "source": {
-        "kind": "package-manager",
-        "attach-to-release": false
+        "kind": "tarball",
+        "url": "https://ftp.gnu.org/gnu/libiconv/libiconv-1.19.tar.gz",
+        "filename": "libiconv-1.19.tar.gz",
+        "sha256": "88dd96a8c0464eca144fc791ae60cd31cd8ee78321e67397e25fc095c4a19aa6",
+        "attach-to-release": true
       },
       "binaries": {
         "macos":   { "patterns": [],                  "required": false },
         "linux":   { "patterns": [],                  "required": false },
-        "windows": { "patterns": ["libiconv-*.dll"],  "required": false }
+        "windows": { "patterns": ["libiconv-*.dll"],  "required": true }
       },
-      "notes": "Windows only, and only sometimes: glibc, musl and libSystem all provide iconv inside libc, but there is none in the Windows C runtime, so mingw builds that want it link GNU libiconv. It reaches the pack as a transitive import of the MSYS2 toolchain's own libraries. KNOWN GAP: this is copyleft and package-manager-sourced, so it has the same unpinnable-corresponding-source problem libunistring had, and unlike libunistring it is not ours to move onto the self-built chain in one step (it is a dependency of things we do not build). Either source-build it alongside libunistring on the Windows lanes, or establish that nothing in the pack actually needs it and stop sweeping it in — see the bundle-dll belt-and-braces list. Required is false because whether it appears depends on the MSYS2 subsystem's package closure."
-    },
-
-    {
-      "id": "gettext-runtime",
-      "name": "GNU gettext runtime (libintl)",
-      "version": "MSYS2 package",
-      "spdx-license": "LGPL-2.1-or-later",
-      "license-files": ["LGPL-2.1.txt"],
-      "copyright": "Copyright (C) 1995-2024 Free Software Foundation, Inc.",
-      "project-url": "https://www.gnu.org/software/gettext/",
-      "source": {
-        "kind": "package-manager",
-        "attach-to-release": false
-      },
-      "binaries": {
-        "macos":   { "patterns": [],                 "required": false },
-        "linux":   { "patterns": [],                 "required": false },
-        "windows": { "patterns": ["libintl-*.dll"],  "required": false }
-      },
-      "notes": "Windows only. The message-translation runtime, reaching the pack the same transitive way libiconv does, and carrying the same known gap: LGPL, package-manager-sourced, corresponding source unpinnable. Note that libunistring is NOT why it is there — libunistring has no NLS and links no libintl."
+      "notes": "Windows only: glibc, musl and libSystem all provide iconv inside libc, so no POSIX pack contains one, but there is no iconv anywhere in the Windows C runtime and two of the libraries we build link GNU libiconv when they can find one. A PE import scan of both published r10 Windows packs settled which ones: avcodec-<N>.dll (our decoder-only FFmpeg — its configure autodetects iconv) and libunistring-5.dll (its AM_ICONV takes an external libiconv on any platform whose libc lacks iconv). Nothing else imported it, ncursesw included. Source-built as of r11 with a pinned tarball, for the reason libunistring was: it is copyleft, it ships inside the .zip, and a pacman version moves under us and is garbage-collected off the mirrors, so the corresponding source for the DLL in someone's archive would stop being producible. MSYS2's own libiconv package stays installed — the toolchain group depends on it — so build order and search-path priority are what make ours the one that ships, and _build-windows.yml re-checks after bundling that the libiconv-2.dll in the pack hashes identically to the one scripts/ci/build-libiconv.sh staged. Now required on Windows: both importers are libraries we build ourselves on every run, so its absence would mean a broken pack rather than a subsystem difference. Built --disable-nls: with NLS on, libiconv's configure runs AM_GNU_GETTEXT and links GNU gettext's libintl, and libintl is deliberately no longer in these packs. It was present up to r10, imported by nothing at all — the same import scan found no DLL referencing it — and it is LGPL with the same unpinnable-source problem, so r11 dropped it from the bundling sweep and gave it no entry here. The audit gate fails closed on any file no component describes, so a libintl-*.dll reappearing in a pack now stops the release."
     },
 
     {
@@ -415,16 +399,9 @@
       "binaries": {
         "macos":   { "patterns": [], "required": false },
         "linux":   { "patterns": [], "required": false },
-        "windows": {
-          "patterns": [
-            "libgcc_s_seh-1.dll", "libgcc_s_dw2-1.dll", "libgcc_s_1.dll",
-            "libstdc++-6.dll", "libgomp-1.dll", "libssp-0.dll",
-            "libquadmath-0.dll"
-          ],
-          "required": false
-        }
+        "windows": { "patterns": [], "required": false }
       },
-      "notes": "Windows UCRT64 lane only, and only whichever of these the toolchain actually links. On Linux the equivalents (libgcc_s.so.1, libstdc++.so.6) are in bundle-elf.sh's skiplist and stay dynamic; macOS uses Apple's runtimes from /usr/lib. The GCC Runtime Library Exception is what makes redistributing these inside a non-GPL pack fine — it is not a normal GPL-3 obligation, which is why GCC-exception-3.1.txt ships beside GPL-3.0.txt. Required is false: which of these appear depends on the compiler and on what the codec libraries happen to reference, and both differ between the UCRT64 and CLANGARM64 lanes."
+      "notes": "Redistributed nowhere as of r11, which is what the empty pattern lists mean: the gate fails on any file no component describes, so a libstdc++-6.dll or libgcc_s_*.dll turning up in a pack now stops the release. It is kept as a component rather than deleted because the licences are the reason the decision went the way it did and belong somewhere a future maintainer will look. Up to r10 the UCRT64 pack carried libstdc++-6.dll, libgomp-1.dll and libgcc_s_seh-1.dll; a PE import-reachability closure over that pack found the first two imported by nothing at all and the third imported only by libstdc++, i.e. reachable only from another orphan. notcurses is configured -DUSE_CXX=OFF and nothing in a decoder-only ffmpeg uses OpenMP, so none of them ever had a caller — they were copied in by a stale name in the bundling sweep list, which r11 removed along with the reachability gate that now catches the general case. What remains of GCC's runtime in the packs is the part gcc links statically into the UCRT64 lane's DLLs, and the GCC Runtime Library Exception exists precisely to let that be propagated under our own terms rather than the GPL's. On Linux the shared equivalents (libgcc_s.so.1, libstdc++.so.6) are in bundle-elf.sh's skiplist and stay dynamically linked against the user's own system, which is why they appear under system-libraries below rather than here; macOS uses Apple's runtimes from /usr/lib. The CLANGARM64 lane never carried any of these — see llvm-runtime for its counterpart."
     },
 
     {
@@ -447,7 +424,7 @@
           "required": false
         }
       },
-      "notes": "The CLANGARM64 lane's counterpart to gcc-runtime — MSYS2's Windows-on-ARM subsystem is clang-based and has no GNU binutils or libstdc++ at all. Required is false for the same reason: presence depends on the subsystem, and the two Windows lanes never both apply."
+      "notes": "The CLANGARM64 lane's counterpart to gcc-runtime — MSYS2's Windows-on-ARM subsystem is clang-based and has no GNU binutils or libstdc++ at all. Required is false for the same reason: presence depends on the subsystem, and the two Windows lanes never both apply. Unlike gcc-runtime, this one keeps its patterns: none of these DLLs has ever actually appeared in a pack, so there is no over-collection to deny, and if clang ever does put libunwind on a real link line it would be a genuine dependency rather than a stale sweep entry. The bundling action's reachability gate is what tells those two cases apart — it fails the lane on any bundled DLL nothing in the pack imports, whichever component would have covered it."
     },
 
     {

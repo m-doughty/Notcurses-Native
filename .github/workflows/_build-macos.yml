@@ -379,6 +379,104 @@ jobs:
           # @rpath/libavcodec.<N>.dylib".
           extra-search-path: ${{ format('{0}/_ci-cache/macos-{1}/lib', github.workspace, inputs.arch) }}
 
+      # Release gate: every dylib in the pack that we source-built is
+      # the file we source-built.
+      #
+      # The find_library(unistring) assertion in the configure step
+      # covers what notcurses LINKED. This covers what dylibbundler
+      # COPIED, which is a different question: dylibbundler resolves
+      # @rpath references through its own -s search list plus the
+      # destination directory, and every library here has an
+      # identically-named twin somewhere under brew on this runner
+      # (libunistring in particular arrives as a transitive dependency
+      # of several formulae the macos-14 image ships with). One
+      # reordered search path and the pack ships a bottle while
+      # THIRD-PARTY.md and the attached libunistring-1.4.2.tar.gz say
+      # we compiled it — which, for the LGPL library in this pack, is
+      # a false statement about corresponding source rather than a
+      # cosmetic inaccuracy. brew's bottle happens to be 1.4.2 today,
+      # so the claim would even be true; that is precisely the kind of
+      # coincidence that stops being true silently.
+      #
+      # Compared by LC_UUID rather than by hash, unlike the Windows
+      # lane's equivalent: bundle-macos deliberately rewrites install
+      # names, strips and re-signs every dylib it stages, so the bytes
+      # cannot match by design. install_name_tool, strip -x and
+      # `codesign --force --sign -` all leave LC_UUID alone (the
+      # linker emits it and it is what pairs a binary with its dSYM),
+      # so it survives exactly the transformations that change the
+      # hash and nothing else.
+      - name: Assert the pack's self-built dylibs are ours
+        run: |
+          set -euo pipefail
+          CACHE="${GITHUB_WORKSPACE}/_ci-cache/macos-${{ inputs.arch }}"
+          fail=0
+          checked=0
+
+          uuid_of() {
+            otool -l "$1" \
+              | awk '/^[[:space:]]*uuid[[:space:]]/{print $2; exit}'
+          }
+
+          for dylib in bundle/*.dylib; do
+            [[ -L "$dylib" ]] && continue
+            base=$(basename "$dylib")
+            staged="$CACHE/lib/$base"
+            # No staged twin: brew's ncurses on the arm64 lane, or one
+            # of notcurses' own libraries. Those are accounted for by
+            # the third-party audit, not here.
+            [[ -f "$staged" ]] || continue
+            ours=$(uuid_of "$staged")
+            shipped=$(uuid_of "$dylib")
+            if [[ -z "$ours" || -z "$shipped" ]]; then
+              echo "::error file=$dylib::no LC_UUID on one of the two copies"
+              echo "  staged  ($staged): '${ours:-<none>}'"
+              echo "  bundled ($dylib): '${shipped:-<none>}'"
+              fail=1
+              continue
+            fi
+            if [[ "$ours" != "$shipped" ]]; then
+              echo "::error file=$dylib::is not the $base we built"
+              echo "  staged  ($staged): $ours"
+              echo "  bundled ($dylib): $shipped"
+              fail=1
+              continue
+            fi
+            echo "ok: $base matches the staged build ($ours)"
+            checked=$(( checked + 1 ))
+          done
+
+          # libunistring by name, because for the copyleft library the
+          # dangerous outcome is absence from the comparison above
+          # rather than a mismatch inside it — a bundled dylib with no
+          # staged twin is silently skipped, and "no staged twin"
+          # is exactly what taking brew's copy would look like.
+          for required in libunistring.5.dylib; do
+            if [[ ! -f "$CACHE/lib/$required" ]]; then
+              echo "::error::\$CACHE/lib/$required does not exist — the source"
+              echo "  build did not produce it under that name, so the"
+              echo "  comparison above never ran for it."
+              fail=1
+            fi
+            if [[ ! -f "bundle/$required" ]]; then
+              echo "::error::bundle/$required is missing — the pack would ship"
+              echo "  without a library notcurses links directly."
+              fail=1
+            fi
+          done
+
+          if (( fail != 0 )); then
+            echo
+            echo "❌ The pack does not match the libraries this lane built."
+            echo "--- \$CACHE/lib ---"
+            ls -la "$CACHE/lib" || true
+            echo "--- bundle/ ---"
+            ls -la bundle/ || true
+            exit 1
+          fi
+          echo "✅ $checked bundled dylib(s) carry the LC_UUID of the ones"
+          echo "   this lane source-built."
+
       # Compile the perf shim into the bundle so users installing the
       # prebuilt archive don't need a C toolchain to get the fast path.
       # See src/notcurses_native_shim.c for what's in it; mirrors

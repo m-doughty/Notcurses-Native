@@ -48,11 +48,12 @@ jobs:
           path: downloaded/
 
       # Corresponding source for the copyleft libraries in the packs.
-      # FFmpeg (LGPL-2.1) and GNU libunistring (LGPL-3.0) both oblige
-      # us to be able to hand a recipient the source for the exact
-      # binary they got; the other four are attached so that "which
-      # source built this?" has one kind of answer for every component
-      # rather than two. The pinned URL + SHA-256 pair lives in
+      # FFmpeg (LGPL-2.1), GNU libunistring (LGPL-3.0) and, on the
+      # Windows packs, GNU libiconv (LGPL-2.1) all oblige us to be
+      # able to hand a recipient the source for the exact binary they
+      # got; the other four are attached so that "which source built
+      # this?" has one kind of answer for every component rather than
+      # two. The pinned URL + SHA-256 pair lives in
       # resources/third-party.json and is the same pair the build
       # scripts fetch, so what gets attached here is byte-identical to
       # what the lanes compiled.
@@ -196,11 +197,14 @@ jobs:
               none of FFmpeg's GPL-only components are compiled in.
             * **GNU libunistring** (LGPL-3.0-or-later OR
               GPL-2.0-or-later; conveyed under the LGPL).
+            * **GNU libiconv** (LGPL-2.1-or-later) — Windows archives
+              only. Linux and macOS take iconv from their C library
+              and carry no copy of it.
 
             Permissive: **notcurses** (Apache-2.0), **dav1d** (BSD-2),
             **libvpx** and **Opus** (BSD-3), **libdeflate** (MIT),
             **ncursesw** (X11-style), **zlib** (Zlib), and on Windows
-            the MSYS2 toolchain runtimes (MIT / LGPL-2.1 /
+            the MSYS2 toolchain runtimes (MIT /
             GPL-3.0-with-GCC-exception / Apache-2.0-with-LLVM-exception,
             as listed per-archive).
 

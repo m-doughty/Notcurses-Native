@@ -46,14 +46,17 @@
 #     mingw32 target uses. `find_library(unistring unistring)`
 #     consumes $PREFIX/lib/libunistring.dll.a; bundle-dll picks the
 #     DLL up out of $PREFIX/bin via its extra-search-path.
-#   * iconv is deliberately left to configure's own detection rather
-#     than forced either way. glibc, musl and libSystem all provide
-#     iconv in libc, so the POSIX lanes never link GNU libiconv. On
-#     MSYS2 there is no iconv in the C runtime, so libunistring links
-#     mingw's libiconv if pacman happens to have it installed (it
-#     arrives transitively) and builds its uniconv module as a stub
-#     if not. Either outcome is fine here: notcurses uses unistr /
-#     unigbrk / unictype / uniwbrk and never touches uniconv.
+#   * iconv is left to configure's own detection on the POSIX lanes,
+#     where glibc, musl and libSystem all provide it inside libc so
+#     GNU libiconv never enters the picture. On MSYS2 there is no
+#     iconv in the C runtime, AM_ICONV finds GNU libiconv, and
+#     libunistring-5.dll ends up importing libiconv-2.dll — which is
+#     why the Windows lanes now source-build libiconv too and this
+#     script points AM_ICONV at it explicitly (see the
+#     --with-libiconv-prefix block below). notcurses itself uses
+#     unistr / unigbrk / unictype / uniwbrk and never touches
+#     uniconv, so what libunistring does with iconv is a
+#     redistribution question rather than a functional one.
 set -euxo pipefail
 
 # 1.4.2 — current stable.
@@ -77,6 +80,25 @@ curl -fSL --retry 5 --retry-delay 10 -o libunistring.tar.gz "$URL" \
 tar -xzf libunistring.tar.gz
 cd "libunistring-${VERSION}"
 
+# If a libiconv has been source-built into this prefix — which only
+# happens on the Windows lanes, where build-libiconv.sh runs before
+# this script — make AM_ICONV resolve THAT one rather than searching
+# the compiler's default paths and finding the msystem's pacman copy
+# under the identical basename. --with-libiconv-prefix is gnulib's
+# own lever for this (AC_LIB_LINKFLAGS_BODY): it puts
+# $PREFIX/include on the probe's -I list and $PREFIX/lib on its -L
+# list, so both the header and the import library come from us.
+#
+# Conditional, and keyed on the header actually being there, so the
+# POSIX lanes see a configure line byte-identical to the one they have
+# always run: they have iconv in libc, nothing installs an iconv.h
+# into their prefix, and pointing gnulib at a directory with no
+# libiconv in it would only add a pointless probe.
+iconv_flags=()
+if [[ -f "$PREFIX/include/iconv.h" ]]; then
+    iconv_flags+=( "--with-libiconv-prefix=$PREFIX" )
+fi
+
 # --enable-shared / --disable-static — bundleable .so / .dylib / .dll,
 # matching every other library in the pack. libunistring has no NLS
 # and no --disable-doc equivalent worth passing; the docs it installs
@@ -84,7 +106,8 @@ cd "libunistring-${VERSION}"
 ./configure \
     --prefix="$PREFIX" \
     --enable-shared \
-    --disable-static
+    --disable-static \
+    ${iconv_flags[@]+"${iconv_flags[@]}"}
 
 make -j"$JOBS"
 make install

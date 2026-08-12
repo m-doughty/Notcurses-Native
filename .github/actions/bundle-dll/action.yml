@@ -259,11 +259,45 @@ runs:
         # What stayed: notcurses' own non-codec deps — ncurses (still
         # pacman's) and libunistring (source-built as of the
         # third-party-manifest work, so it now resolves out of the
-        # caller's extra search dir like the codec DLLs do), their
-        # libiconv/libintl backing, the toolchain runtimes, zlib
-        # (ffmpeg --enable-zlib), and the three codec libraries the
-        # source-built chain still emits as DLLs — libdeflate,
-        # libdav1d, libopus.
+        # caller's extra search dir like the codec DLLs do), the
+        # libiconv the latter and avcodec both import (source-built
+        # too as of r11, and resolved from the same extra dir),
+        # winpthreads, zlib (ffmpeg --enable-zlib), and the three
+        # codec libraries the source-built chain still emits as DLLs —
+        # libdeflate, libdav1d, libopus.
+        #
+        # r11 removed four more names, and those removals are
+        # decisions rather than tidy-ups. A PE import-reachability
+        # closure computed from libnotcurses{,-core,-ffi}.dll over
+        # every DLL in both published r10 packs found each of them
+        # reachable from nothing at all:
+        #   * libintl-8.dll — GNU gettext's message-translation
+        #     runtime, in both packs, imported by NOTHING. Not
+        #     avcodec, not ncursesw, not libunistring, not even
+        #     libiconv (the traffic goes the other way: libintl
+        #     imports libiconv). It was there solely because this list
+        #     named it. LGPL and pacman-sourced, so we were
+        #     redistributing a copyleft binary whose corresponding
+        #     source we cannot produce, in exchange for nothing.
+        #   * libstdc++-6.dll and libgomp-1.dll — imported by nothing
+        #     in the UCRT64 pack, and absent from the CLANGARM64 one.
+        #     notcurses is configured -DUSE_CXX=OFF and nothing in the
+        #     decoder chain uses OpenMP, so neither ever had a caller.
+        #   * libgcc_s_seh-1.dll — imported only by libstdc++-6.dll,
+        #     i.e. reachable only from another orphan. gcc links the
+        #     unwinder statically into everything else here, which is
+        #     why no av*/sw* DLL references it.
+        # The last three are GPL-3.0-with-GCC-exception; the exception
+        # makes redistributing them fine, but redistributing a
+        # compiler runtime nothing loads is still ~2 MB of a user's
+        # download spent on nothing.
+        #
+        # None of the four has a component in
+        # resources/third-party.json any more, and the reachability
+        # gate below fails the lane on any bundled DLL nothing
+        # imports. If one comes back, something has started importing
+        # it — that is a real dependency change to understand, not a
+        # line to restore here.
         # ffmpeg's own av*/sw* DLLs are deliberately NOT listed: they
         # are direct imports of libnotcurses-core, so the ldd walk
         # and the objdump backstop both reach them, and hardcoding
@@ -276,14 +310,18 @@ runs:
         # no longer install. resources/third-party.json's Windows
         # pattern for the component spells the same expectation, and
         # scripts/ci/audit-third-party.sh fails the lane if the DLL
-        # that lands doesn't match it.
+        # that lands doesn't match it. libiconv-2.dll's major is
+        # stable for the same kind of reason (-version-info 9:1:7
+        # gives 2), but unlike libunistring its pacman twin stays
+        # installed — the toolchain group depends on it — so the
+        # caller's extra search dir being first in DLL_SEARCH_DIRS is
+        # what decides which one this line copies. _build-windows.yml
+        # re-checks that decision by hash after the sweep.
         echo "--- belt-and-braces sweep ---"
         for name in \
             libncursesw6.dll libncurses6.dll \
-            libunistring-5.dll \
-            libiconv-2.dll libintl-8.dll \
-            libstdc++-6.dll libgcc_s_seh-1.dll libgcc_s_1.dll \
-            libssp-0.dll libgomp-1.dll libwinpthread-1.dll \
+            libunistring-5.dll libiconv-2.dll \
+            libwinpthread-1.dll \
             zlib1.dll \
             libdeflate.dll libdav1d-7.dll libopus-0.dll \
         ; do
@@ -400,3 +438,112 @@ runs:
         fi
         echo "✅ Bundle self-containment audit passed: every bundled DLL's"
         echo "   imports resolve inside bundle/ or to Windows system DLLs."
+
+    - name: Audit bundle over-collection (import reachability)
+      shell: 'msys2 {0}'
+      run: |
+        set -euo pipefail
+        # The mirror image of the step above. That one asks "can every
+        # import be resolved?"; this one asks "does anything actually
+        # import this?". A DLL nothing loads is not a broken pack, so
+        # nothing else in the pipeline notices it — it is just a
+        # binary we redistribute, and therefore a licence we are
+        # responsible for, a notice we owe, and (if it is copyleft)
+        # corresponding source we must be able to produce, all in
+        # exchange for nothing.
+        #
+        # That is not hypothetical. The published r10 packs carried
+        # four such DLLs: libintl-8.dll in both (LGPL, pacman-sourced,
+        # no pinnable source), and libstdc++-6.dll, libgomp-1.dll and
+        # libgcc_s_seh-1.dll in the UCRT64 one. Every one arrived
+        # through the belt-and-braces sweep list, which by design
+        # copies things whether or not anything needs them. This gate
+        # is what stops that list — or a future ldd/objdump walk that
+        # over-reaches — putting an unowned binary in a release again.
+        #
+        # Roots are the three notcurses DLLs, which is what the pack
+        # exists to deliver. The perf shim is a fourth root rather
+        # than a reachable node — Notcurses::Native loads it directly
+        # and nothing imports it — but the caller compiles it into
+        # bundle/ AFTER this action runs, so it is only picked up if
+        # the step order ever changes. Listing it anyway costs
+        # nothing and keeps that reordering from turning into a
+        # baffling "nothing imports the shim" failure.
+        roots=(bundle/libnotcurses.dll bundle/libnotcurses-core.dll bundle/libnotcurses-ffi.dll)
+        for root in "${roots[@]}"; do
+          if [[ ! -f "$root" ]]; then
+            echo "❌ $root is missing — staging did not run."
+            exit 1
+          fi
+        done
+        if [[ -f bundle/libnotcurses_native_shim.dll ]]; then
+          roots+=( bundle/libnotcurses_native_shim.dll )
+        fi
+
+        # The reached set is a space-delimited string of lowercased
+        # basenames rather than an associative array, so this can be
+        # replayed against a published pack under any bash — including
+        # macOS's 3.2, which is where the r10 over-collection was
+        # actually found. Lowercased because a PE import table spells
+        # a name however the linker that wrote it felt at the time
+        # (KERNEL32.dll, libavcodec-62.dll) while the file on disk has
+        # exactly one spelling, and Windows resolves the two against
+        # each other case-insensitively.
+        reachable=' '
+        walk() {
+          local dll="$1"
+          local depth="${2:-0}"
+          if (( depth > 12 )); then
+            echo "walk: depth cap hit at $dll"
+            return 0
+          fi
+          local key
+          key="$(basename "$dll" | tr '[:upper:]' '[:lower:]')"
+          case "$reachable" in
+            *" $key "*) return 0 ;;
+          esac
+          reachable="$reachable$key "
+          local name
+          while IFS= read -r name; do
+            [[ -z "$name" ]] && continue
+            # `-f` goes through the Windows filesystem, which is
+            # case-insensitive, so this matches whatever casing the
+            # import table used.
+            if [[ -f "bundle/$name" ]]; then
+              walk "bundle/$name" $(( depth + 1 ))
+            fi
+          done < <(objdump -p "$dll" 2>/dev/null | awk '/DLL Name:/{print $3}')
+        }
+        for root in "${roots[@]}"; do
+          walk "$root"
+        done
+
+        fail=0
+        for dll in bundle/*.dll; do
+          [[ -L "$dll" ]] && continue
+          base="$(basename "$dll")"
+          key="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')"
+          case "$reachable" in
+            *" $key "*)
+              echo "ok:      $base"
+              continue ;;
+          esac
+          echo "::error file=$dll::nothing in this pack imports '$base'"
+          fail=1
+        done
+
+        if (( fail != 0 )); then
+          echo
+          echo "❌ The pack contains DLLs that nothing in it loads."
+          echo "   Work out why each one arrived — usually a stale name in"
+          echo "   the belt-and-braces sweep list — and stop copying it,"
+          echo "   rather than adding a component to"
+          echo "   resources/third-party.json for a library no user will"
+          echo "   ever execute. If a name here IS newly needed, then"
+          echo "   something started importing it and the reachability walk"
+          echo "   would have found it; check that objdump can read the"
+          echo "   importer before concluding otherwise."
+          exit 1
+        fi
+        echo "✅ Bundle over-collection audit passed: every bundled DLL is"
+        echo "   reachable from libnotcurses{,-core,-ffi}.dll."

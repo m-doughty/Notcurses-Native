@@ -15,8 +15,9 @@
 # permissive licences in it (BSD-2, BSD-3, MIT, X11, Zlib) all require
 # their copyright notice and licence text to accompany a binary
 # redistribution, and the copyleft ones (FFmpeg's LGPL-2.1,
-# libunistring's LGPL-3.0) require the recipient be told of their
-# rights and where the source is. A file in a git repository the user
+# libunistring's LGPL-3.0, and libiconv's LGPL-2.1 in the Windows
+# packs) require the recipient be told of their rights and where the
+# source is. A file in a git repository the user
 # has never visited discharges none of that; a file next to the .so
 # they just downloaded does.
 #
@@ -127,10 +128,11 @@ alongside this file.
 Where the source is given as a tarball URL with a SHA-256, that exact
 tarball is attached to the GitHub release this archive came from, so
 the corresponding source for these binaries stays available for as
-long as the binaries do. That is a requirement of the LGPL for FFmpeg
-and GNU libunistring; the other tarballs are attached for consistency,
-so that "which source built this?" has one answer for every component
-rather than two kinds of answer.
+long as the binaries do. That is a requirement of the LGPL for FFmpeg,
+GNU libunistring and — in the Windows archives, the only ones that
+carry it — GNU libiconv; the other tarballs are attached for
+consistency, so that "which source built this?" has one answer for
+every component rather than two kinds of answer.
 
 FFmpeg here is a decoder-only build with neither `--enable-gpl` nor
 `--enable-nonfree`, so it is conveyed under the LGPL v2.1 or later and

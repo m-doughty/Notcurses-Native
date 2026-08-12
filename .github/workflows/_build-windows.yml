@@ -2,19 +2,32 @@
 # archive inside MSYS2 (UCRT64 for x86_64; CLANGARM64 for arm64).
 #
 # Both lanes source-build the codec + ffmpeg chain (libdeflate,
-# libdav1d, libvpx, libopus, ffmpeg) plus libunistring into a
-# per-arch workspace cache dir, then point notcurses' cmake at that
-# prefix.
+# libdav1d, libvpx, libopus, ffmpeg) plus libunistring and libiconv
+# into a per-arch workspace cache dir, then point notcurses' cmake at
+# that prefix.
 #
-# libunistring is in that list for a different reason than the codec
-# libraries. It is LGPL and it ships inside the .zip, so the licence
-# obliges us to be able to hand a user the corresponding source for
-# the exact binary they received — and `pacman -S
-# mingw-w64-*-libunistring` gives a version that moves under us and
-# gets garbage-collected off the mirrors. A pinned tarball with its
-# SHA-256 recorded in resources/third-party.json makes that
-# answerable indefinitely. ncursesw stays package-managed: MIT-style
-# X11, no source-conveyance duty.
+# libunistring and libiconv are in that list for a different reason
+# than the codec libraries. Both are LGPL and both ship inside the
+# .zip, so the licence obliges us to be able to hand a user the
+# corresponding source for the exact binary they received — and
+# `pacman -S mingw-w64-*-libunistring` / `-libiconv` give versions
+# that move under us and get garbage-collected off the mirrors. A
+# pinned tarball with its SHA-256 recorded in
+# resources/third-party.json makes that answerable indefinitely.
+# ncursesw stays package-managed: MIT-style X11, no source-conveyance
+# duty.
+#
+# libiconv joined that pair in r11. It is Windows-only — glibc, musl
+# and libSystem all carry iconv inside libc — and it reaches the pack
+# because two libraries we build link it: ffmpeg's configure
+# autodetects iconv, and libunistring's AM_ICONV takes one when the
+# toolchain has it. A PE import scan of both r10 packs found exactly
+# those two importers and no others. The same scan found libintl-8.dll
+# imported by NOTHING: it was pure over-collection by the sweep list
+# in .github/actions/bundle-dll, so it is no longer swept, has no
+# component in resources/third-party.json, and would now fail the
+# audit gate if it came back. Keeping it out is also why
+# build-libiconv.sh configures --disable-nls.
 #
 # Why the lane stopped using `pacman -S mingw-w64-*-ffmpeg`: MSYS2's
 # ffmpeg package is a `--enable-gpl --enable-version3` build carrying
@@ -181,13 +194,16 @@ jobs:
           #     source-built into the workspace prefix along with the
           #     codec chain, so there is exactly one copy for cmake to
           #     find. libunistring left this list when it joined the
-          #     self-built chain: it is the LGPL library in the pack
+          #     self-built chain: it is an LGPL library in the pack
           #     whose corresponding source we have to be able to
           #     produce, which a pacman version can't guarantee.
-          #     libiconv is not added in its place — libunistring's
-          #     configure links mingw's libiconv if the toolchain
-          #     already carries it and stubs out its (unused-by-
-          #     notcurses) uniconv module if not.
+          #     libiconv is not here either, and cannot be: the
+          #     toolchain group depends on mingw-w64-*-libiconv, so it
+          #     is installed whatever this list says. We source-build
+          #     ours anyway (same LGPL argument) and win on path
+          #     priority instead — build-libiconv.sh's header explains
+          #     the mechanism, and the "Assert the pack's self-built
+          #     DLLs are ours" step below proves the right one landed.
           #
           # The last line pairs the two arch-specific packages so the
           # list never expands to an empty token (setup-msys2 splits
@@ -213,7 +229,7 @@ jobs:
       - name: Fetch notcurses source (NOTCURSES_FORK pin)
         run: bash scripts/ci/fetch-notcurses-source.sh
 
-      # Cache the whole source-built prefix. Keyed on the six build
+      # Cache the whole source-built prefix. Keyed on the seven build
       # scripts, so any version bump or configure-flag change
       # invalidates it, and on the msystem name, so the UCRT64 and
       # CLANGARM64 prefixes can never be handed to each other.
@@ -234,7 +250,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.DEPS_PREFIX_REL }}
-          key: ${{ env.MSYS_SUBSYSTEM }}-deps-${{ hashFiles('scripts/ci/build-libunistring.sh', 'scripts/ci/build-libdeflate.sh', 'scripts/ci/build-libdav1d.sh', 'scripts/ci/build-libvpx.sh', 'scripts/ci/build-libopus.sh', 'scripts/ci/build-ffmpeg.sh') }}
+          key: ${{ env.MSYS_SUBSYSTEM }}-deps-${{ hashFiles('scripts/ci/build-libiconv.sh', 'scripts/ci/build-libunistring.sh', 'scripts/ci/build-libdeflate.sh', 'scripts/ci/build-libdav1d.sh', 'scripts/ci/build-libvpx.sh', 'scripts/ci/build-libopus.sh', 'scripts/ci/build-ffmpeg.sh') }}
 
       - name: Source-build codec + ffmpeg chain
         if: steps.win-deps.outputs.cache-hit != 'true'
@@ -248,14 +264,25 @@ jobs:
           PREFIX="$PWD/$DEPS_PREFIX_REL"
           mkdir -p "$PREFIX"
           export PREFIX
-          # Order matters: ffmpeg probes libdav1d / libvpx / libopus
-          # via pkg-config in $PREFIX/lib/pkgconfig at configure time,
-          # so they have to land first. Each script re-exports
-          # PKG_CONFIG_PATH itself, so no env plumbing is needed here.
-          # libunistring is independent of all of them — ffmpeg never
-          # sees it, notcurses links it directly — so its position in
-          # the list is arbitrary; first keeps it next to the other
-          # non-codec library.
+          # Order matters twice over.
+          #
+          # libiconv goes first because it is the only entry anything
+          # else here *detects* rather than requires: libunistring's
+          # AM_ICONV and ffmpeg's iconv probe both link a GNU libiconv
+          # when they can find one, and MSYS2's identically-named
+          # pacman copy is permanently installed (the toolchain group
+          # depends on it), so ours has to already exist in $PREFIX
+          # for those two configures to prefer it. Each of them takes
+          # the prefix explicitly — --with-libiconv-prefix and
+          # --extra-cflags/--extra-ldflags respectively — but neither
+          # can point at a directory that is still empty.
+          #
+          # Then the codec chain: ffmpeg probes libdav1d / libvpx /
+          # libopus via pkg-config in $PREFIX/lib/pkgconfig at
+          # configure time, so they have to land before it. Each
+          # script re-exports PKG_CONFIG_PATH itself, so no env
+          # plumbing is needed here.
+          bash scripts/ci/build-libiconv.sh
           bash scripts/ci/build-libunistring.sh
           bash scripts/ci/build-libdeflate.sh
           bash scripts/ci/build-libdav1d.sh
@@ -317,21 +344,29 @@ jobs:
 
           # Shape checks. ffmpeg's mingw32 target puts DLLs in bin/
           # and import libs in lib/; libtool does the same split for
-          # libunistring. libdeflate's and libunistring's headers are
-          # what notcurses' check_include_file() / find_path() look
-          # for via CPATH and CMAKE_PREFIX_PATH.
+          # libunistring and libiconv. libdeflate's and libunistring's
+          # headers are what notcurses' check_include_file() /
+          # find_path() look for via CPATH and CMAKE_PREFIX_PATH;
+          # libiconv's is what ffmpeg's and libunistring's own
+          # configures probe for.
           # ffmpeg's two names are exact — configure pins SLIBPREF=""
           # and the `lib<name>.dll.a` import-lib spelling — but the
-          # dav1d/opus/libdeflate/libunistring globs are deliberately
-          # loose: their SONAME majors are theirs to change, and this
-          # check exists to catch "nothing installed", not to police
-          # naming.
+          # dav1d/opus/libdeflate/libunistring/libiconv globs are
+          # deliberately loose: their SONAME majors are theirs to
+          # change, and this check exists to catch "nothing
+          # installed", not to police naming. (The exact
+          # libiconv-2.dll basename IS policed, at the two places it
+          # matters: build-libiconv.sh asserts it after install, and
+          # the post-bundle assertion below checks the file that
+          # actually lands in the pack.)
           for glob in 'bin/avcodec-*.dll' 'bin/avutil-*.dll' \
                       'bin/libdav1d*.dll' 'bin/libopus*.dll' \
                       'bin/libdeflate*.dll' 'lib/libavcodec.dll.a' \
                       'lib/libdeflate*.dll.a' 'include/libdeflate.h' \
                       'bin/libunistring-*.dll' 'lib/libunistring.dll.a' \
-                      'include/unigbrk.h'; do
+                      'include/unigbrk.h' \
+                      'bin/libiconv-*.dll' 'lib/libiconv.dll.a' \
+                      'include/iconv.h'; do
             # The glob is expanded by find's -path, not the shell —
             # hence the single quotes on the loop list above.
             if [[ $(find "$PREFIX" -path "$PREFIX/$glob" | wc -l) -eq 0 ]]; then
@@ -471,6 +506,111 @@ jobs:
           # the ldd walk cannot resolve avcodec-<N>.dll and the run
           # dies in bundle-dll's "ldd permanently wedged" path.
           extra-search-path: ${{ env.DEPS_PREFIX_REL }}/bin
+
+      # Release gate: every DLL in the pack that we source-built is
+      # the file we source-built, byte for byte.
+      #
+      # The find_library(unistring) assertion above covers what
+      # notcurses LINKED. This covers what bundle-dll COPIED, which is
+      # a different question with a different failure mode: the sweep
+      # resolves DLLs by basename through DLL_SEARCH_DIRS, and every
+      # library here has an identically-named twin sitting in
+      # /$MSYSTEM/bin. Our prefix is first in that list and first on
+      # PATH, but "first in a list" is not a guarantee — one reordered
+      # search path, one ldd answer taken at face value, and the pack
+      # ships a pacman build while THIRD-PARTY.md and the attached
+      # source tarballs say we compiled it. For libiconv and
+      # libunistring that is not an inaccuracy, it is a false
+      # statement about corresponding source for an LGPL library, and
+      # it is exactly the compliance gap r11 exists to close.
+      #
+      # Written as "for each bundled DLL that also exists in
+      # $PREFIX/bin, the two must hash the same" rather than as a
+      # hardcoded name list, so it keeps working across SONAME bumps
+      # and picks up new self-built libraries for free. The two LGPL
+      # ones are then required by name, because for those the
+      # dangerous outcome is absence from the comparison, not a
+      # mismatch inside it.
+      - name: Assert the pack's self-built DLLs are ours
+        run: |
+          set -euo pipefail
+          PREFIX="$PWD/$DEPS_PREFIX_REL"
+          fail=0
+          checked=0
+
+          shopt -s nullglob
+          bundled=(bundle/*.dll)
+          if (( ${#bundled[@]} == 0 )); then
+            echo "❌ bundle/ contains no DLLs — bundling did not run."
+            exit 1
+          fi
+
+          for dll in "${bundled[@]}"; do
+            base=$(basename "$dll")
+            staged="$PREFIX/bin/$base"
+            # No staged twin: a package-managed library (ncursesw, the
+            # toolchain runtimes, zlib) or one of notcurses' own DLLs.
+            # Those are accounted for by the third-party audit, not
+            # here.
+            [[ -f "$staged" ]] || continue
+            ours=$(sha256sum "$staged" | awk '{print $1}')
+            shipped=$(sha256sum "$dll" | awk '{print $1}')
+            if [[ "$ours" != "$shipped" ]]; then
+              echo "::error file=$dll::is not the $base we built"
+              echo "  staged  ($staged): $ours"
+              echo "  bundled ($dll): $shipped"
+              fail=1
+              continue
+            fi
+            echo "ok: $base matches the staged build ($ours)"
+            checked=$(( checked + 1 ))
+          done
+
+          for required in libiconv-2.dll libunistring-5.dll; do
+            if [[ ! -f "$PREFIX/bin/$required" ]]; then
+              echo "::error::\$PREFIX/bin/$required does not exist — the"
+              echo "  source build did not produce it under that name, so the"
+              echo "  comparison above never ran for it."
+              fail=1
+            fi
+            if [[ ! -f "bundle/$required" ]]; then
+              echo "::error::bundle/$required is missing — the pack would ship"
+              echo "  without a library its own DLLs import."
+              fail=1
+            fi
+          done
+
+          # libintl by name, for the one case the two general gates
+          # word badly. If nothing imports it, bundle-dll's
+          # over-collection gate has already failed the lane with the
+          # right advice. If something DOES import it, that gate
+          # passes and the third-party audit fails instead, saying
+          # "not covered by any component" — whose stock advice is
+          # "add a component entry", which is the wrong fix here.
+          # libintl was dropped in r11 as LGPL with no pinnable
+          # corresponding source, and the only way it comes back
+          # imported is a configure that lost its --disable-nls
+          # (build-libiconv.sh's, most likely). That is what to fix.
+          if [[ -f bundle/libintl-8.dll ]]; then
+            echo "::error file=bundle/libintl-8.dll::GNU gettext's libintl is"
+            echo "  back in the pack. Find what imports it (objdump -p on each"
+            echo "  bundled DLL) and stop that at the source, rather than"
+            echo "  re-adding a manifest entry for a library we cannot ship"
+            echo "  corresponding source for."
+            fail=1
+          fi
+
+          if (( fail != 0 )); then
+            echo
+            echo "❌ The pack does not match the libraries this lane built."
+            echo "--- \$PREFIX/bin ---"
+            ls -la "$PREFIX/bin" || true
+            echo "--- bundle/ ---"
+            ls -la bundle/ || true
+            exit 1
+          fi
+          echo "✅ $checked bundled DLL(s) are byte-identical to the ones"
+          echo "   this lane source-built, and libintl is absent."
 
       # Release gate: the shipped binaries carry no GPL codec code.
       # build-ffmpeg.sh already asserts configure reported LGPL-2.1,

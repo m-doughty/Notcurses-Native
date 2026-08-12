@@ -86,6 +86,29 @@ mkdir -p "$PREFIX"
 # setting it.
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
+# iconv is the one dependency PKG_CONFIG_PATH cannot steer: upstream
+# GNU libiconv ships no .pc file, and ffmpeg probes it with a bare
+# compile+link (`check_func_headers iconv.h iconv || check_lib iconv
+# iconv.h iconv -liconv`) against whatever -I/-L are already in force.
+# So when a libiconv has been source-built into this prefix — which
+# only happens on the Windows lanes, where build-libiconv.sh runs
+# first — hand configure the include and library dirs explicitly.
+# -I/-L entries are searched ahead of the compiler's own defaults, so
+# ours wins over the msystem's identically-named pacman copy, which
+# stays installed because it is in the toolchain's package closure.
+#
+# Conditional, and keyed on the header actually being present, so the
+# Linux and macOS lanes get a configure line byte-identical to the one
+# they have always run: they have iconv in libc, and nothing installs
+# an iconv.h into their prefix.
+iconv_flags=()
+if [[ -f "$PREFIX/include/iconv.h" ]]; then
+    iconv_flags+=(
+        "--extra-cflags=-I$PREFIX/include"
+        "--extra-ldflags=-L$PREFIX/lib"
+    )
+fi
+
 # Portable parallelism: GNU nproc on Linux, sysctl on macOS.
 JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 
@@ -251,7 +274,8 @@ configure_log="/tmp/ffmpeg-${VERSION}-configure.log"
     --enable-decoder=libdav1d,libvpx_vp8,libvpx_vp9,libopus \
     --enable-demuxer=image2,mjpeg,gif,mov,matroska,mp3,wav,ogg,flac,aac \
     --enable-parser=png,mjpeg,h264,hevc,vp8,vp9,av1,mpegaudio,aac \
-    --enable-protocol=file,pipe,data 2>&1 | tee "$configure_log"
+    --enable-protocol=file,pipe,data \
+    ${iconv_flags[@]+"${iconv_flags[@]}"} 2>&1 | tee "$configure_log"
 
 # Assertion 1: every --enable-{decoder,demuxer,parser,protocol} name
 # matched a real component. ffmpeg only warns on a miss, so without

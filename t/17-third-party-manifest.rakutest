@@ -95,7 +95,41 @@ my constant @UNIVERSAL = <
 # library, and adding one silently would attach a tarball nobody
 # decided to publish.
 my constant @ATTACHED = <
-    ffmpeg dav1d libvpx opus libdeflate libunistring
+    ffmpeg dav1d libvpx opus libdeflate libunistring libiconv
+>;
+
+# Components whose absence from the manifest is the point. The audit
+# gate fails closed on any file in a pack that matches no component,
+# so "no entry" is how a library is denied — which makes an entry
+# added back in good faith (say, because a lane started shipping the
+# DLL again and the gate complained) a silent reversal of a decision.
+# Spelled out here so that reversal has to be argued for in a diff
+# that also edits this list.
+#
+# Everything below was in a published r10 Windows pack and was
+# reachable, by PE import closure from libnotcurses{,-core,-ffi}.dll,
+# from nothing whatsoever. Each arrived because bundle-dll's
+# belt-and-braces sweep list named it, not because anything loads it:
+#
+#   * libintl — GNU gettext's message-translation runtime, in both
+#     packs. LGPL and package-manager sourced, i.e. copyleft whose
+#     corresponding source we could not produce, in exchange for
+#     nothing.
+#   * libstdc++ / libgomp — in the UCRT64 pack, imported by nothing.
+#     notcurses builds -DUSE_CXX=OFF and a decoder-only ffmpeg uses
+#     no OpenMP.
+#   * libgcc_s — same pack, imported only by libstdc++, i.e.
+#     reachable only from another orphan.
+#
+# The Linux packs' external references to the system libstdc++.so.6 /
+# libgcc_s.so.1 are a different thing entirely and stay allowed: they
+# are dynamically linked against the user's own machine and never
+# bundled, which is what `system-libraries` in the manifest records.
+# These patterns are the bundled-copy spellings only.
+my constant @DENIED-PATTERNS = <
+    libintl-*.dll libintl.so.* libintl.*.dylib
+    libstdc++-6.dll libgomp-1.dll
+    libgcc_s_seh-1.dll libgcc_s_dw2-1.dll libgcc_s_1.dll
 >;
 
 # ---------------------------------------------------------------- #
@@ -259,7 +293,26 @@ for @UNIVERSAL -> Str $id {
 
 my @attached = @components.grep({ %(.<source>)<attach-to-release> });
 is @attached.map(*.<id>).sort.List, @ATTACHED.sort.List,
-    'exactly the six self-built upstreams are attached to the release';
+    "exactly the {@ATTACHED.elems} self-built upstreams are attached "
+    ~ "to the release";
+
+# The denial list, checked against every platform's patterns at once:
+# a component that claimed one of these on any platform would put the
+# library back in the audit's allow-list, which is the whole of what
+# "shipping it" means to the gate.
+{
+    my @claimed;
+    for @components -> %c {
+        for @PLATFORMS -> Str $plat {
+            @claimed.append:
+                |(%(%(%c<binaries> // {}){$plat} // {})<patterns> // []);
+        }
+    }
+    for @DENIED-PATTERNS -> Str $pat {
+        nok $pat ∈ @claimed,
+            "no component claims the denied pattern '$pat'";
+    }
+}
 
 # Two components attaching the same asset name would silently
 # overwrite each other in the publish job's `release/` staging dir,
@@ -326,7 +379,8 @@ is @on-disk.List, @referenced.List,
         libvpx       => 'build-libvpx.sh',
         opus         => 'build-libopus.sh',
         libdeflate   => 'build-libdeflate.sh',
-        libunistring => 'build-libunistring.sh';
+        libunistring => 'build-libunistring.sh',
+        libiconv     => 'build-libiconv.sh';
 
     for %script-for.kv -> Str $id, Str $script {
         my IO::Path $path = $root.child('scripts').child('ci').child($script);
