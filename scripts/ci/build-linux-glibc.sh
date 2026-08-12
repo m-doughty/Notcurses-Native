@@ -29,18 +29,27 @@ NOTCURSES_SRC_DIR=$(bash scripts/ci/fetch-notcurses-source.sh)
 export NOTCURSES_SRC_DIR
 
 # System packages via dnf:
-#   * pkgconfig, patchelf, ncurses-devel, libunistring-devel:
-#     base build/runtime needs.
+#   * pkgconfig, patchelf, ncurses-devel: base build/runtime needs.
 #   * nasm, yasm: needed by libdav1d / libvpx / ffmpeg for x86 SIMD
 #     (on aarch64 they're no-ops but cheap to install).
 # RHEL 8 doesn't ship modern ffmpeg / libdeflate / libdav1d / libvpx /
 # libopus — those get source-built below into $CACHE_DIR with
 # accelerated paths (--enable-libdav1d in ffmpeg, etc.) so notcurses
 # gets ~10× faster AV1 decode + matched VP8/9 + Opus accel.
+#
+# libunistring-devel is deliberately NOT here any more. It is LGPL
+# and it ships inside the pack, so we need to be able to point at the
+# exact source for the binary we handed the user — which a dnf
+# package version that moves under us cannot do. It is source-built
+# into $CACHE_DIR below from a pinned, SHA-256-recorded tarball. (As
+# a side effect the packs move from RHEL 8's libunistring.so.2 to
+# libunistring.so.5.) ncurses stays package-managed: it is MIT-style
+# X11 with no source-conveyance duty, and its terminfo-directory
+# configuration makes a source build genuinely fiddly.
 dnf install -y --setopt=tsflags=nodocs \
     pkgconfig patchelf \
     nasm yasm \
-    ncurses-devel libunistring-devel
+    ncurses-devel
 
 # cmake / meson / ninja via pip — RHEL 8's dnf ships cmake 3.20 and
 # notcurses needs 3.21+. meson + ninja are required by libdav1d's
@@ -81,12 +90,16 @@ export LIBRARY_PATH="$CACHE_DIR/lib:${LIBRARY_PATH:-}"
 # present every prerequisite (libdeflate, libdav1d, libvpx, libopus)
 # is too.
 if [[ -f "$CACHE_DIR/lib/pkgconfig/libavcodec.pc" ]]; then
-  echo "✅ Cache hit — skipping libdeflate / libdav1d / libvpx / libopus / ffmpeg builds."
+  echo "✅ Cache hit — skipping libunistring / libdeflate / libdav1d / libvpx / libopus / ffmpeg builds."
 else
   # Codec libs MUST land before ffmpeg — ffmpeg's configure probes
   # them via pkg-config + --enable-libfoo to wire its libfoo-backed
-  # decoder dispatches.
+  # decoder dispatches. libunistring is independent of all of them
+  # (notcurses links it directly, ffmpeg never sees it); it goes
+  # first only so the cache-hit probe below — which keys on ffmpeg,
+  # the last thing built — still implies everything else is present.
   echo "⏳ Cache miss — building accelerated codec stack from source (~15-20 min first run)."
+  PREFIX="$CACHE_DIR" bash scripts/ci/build-libunistring.sh
   PREFIX="$CACHE_DIR" bash scripts/ci/build-libdeflate.sh
   PREFIX="$CACHE_DIR" bash scripts/ci/build-libdav1d.sh
   PREFIX="$CACHE_DIR" bash scripts/ci/build-libvpx.sh
@@ -115,6 +128,27 @@ CMAKE_FLAGS=(
   cd "$NOTCURSES_SRC_DIR"
   mkdir -p build
   cmake -B build -S . "${CMAKE_FLAGS[@]}"
+  # Assert notcurses linked OUR libunistring, not a stray system one.
+  # `find_library(unistring unistring REQUIRED)` searches
+  # CMAKE_PREFIX_PATH first and /usr/lib64 after, and this container
+  # can still acquire a libunistring.so as a transitive dnf
+  # dependency of something else — in which case cmake would happily
+  # link the distro's 0.9.9 while bundle-elf.sh copies whichever the
+  # runtime loader picks. Same class of check as the Windows lane's
+  # DEFLATE:FILEPATH assertion. awk-with-exit rather than
+  # `grep | head -1`: head closing the pipe SIGPIPEs its producer and
+  # `set -o pipefail` turns that into a mystery failure.
+  unistring_lib=$(awk -F= '/^unistring:FILEPATH=/{print $2; exit}' build/CMakeCache.txt)
+  case "$unistring_lib" in
+    "$CACHE_DIR"/*)
+      echo "ok: unistring resolved to $unistring_lib" ;;
+    *)
+      echo "❌ find_library(unistring) resolved to '$unistring_lib',"
+      echo "   which is outside the source-built prefix '$CACHE_DIR'."
+      echo "   The pack would ship a libunistring we never built,"
+      echo "   pinned, or recorded a source tarball for."
+      exit 1 ;;
+  esac
   cmake --build build -j"$(nproc)"
 )
 

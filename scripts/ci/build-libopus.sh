@@ -9,8 +9,17 @@
 # clang.
 set -euxo pipefail
 
-VERSION='1.5.2'
-URL="https://github.com/xiph/opus/releases/download/v${VERSION}/opus-${VERSION}.tar.gz"
+# 1.6.1 — current stable.
+#
+# URL note: xiph stopped attaching dist tarballs to their GitHub
+# releases after 1.5.2 (v1.6/v1.6.1 exist as tags with no assets), and
+# GitHub's auto-generated tag tarball is a bare git export with no
+# `configure` — it would need autogen.sh plus the full autotools
+# chain on every runner. downloads.xiph.org is upstream's own
+# distribution point and carries the proper dist tarball; it 302s to
+# an osuosl mirror, which `curl -fSL` follows.
+VERSION='1.6.1'
+URL="https://downloads.xiph.org/releases/opus/opus-${VERSION}.tar.gz"
 PREFIX="${PREFIX:-/usr/local}"
 mkdir -p "$PREFIX"
 

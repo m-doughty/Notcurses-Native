@@ -14,3 +14,13 @@ BINARY_TAG        text eol=lf
 # CMake and YAML — also parsed by tools sensitive to trailing whitespace.
 *.yml             text eol=lf
 *.yaml            text eol=lf
+
+# resources/licenses/*.txt is copied verbatim into every prebuilt
+# pack, and resources/third-party.json is read by jq inside MSYS2 on
+# the Windows lanes. Pinning both to LF keeps the LICENSES/ bytes in
+# a Windows .zip identical to the ones in a Linux .tar.gz, so the
+# same licence text cannot hash two different ways depending on which
+# runner produced the archive. resources/checksums.txt is also .txt
+# and is parsed line-by-line by Build.rakumod.
+*.txt             text eol=lf
+*.json            text eol=lf

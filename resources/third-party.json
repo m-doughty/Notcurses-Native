@@ -1,0 +1,505 @@
+{
+  "_readme": [
+    "Inventory of every third-party component that ships inside a",
+    "Notcurses::Native prebuilt pack, with the licence it ships under and",
+    "the exact source we built it from.",
+    "",
+    "WHY THIS FILE EXISTS. The packs are binary redistributions. Two of the",
+    "libraries in them (FFmpeg, libunistring) are copyleft: conveying them in",
+    "binary form obliges us to be able to hand a recipient the corresponding",
+    "source for the exact binary they received. Several more are permissive but",
+    "still require their copyright notice and licence text to travel with the",
+    "binary. Neither duty is dischargeable from memory, so this file is the",
+    "machine-readable record and three things are generated from it:",
+    "",
+    "  * THIRD-PARTY.md and LICENSES/, written into every pack by",
+    "    scripts/ci/emit-third-party-kit.sh (see .github/actions/package-and-upload).",
+    "  * The six source tarballs attached to each binary release, downloaded",
+    "    from the URLs below and verified against the sha256 below by",
+    "    .github/workflows/_release-publish.yml.",
+    "  * A release gate, scripts/ci/audit-third-party.sh, which runs in every",
+    "    build lane and fails it if a file in the pack matches no component",
+    "    here, or if a component that should be present is missing.",
+    "",
+    "The gate is what keeps this file honest: a library that arrives in a pack",
+    "without an entry stops the release rather than shipping unlisted.",
+    "",
+    "WHAT IS DELIBERATELY NOT HERE. Platform C runtimes and OS libraries are",
+    "never bundled — they stay dynamically linked against whatever the user's",
+    "machine provides, so we do not redistribute them and they carry no notice",
+    "duty for us. That boundary is enforced elsewhere and recorded here as",
+    "`system-libraries` below: glibc / musl's libc, libm, libpthread and",
+    "loaders (scripts/ci/bundle-elf.sh's skiplist), Apple's /usr/lib and",
+    "/System frameworks (dylibbundler's default behaviour, re-checked by the",
+    "bundle-macos self-containment audit), and Windows' own DLLs plus the",
+    "API-set forwarders (scripts/ci/win-system-dll.sh). If one of those ever",
+    "does land in a pack, `system-libraries` lets the gate pass it — but that",
+    "would be a bundling bug worth fixing rather than a licensing question.",
+    "",
+    "SCHEMA. Every component has:",
+    "  id                 stable key, used by the tooling and the gate",
+    "  name, version      as shipped",
+    "  spdx-license       SPDX expression; `OR` for dual-licensed components",
+    "  conveyed-under     for dual-licensed components, the arm we choose",
+    "  license-files      names under resources/licenses/, copied into",
+    "                     LICENSES/ in each pack",
+    "  copyright          the attribution notice the permissive licences require",
+    "  project-url        upstream home page",
+    "  source             { kind, ... }:",
+    "                       tarball         url + sha256 + filename,",
+    "                                       attach-to-release true. `filename`",
+    "                                       is the name the tarball is attached",
+    "                                       to the release under, and is NOT",
+    "                                       always the basename of the URL:",
+    "                                       GitHub's tag archives are served as",
+    "                                       `v1.16.0.tar.gz`, which says nothing",
+    "                                       about what it is and would collide",
+    "                                       with the next project that pins the",
+    "                                       same version number.",
+    "                       git             url + ref (a commit SHA)",
+    "                       in-tree         this distribution's own source",
+    "                       package-manager not built by us; see notes",
+    "  binaries           per-platform { patterns, required }. `patterns` are",
+    "                     fnmatch globs against the pack-relative path (which is",
+    "                     the basename for everything except LICENSES/*). An",
+    "                     empty `patterns` means the component is absent on that",
+    "                     platform. `required` true means the gate fails if",
+    "                     nothing matches — that is what catches a silently",
+    "                     dropped library.",
+    "  notes              anything a reader would otherwise have to reconstruct",
+    "",
+    "Platform keys are `macos`, `linux` and `windows`. glibc and musl packs",
+    "share the `linux` key: neither bundles a libc, so their file inventories",
+    "are the same shape.",
+    "",
+    "Versions here MUST match the pins in scripts/ci/build-*.sh. t/17 checks",
+    "the shape of this file and cross-checks the notcurses ref against",
+    "NOTCURSES_FORK; the build scripts are the source of truth for versions."
+  ],
+
+  "schema-version": 1,
+
+  "components": [
+    {
+      "id": "notcurses",
+      "name": "notcurses",
+      "version": "3.0.17",
+      "spdx-license": "Apache-2.0",
+      "license-files": ["Apache-2.0.txt", "MIT.txt"],
+      "copyright": "Copyright 2019-2026 Nick Black; Copyright 2019-2021 Marek Habersack; Copyright 2020-2021 José Luis Cruz; Copyright 2020-2021 igo95862; Copyright 2021 Łukasz Drukała",
+      "project-url": "https://nick-black.com/dankwiki/index.php/Notcurses",
+      "source": {
+        "kind": "git",
+        "url": "https://github.com/m-doughty/notcurses.git",
+        "ref": "21c9e937c9238653aa250c4b32f5fefcdf953ce8",
+        "attach-to-release": false
+      },
+      "binaries": {
+        "macos": {
+          "patterns": [
+            "libnotcurses.dylib", "libnotcurses.*.dylib",
+            "libnotcurses-core.dylib", "libnotcurses-core.*.dylib",
+            "libnotcurses-ffi.dylib", "libnotcurses-ffi.*.dylib"
+          ],
+          "required": true
+        },
+        "linux": {
+          "patterns": [
+            "libnotcurses.so", "libnotcurses.so.*",
+            "libnotcurses-core.so", "libnotcurses-core.so.*",
+            "libnotcurses-ffi.so", "libnotcurses-ffi.so.*"
+          ],
+          "required": true
+        },
+        "windows": {
+          "patterns": [
+            "libnotcurses.dll", "libnotcurses-core.dll", "libnotcurses-ffi.dll"
+          ],
+          "required": true
+        }
+      },
+      "notes": "Built from our own fork rather than upstream 3.0.17: the pinned commit carries a keyboard-protocol fix for tmux 3.4. NOTCURSES_FORK in the repo root is the single source of truth for the URL and SHA, and both the CI lanes and Build.rakumod's install-time source fallback fetch that exact commit. src/fetch/ncart.c is extracted from Neofetch (MIT, copyright 2015-2025 Dylan Araps), which is why MIT.txt travels with this component."
+    },
+
+    {
+      "id": "notcurses-native",
+      "name": "Notcurses::Native (this distribution)",
+      "version": "0.4.4",
+      "spdx-license": "Artistic-2.0",
+      "license-files": ["Artistic-2.0.txt"],
+      "copyright": "Copyright 2025-2026 Matt Doughty",
+      "project-url": "https://github.com/m-doughty/Notcurses-Native",
+      "source": {
+        "kind": "in-tree",
+        "url": "https://github.com/m-doughty/Notcurses-Native",
+        "attach-to-release": false
+      },
+      "binaries": {
+        "macos": {
+          "patterns": [
+            "libnotcurses_native_shim.dylib",
+            "libnotcurses_native_shim.dylib.srchash",
+            "THIRD-PARTY.md", "LICENSES/*"
+          ],
+          "required": true
+        },
+        "linux": {
+          "patterns": [
+            "libnotcurses_native_shim.so",
+            "libnotcurses_native_shim.so.srchash",
+            "THIRD-PARTY.md", "LICENSES/*"
+          ],
+          "required": true
+        },
+        "windows": {
+          "patterns": [
+            "libnotcurses_native_shim.dll",
+            "libnotcurses_native_shim.dll.srchash",
+            "THIRD-PARTY.md", "LICENSES/*"
+          ],
+          "required": true
+        }
+      },
+      "notes": "Not third-party at all — it is here so the gate can account for every file in a pack from one list. Covers the per-cell performance shim compiled from src/notcurses_native_shim.c, its .srchash freshness sidecar, and the licensing kit (THIRD-PARTY.md + LICENSES/) this manifest generates."
+    },
+
+    {
+      "id": "ffmpeg",
+      "name": "FFmpeg",
+      "version": "8.1.2",
+      "spdx-license": "LGPL-2.1-or-later",
+      "license-files": ["LGPL-2.1.txt"],
+      "copyright": "Copyright (c) 2000-2026 the FFmpeg developers",
+      "project-url": "https://ffmpeg.org/",
+      "source": {
+        "kind": "tarball",
+        "url": "https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz",
+        "filename": "ffmpeg-8.1.2.tar.xz",
+        "sha256": "464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c",
+        "attach-to-release": true
+      },
+      "binaries": {
+        "macos": {
+          "patterns": [
+            "libavcodec.*.dylib", "libavformat.*.dylib", "libavutil.*.dylib",
+            "libavdevice.*.dylib", "libswscale.*.dylib", "libswresample.*.dylib"
+          ],
+          "required": true
+        },
+        "linux": {
+          "patterns": [
+            "libavcodec.so.*", "libavformat.so.*", "libavutil.so.*",
+            "libavdevice.so.*", "libswscale.so.*", "libswresample.so.*"
+          ],
+          "required": true
+        },
+        "windows": {
+          "patterns": [
+            "avcodec-*.dll", "avformat-*.dll", "avutil-*.dll",
+            "avdevice-*.dll", "swscale-*.dll", "swresample-*.dll"
+          ],
+          "required": true
+        }
+      },
+      "notes": "The copyleft library in the pack, and the reason the source tarball is attached to every binary release. Built decoder-only with no --enable-gpl and no --enable-nonfree, so the LGPL-2.1-or-later arm applies and none of the GPL-only parts are compiled in; scripts/ci/build-ffmpeg.sh asserts configure reported 'LGPL version 2.1 or later' and the Windows lane re-reads the licence string baked into the shipped avcodec. Windows uses ffmpeg's mingw32 naming (no lib prefix, SONAME major in the stem)."
+    },
+
+    {
+      "id": "dav1d",
+      "name": "dav1d",
+      "version": "1.5.4",
+      "spdx-license": "BSD-2-Clause",
+      "license-files": ["BSD-2-Clause.txt"],
+      "copyright": "Copyright © 2018-2025, VideoLAN and dav1d authors",
+      "project-url": "https://code.videolan.org/videolan/dav1d",
+      "source": {
+        "kind": "tarball",
+        "url": "https://code.videolan.org/videolan/dav1d/-/archive/1.5.4/dav1d-1.5.4.tar.bz2",
+        "filename": "dav1d-1.5.4.tar.bz2",
+        "sha256": "2abfb0c89212e6e4733a54e0ae509ec00a5b845a6360946f918806e14aedb011",
+        "attach-to-release": true
+      },
+      "binaries": {
+        "macos":   { "patterns": ["libdav1d.*.dylib"], "required": true },
+        "linux":   { "patterns": ["libdav1d.so.*"],    "required": true },
+        "windows": { "patterns": ["libdav1d-*.dll", "libdav1d.dll"], "required": true }
+      },
+      "notes": "AV1 decoder, linked into FFmpeg via --enable-libdav1d. The URL is a GitLab-generated archive rather than a static release file — the same URL scripts/ci/build-libdav1d.sh fetches. GitLab has served these byte-stably for years, but if the recorded sha256 ever stops matching, the publish job fails loudly rather than attaching a tarball that does not correspond to the shipped binary; the fix then is to re-verify against upstream and update this entry, not to drop the check."
+    },
+
+    {
+      "id": "libvpx",
+      "name": "libvpx",
+      "version": "1.16.0",
+      "spdx-license": "BSD-3-Clause",
+      "license-files": ["BSD-3-Clause.txt"],
+      "copyright": "Copyright (c) 2010, The WebM Project authors. All rights reserved.",
+      "project-url": "https://www.webmproject.org/code/",
+      "source": {
+        "kind": "tarball",
+        "url": "https://github.com/webmproject/libvpx/archive/refs/tags/v1.16.0.tar.gz",
+        "filename": "libvpx-1.16.0.tar.gz",
+        "sha256": "7a479a3c66b9f5d5542a4c6a1b7d3768a983b1e5c14c60a9396edc9b649e015c",
+        "attach-to-release": true
+      },
+      "binaries": {
+        "macos":   { "patterns": ["libvpx.*.dylib"], "required": true },
+        "linux":   { "patterns": ["libvpx.so.*"],    "required": true },
+        "windows": { "patterns": [],                 "required": false }
+      },
+      "notes": "VP8/VP9 decoder, linked into FFmpeg via --enable-libvpx. There is no libvpx binary of its own on Windows: libvpx's configure refuses to emit a shared library anywhere but ELF/OS-2/Darwin, so scripts/ci/build-libvpx.sh builds libvpx.a there and FFmpeg absorbs it into avcodec-<N>.dll. It is still redistributed — as machine code inside that DLL — so it keeps its entry, its notice and its attached source tarball on every platform. BSD-3-Clause inside an LGPL-2.1 shared library raises no licensing question. The URL is a GitHub-generated tag archive; see the dav1d note on what a hash mismatch means."
+    },
+
+    {
+      "id": "opus",
+      "name": "Opus",
+      "version": "1.6.1",
+      "spdx-license": "BSD-3-Clause",
+      "license-files": ["BSD-3-Clause.txt"],
+      "copyright": "Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, Jean-Marc Valin, Timothy B. Terriberry, CSIRO, Gregory Maxwell, Mark Borgerding, Erik de Castro Lopo, Mozilla, Amazon",
+      "project-url": "https://opus-codec.org/",
+      "source": {
+        "kind": "tarball",
+        "url": "https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz",
+        "filename": "opus-1.6.1.tar.gz",
+        "sha256": "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1",
+        "attach-to-release": true
+      },
+      "binaries": {
+        "macos":   { "patterns": ["libopus.*.dylib"], "required": true },
+        "linux":   { "patterns": ["libopus.so.*"],    "required": true },
+        "windows": { "patterns": ["libopus-*.dll", "libopus.dll"], "required": true }
+      },
+      "notes": "Opus audio decoder, linked into FFmpeg via --enable-libopus. Fetched from Xiph's own distribution point rather than GitHub: Xiph stopped attaching dist tarballs to their releases after 1.5.2, and the auto-generated tag archive has no configure script. The recorded sha256 matches Xiph's published SHA256SUMS.txt."
+    },
+
+    {
+      "id": "libdeflate",
+      "name": "libdeflate",
+      "version": "1.25",
+      "spdx-license": "MIT",
+      "license-files": ["MIT.txt"],
+      "copyright": "Copyright 2016 Eric Biggers; Copyright 2024 Google LLC",
+      "project-url": "https://github.com/ebiggers/libdeflate",
+      "source": {
+        "kind": "tarball",
+        "url": "https://github.com/ebiggers/libdeflate/releases/download/v1.25/libdeflate-1.25.tar.gz",
+        "filename": "libdeflate-1.25.tar.gz",
+        "sha256": "fed5cd22f00f30cc4c2e5329f94e2b8a901df9fa45ee255cb70e2b0b42344477",
+        "attach-to-release": true
+      },
+      "binaries": {
+        "macos":   { "patterns": ["libdeflate.*.dylib"], "required": true },
+        "linux":   { "patterns": ["libdeflate.so.*"],    "required": true },
+        "windows": { "patterns": ["libdeflate.dll"],     "required": true }
+      },
+      "notes": "notcurses' preferred DEFLATE implementation (USE_DEFLATE=ON), used for its PNG path. Source-built on every lane for version parity rather than for licensing — MIT imposes no source duty — because the distro packages froze on much older releases (Alpine 3.20 on 1.20, RHEL 8 ships none at all)."
+    },
+
+    {
+      "id": "libunistring",
+      "name": "GNU libunistring",
+      "version": "1.4.2",
+      "spdx-license": "LGPL-3.0-or-later OR GPL-2.0-or-later",
+      "conveyed-under": "LGPL-3.0-or-later",
+      "license-files": ["LGPL-3.0.txt", "GPL-2.0.txt"],
+      "copyright": "Copyright (C) 2001-2025 Free Software Foundation, Inc.",
+      "project-url": "https://www.gnu.org/software/libunistring/",
+      "source": {
+        "kind": "tarball",
+        "url": "https://ftp.gnu.org/gnu/libunistring/libunistring-1.4.2.tar.gz",
+        "filename": "libunistring-1.4.2.tar.gz",
+        "sha256": "e82664b170064e62331962126b259d452d53b227bb4a93ab20040d846fec01d8",
+        "attach-to-release": true
+      },
+      "binaries": {
+        "macos":   { "patterns": ["libunistring.5.dylib"], "required": true },
+        "linux":   { "patterns": ["libunistring.so.5"],    "required": true },
+        "windows": { "patterns": ["libunistring-5.dll"],   "required": true }
+      },
+      "notes": "notcurses' Unicode segmentation library — grapheme clusters, word breaks, character properties. Dual-licensed; we convey it under the LGPL, hence the attached source tarball, but GPL-2.0.txt ships too because the recipient's option to take the other arm is part of what they receive. Source-built on all four platforms as of this release; it was the last package-manager-sourced copyleft library in the packs, and a dnf/apk/brew/pacman version that moves under us is not a corresponding source we can still produce a year later. The patterns pin SONAME major 5 deliberately — that is what the whole 1.x series emits (-version-info 7:R:2), so a distro's libunistring.so.2 slipping back in, or an unnoticed jump to a 2.x, fails the gate instead of shipping."
+    },
+
+    {
+      "id": "ncursesw",
+      "name": "ncurses (wide-character build)",
+      "version": "6.x (per-platform; see notes)",
+      "spdx-license": "X11",
+      "license-files": ["X11.txt"],
+      "copyright": "Copyright 2018-2024 Thomas E. Dickey; Copyright 1998-2017 Free Software Foundation, Inc.",
+      "project-url": "https://invisible-island.net/ncurses/",
+      "source": {
+        "kind": "package-manager",
+        "attach-to-release": false
+      },
+      "binaries": {
+        "macos":   { "patterns": ["libncursesw.*.dylib"], "required": true },
+        "linux":   { "patterns": ["libncursesw.so.*", "libtinfo.so.*"], "required": true },
+        "windows": { "patterns": ["libncursesw*.dll", "libncurses*.dll"], "required": true }
+      },
+      "notes": "The one remaining package-manager-sourced library in the packs, and the honest per-lane origin is: macos-arm64 takes brew's ncurses; macos-x86_64 source-builds 6.5 from https://ftp.gnu.org/gnu/ncurses/ncurses-6.5.tar.gz (sha256 136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6) because brew's x86_64 bottles target macOS 14+ and would fail that lane's 10.15 floor; linux-glibc takes RHEL 8's ncurses-devel, which splits the terminfo half into libtinfo.so.6 and is why that pattern is listed; linux-musl takes Alpine's ncurses-dev; both Windows lanes take MSYS2's mingw-w64-*-ncurses. Its X11-style licence carries a notice duty (discharged by LICENSES/X11.txt and the copyright line above) but no source-conveyance duty, so unpinned sourcing costs a recipient nothing. Moving it onto the self-built chain for uniformity is a reasonable future pass; the blocker is that its --with-default-terminfo-dir / ticdir configuration is genuinely delicate to get right per platform, which is a poor trade for a licence that asks nothing of us."
+    },
+
+    {
+      "id": "zlib",
+      "name": "zlib",
+      "version": "1.x (per-platform; see notes)",
+      "spdx-license": "Zlib",
+      "license-files": ["Zlib.txt"],
+      "copyright": "Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler",
+      "project-url": "https://zlib.net/",
+      "source": {
+        "kind": "package-manager",
+        "attach-to-release": false
+      },
+      "binaries": {
+        "macos":   { "patterns": [],             "required": false },
+        "linux":   { "patterns": ["libz.so.*"],  "required": true },
+        "windows": { "patterns": ["zlib1.dll"],  "required": true }
+      },
+      "notes": "Pulled in by FFmpeg's --enable-zlib, which its PNG decoder hard-requires. Absent on macOS: Apple ships libz.1.dylib in /usr/lib, which stays dynamically linked and is never bundled. Not source-built anywhere: the Zlib licence asks only for its notice, zlib's ABI has been frozen for two decades, and every platform we target ships a maintained one."
+    },
+
+    {
+      "id": "libiconv",
+      "name": "GNU libiconv",
+      "version": "MSYS2 package",
+      "spdx-license": "LGPL-2.1-or-later",
+      "license-files": ["LGPL-2.1.txt"],
+      "copyright": "Copyright (C) 1999-2024 Free Software Foundation, Inc.",
+      "project-url": "https://www.gnu.org/software/libiconv/",
+      "source": {
+        "kind": "package-manager",
+        "attach-to-release": false
+      },
+      "binaries": {
+        "macos":   { "patterns": [],                  "required": false },
+        "linux":   { "patterns": [],                  "required": false },
+        "windows": { "patterns": ["libiconv-*.dll"],  "required": false }
+      },
+      "notes": "Windows only, and only sometimes: glibc, musl and libSystem all provide iconv inside libc, but there is none in the Windows C runtime, so mingw builds that want it link GNU libiconv. It reaches the pack as a transitive import of the MSYS2 toolchain's own libraries. KNOWN GAP: this is copyleft and package-manager-sourced, so it has the same unpinnable-corresponding-source problem libunistring had, and unlike libunistring it is not ours to move onto the self-built chain in one step (it is a dependency of things we do not build). Either source-build it alongside libunistring on the Windows lanes, or establish that nothing in the pack actually needs it and stop sweeping it in — see the bundle-dll belt-and-braces list. Required is false because whether it appears depends on the MSYS2 subsystem's package closure."
+    },
+
+    {
+      "id": "gettext-runtime",
+      "name": "GNU gettext runtime (libintl)",
+      "version": "MSYS2 package",
+      "spdx-license": "LGPL-2.1-or-later",
+      "license-files": ["LGPL-2.1.txt"],
+      "copyright": "Copyright (C) 1995-2024 Free Software Foundation, Inc.",
+      "project-url": "https://www.gnu.org/software/gettext/",
+      "source": {
+        "kind": "package-manager",
+        "attach-to-release": false
+      },
+      "binaries": {
+        "macos":   { "patterns": [],                 "required": false },
+        "linux":   { "patterns": [],                 "required": false },
+        "windows": { "patterns": ["libintl-*.dll"],  "required": false }
+      },
+      "notes": "Windows only. The message-translation runtime, reaching the pack the same transitive way libiconv does, and carrying the same known gap: LGPL, package-manager-sourced, corresponding source unpinnable. Note that libunistring is NOT why it is there — libunistring has no NLS and links no libintl."
+    },
+
+    {
+      "id": "gcc-runtime",
+      "name": "GCC runtime libraries",
+      "version": "MSYS2 UCRT64 toolchain",
+      "spdx-license": "GPL-3.0-or-later WITH GCC-exception-3.1",
+      "license-files": ["GPL-3.0.txt", "GCC-exception-3.1.txt"],
+      "copyright": "Copyright (C) 1988-2026 Free Software Foundation, Inc.",
+      "project-url": "https://gcc.gnu.org/",
+      "source": {
+        "kind": "package-manager",
+        "attach-to-release": false
+      },
+      "binaries": {
+        "macos":   { "patterns": [], "required": false },
+        "linux":   { "patterns": [], "required": false },
+        "windows": {
+          "patterns": [
+            "libgcc_s_seh-1.dll", "libgcc_s_dw2-1.dll", "libgcc_s_1.dll",
+            "libstdc++-6.dll", "libgomp-1.dll", "libssp-0.dll",
+            "libquadmath-0.dll"
+          ],
+          "required": false
+        }
+      },
+      "notes": "Windows UCRT64 lane only, and only whichever of these the toolchain actually links. On Linux the equivalents (libgcc_s.so.1, libstdc++.so.6) are in bundle-elf.sh's skiplist and stay dynamic; macOS uses Apple's runtimes from /usr/lib. The GCC Runtime Library Exception is what makes redistributing these inside a non-GPL pack fine — it is not a normal GPL-3 obligation, which is why GCC-exception-3.1.txt ships beside GPL-3.0.txt. Required is false: which of these appear depends on the compiler and on what the codec libraries happen to reference, and both differ between the UCRT64 and CLANGARM64 lanes."
+    },
+
+    {
+      "id": "llvm-runtime",
+      "name": "LLVM runtime libraries",
+      "version": "MSYS2 CLANGARM64 toolchain",
+      "spdx-license": "Apache-2.0 WITH LLVM-exception",
+      "license-files": ["Apache-2.0.txt", "LLVM-exception.txt"],
+      "copyright": "Copyright (c) 2003-2026 the LLVM Project contributors",
+      "project-url": "https://llvm.org/",
+      "source": {
+        "kind": "package-manager",
+        "attach-to-release": false
+      },
+      "binaries": {
+        "macos":   { "patterns": [], "required": false },
+        "linux":   { "patterns": [], "required": false },
+        "windows": {
+          "patterns": ["libc++.dll", "libunwind.dll", "libomp.dll"],
+          "required": false
+        }
+      },
+      "notes": "The CLANGARM64 lane's counterpart to gcc-runtime — MSYS2's Windows-on-ARM subsystem is clang-based and has no GNU binutils or libstdc++ at all. Required is false for the same reason: presence depends on the subsystem, and the two Windows lanes never both apply."
+    },
+
+    {
+      "id": "mingw-w64-runtime",
+      "name": "mingw-w64 winpthreads",
+      "version": "MSYS2 package",
+      "spdx-license": "MIT",
+      "license-files": ["MIT.txt"],
+      "copyright": "Copyright (c) 2011 mingw-w64 project",
+      "project-url": "https://www.mingw-w64.org/",
+      "source": {
+        "kind": "package-manager",
+        "attach-to-release": false
+      },
+      "binaries": {
+        "macos":   { "patterns": [], "required": false },
+        "linux":   { "patterns": [], "required": false },
+        "windows": { "patterns": ["libwinpthread-1.dll"], "required": true }
+      },
+      "notes": "The POSIX threads implementation both MSYS2 subsystems link, so unlike the compiler runtimes above it is genuinely always present and required is true. mingw-w64 as a project is a mixture of licences (the import libraries and headers are variously public-domain and Zope-licensed); winpthreads, the part we redistribute, is MIT."
+    }
+  ],
+
+  "system-libraries": {
+    "_comment": [
+      "Not components — these are never bundled. Listed so the gate has an",
+      "explicit allow-list if one ever does turn up in a pack, and so the",
+      "boundary between 'we redistribute this' and 'the user's OS provides",
+      "this' is written down in one place rather than spread across three",
+      "bundling scripts. In normal operation none of these match anything.",
+      "Sources: scripts/ci/bundle-elf.sh (linux), dylibbundler plus the",
+      "bundle-macos self-containment audit (macos), and",
+      "scripts/ci/win-system-dll.sh (windows)."
+    ],
+    "macos": [
+      "libSystem.B.dylib", "libc++.1.dylib", "libc++abi.dylib",
+      "libobjc.A.dylib", "libz.1.dylib", "libiconv.2.dylib",
+      "libresolv.9.dylib", "libcharset.1.dylib"
+    ],
+    "linux": [
+      "libc.so.*", "libm.so.*", "libpthread.so.*", "libdl.so.*",
+      "librt.so.*", "libstdc++.so.*", "libgcc_s.so.*", "libresolv.so.*",
+      "libnsl.so.*", "libutil.so.*", "libcrypt.so.*", "linux-vdso.so.*",
+      "ld-linux*", "libc.musl-*.so.*", "ld-musl-*.so.*"
+    ],
+    "windows": [
+      "api-ms-*.dll", "ext-ms-*.dll", "ms-win-*.dll",
+      "kernel32.dll", "kernelbase.dll", "user32.dll", "gdi32.dll",
+      "advapi32.dll", "shell32.dll", "ole32.dll", "oleaut32.dll",
+      "msvcrt.dll", "ucrtbase.dll", "vcruntime140*.dll", "ntdll.dll",
+      "ws2_32.dll", "crypt32.dll", "bcrypt.dll", "winmm.dll",
+      "d3dcompiler_47.dll"
+    ]
+  }
+}

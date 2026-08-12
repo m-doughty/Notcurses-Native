@@ -24,13 +24,16 @@ inputs:
     default: ''
   extra-search-path:
     description: >-
-      Additional `-s` search path for dylibbundler. The x86_64 lane
-      source-builds ffmpeg / ncurses / libunistring / libdeflate into
-      a workspace cache dir (so the bundle can target macOS 10.15 —
-      brew x86_64 bottles target 14+); dylibbundler needs to be told
-      where to find those .dylibs in addition to $NOTCURSES_SRC_DIR/build.
-      Empty default = arm64 lane uses brew bottles via the system
-      paths dylibbundler already knows.
+      Additional `-s` search path for dylibbundler. Both macOS lanes
+      source-build their ffmpeg chain (libdav1d / libvpx / libopus /
+      ffmpeg) plus libunistring into a per-arch workspace cache dir —
+      x86_64 adds ncurses / libdeflate on top, since brew's x86_64
+      bottles target macOS 14+ and the bundle must load on 10.15.
+      Those .dylibs carry @rpath install_names, so dylibbundler has
+      to be told where they live in addition to
+      $NOTCURSES_SRC_DIR/build. Empty default = search only the
+      notcurses build dir plus whatever system paths dylibbundler
+      already knows.
     required: false
     default: ''
 

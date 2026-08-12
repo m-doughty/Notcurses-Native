@@ -1,11 +1,22 @@
 # Reusable workflow: collect every uploaded artefact from the
-# parallel build lanes, assemble a single `checksums.txt`, validate
-# that the pushed tag (if any) matches BINARY_TAG, and publish to a
-# GitHub release.
+# parallel build lanes, fetch and verify the third-party source
+# tarballs those artefacts were built from, assemble a single
+# `checksums.txt` over both, validate that the pushed tag matches
+# BINARY_TAG, and publish to a GitHub release.
 #
-# Pure port of the original build-binaries.yml `release` job — no
-# behaviour change. Extracted into a reusable workflow so the
-# top-level release.yml stays focused on orchestration.
+# Started life as a straight extraction of build-binaries.yml's
+# `release` job, so that the top-level release.yml could stay focused
+# on orchestration. It has since grown two responsibilities that are
+# not just plumbing, and both are release gates rather than
+# conveniences:
+#
+#   * it publishes only on a pushed `binaries-*` tag, never on a
+#     workflow_dispatch (see the `if:` below);
+#   * it will not publish at all unless every source tarball named in
+#     resources/third-party.json downloads and hashes to the recorded
+#     SHA-256 — that is the corresponding source for the LGPL
+#     libraries inside the archives, and attaching source that does
+#     not match the binaries would be worse than attaching none.
 
 name: _release-publish
 
@@ -18,7 +29,16 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/binaries-') || github.event_name == 'workflow_dispatch'
+    # Tag-triggered runs only. A workflow_dispatch used to publish too —
+    # useful when dispatch was the release path, but it means "validate
+    # the recipe on a branch" and "overwrite the published archives that
+    # every installed dist checksum-verifies against" are one click
+    # apart: a dispatch while BINARY_TAG still names the LIVE tag would
+    # clobber its assets and break every existing install's download.
+    # Dispatch now builds and smokes all eight lanes and stops, the same
+    # contract as the app release workflows downstream; only pushing the
+    # binaries-* tag itself publishes.
+    if: startsWith(github.ref, 'refs/tags/binaries-')
     steps:
       - uses: actions/checkout@v6
 
@@ -26,6 +46,71 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           path: downloaded/
+
+      # Corresponding source for the copyleft libraries in the packs.
+      # FFmpeg (LGPL-2.1) and GNU libunistring (LGPL-3.0) both oblige
+      # us to be able to hand a recipient the source for the exact
+      # binary they got; the other four are attached so that "which
+      # source built this?" has one kind of answer for every component
+      # rather than two. The pinned URL + SHA-256 pair lives in
+      # resources/third-party.json and is the same pair the build
+      # scripts fetch, so what gets attached here is byte-identical to
+      # what the lanes compiled.
+      #
+      # Verification is a hard gate, not a nicety: attaching a tarball
+      # that does not hash to the recorded value would mean publishing
+      # "here is the source for these binaries" next to source that
+      # is not. If this fires, re-verify the upstream tarball by hand
+      # and update the manifest — do not delete the check.
+      - name: Download + verify third-party source tarballs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          fail=0
+          # Process substitution rather than `jq | while`: a pipeline
+          # runs its right-hand side in a subshell, so a failure
+          # detected inside the loop could not affect $fail out here.
+          #
+          # The asset name comes from the manifest, not from
+          # `basename "$url"`. GitHub serves tag archives as
+          # `v1.16.0.tar.gz` — which tells a downloader nothing about
+          # what it contains and would collide with any other
+          # component pinned at the same version number.
+          while IFS=$'\t' read -r id url sha name; do
+            file="release/$name"
+            echo "--- $id ---"
+            if ! curl -fSL --retry 5 --retry-delay 10 -o "$file" "$url"; then
+              echo "::error::could not download $id source from $url"
+              fail=1
+              continue
+            fi
+            actual=$(sha256sum "$file" | awk '{print $1}')
+            if [[ "$actual" != "$sha" ]]; then
+              echo "::error::$id source tarball hash mismatch"
+              echo "  url:      $url"
+              echo "  expected: $sha"
+              echo "  actual:   $actual"
+              fail=1
+              continue
+            fi
+            echo "ok: $name sha256 $actual"
+          done < <(
+            jq -r '
+              .components[]
+              | select(.source["attach-to-release"] == true)
+              | [ .id, .source.url, .source.sha256, .source.filename ]
+              | @tsv
+            ' resources/third-party.json
+          )
+          if (( fail != 0 )); then
+            echo "❌ One or more third-party source tarballs could not be"
+            echo "   fetched or did not match resources/third-party.json."
+            echo "   Publishing would attach source that does not correspond"
+            echo "   to the binaries in these archives."
+            exit 1
+          fi
+          echo "✅ All attachable source tarballs verified against the manifest."
 
       - name: Flatten + generate combined checksums.txt + resolve tag
         id: prep
@@ -37,6 +122,12 @@ jobs:
                                  -o -name 'notcurses-*.zip'   \) \
             -exec cp {} release/ \;
 
+          # checksums.txt covers everything in release/ — the eight
+          # platform archives AND the source tarballs staged by the
+          # step above — so a recipient can verify the source they
+          # were given as easily as the binaries. Build.rakumod looks
+          # entries up by artefact name, so the extra lines are inert
+          # to it.
           cd release
           sha256sum * | sort > ../checksums.txt
           cd ..
@@ -73,23 +164,66 @@ jobs:
             Each archive contains `libnotcurses`, `libnotcurses-core`,
             `libnotcurses-ffi`, plus ffmpeg sibling dylibs/sos/DLLs
             that notcurses dyn-links — all with rpaths relocated so
-            they load siblings from the archive's own directory.
+            they load siblings from the archive's own directory — and a
+            `THIRD-PARTY.md` + `LICENSES/` licensing kit describing
+            everything in that particular archive.
 
-            Linux glibc archives are built in `quay.io/pypa/manylinux2014_*`
-            containers (glibc 2.17 floor — RHEL 7+, Ubuntu 14.04+,
-            Debian 8+).
+            Linux glibc archives are built in
+            `quay.io/pypa/manylinux_2_28_*` containers (glibc 2.28
+            floor — RHEL 8+, Ubuntu 18.10+, Debian 10+, i.e. every
+            glibc distro still under maintenance).
             Linux musl archives are built in `alpine:3.20` containers
             (musl 1.2.5 build, 1.20+ runtime — Alpine 3.13+, Postmarket
             OS, Void, Adelie).
             macOS arm64 targets macOS 11.0 (Big Sur).
             macOS x86_64 targets macOS 10.15 (Catalina) and is built
             under Rosetta 2 on an arm64 GHA runner.
+            Windows x86_64 is built in MSYS2 UCRT64; Windows arm64 in
+            MSYS2 CLANGARM64.
+
+            ## Licensing
+
+            These archives redistribute third-party binaries. Every one
+            of them is inventoried in
+            [`resources/third-party.json`](https://github.com/m-doughty/Notcurses-Native/blob/main/resources/third-party.json),
+            and each archive carries the subset relevant to it as
+            `THIRD-PARTY.md` plus full licence texts in `LICENSES/`.
+
+            Copyleft, and therefore attached as source below:
+
+            * **FFmpeg** (LGPL-2.1-or-later) — a decoder-only build
+              with neither `--enable-gpl` nor `--enable-nonfree`, so
+              none of FFmpeg's GPL-only components are compiled in.
+            * **GNU libunistring** (LGPL-3.0-or-later OR
+              GPL-2.0-or-later; conveyed under the LGPL).
+
+            Permissive: **notcurses** (Apache-2.0), **dav1d** (BSD-2),
+            **libvpx** and **Opus** (BSD-3), **libdeflate** (MIT),
+            **ncursesw** (X11-style), **zlib** (Zlib), and on Windows
+            the MSYS2 toolchain runtimes (MIT / LGPL-2.1 /
+            GPL-3.0-with-GCC-exception / Apache-2.0-with-LLVM-exception,
+            as listed per-archive).
+
+            The `*.tar.gz` / `*.tar.xz` / `*.tar.bz2` assets on this
+            release are the exact upstream source tarballs these
+            binaries were built from — same URLs, same SHA-256s, as
+            recorded in the manifest and verified at publish time. They
+            are the corresponding source for the copyleft libraries
+            above; the permissive ones are attached too so that every
+            component has one kind of answer to "what built this?".
+
+            Platform C runtimes (glibc, musl, Apple's `/usr/lib`,
+            Windows' own DLLs) are dynamically linked, never bundled,
+            and so are not redistributed here.
 
             ## Verifying
 
             ```
             sha256sum -c checksums.txt
             ```
+
+            `checksums.txt` covers both the platform archives and the
+            attached source tarballs.
 
             ## After release
 

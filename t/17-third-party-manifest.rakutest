@@ -1,0 +1,348 @@
+use Test;
+
+# Validation for resources/third-party.json — the inventory of every
+# third-party component that ships inside a prebuilt pack, and the
+# input to three different pieces of release machinery:
+#
+#   * scripts/ci/emit-third-party-kit.sh writes THIRD-PARTY.md and
+#     LICENSES/ into every pack from it;
+#   * scripts/ci/audit-third-party.sh gates every build lane on it;
+#   * .github/workflows/_release-publish.yml downloads and verifies
+#     the source tarballs it names, and attaches them to the release.
+#
+# All three run only in CI, on a runner, at release time. That is a
+# slow and expensive place to discover that a licence file name has a
+# typo in it or that a sha256 got pasted with a character missing —
+# and the failure modes are asymmetric in the worst direction: a
+# malformed manifest either blocks a release or, if the mistake
+# happens to be in a `notes` field nobody parses, ships a licensing
+# document that is quietly wrong. So the shape gets checked here,
+# hermetically, on every `prove6 -Ilib t/`.
+#
+# Deliberately NOT network-dependent: this never fetches a tarball to
+# see whether its hash still matches. That check belongs to the
+# publish job, which is the only place where being wrong about it
+# matters. Here we check that the recorded value is a plausible
+# SHA-256 at all.
+#
+# JSON parsing goes through Rakudo::Internals::JSON rather than
+# JSON::Fast so this dist keeps its empty `depends` and
+# `test-depends`. It is a builtin, so there is no `use` for it.
+
+my IO::Path $root     = $*PROGRAM.parent.parent;
+my IO::Path $manifest = $root.child('resources').child('third-party.json');
+my IO::Path $lic-dir  = $root.child('resources').child('licenses');
+
+# ---------------------------------------------------------------- #
+# Parse
+# ---------------------------------------------------------------- #
+
+ok $manifest.e, 'resources/third-party.json exists';
+
+my %m;
+lives-ok { %m = Rakudo::Internals::JSON.from-json($manifest.slurp) },
+    'manifest parses as JSON';
+
+is %m<schema-version>, 1, 'schema-version is 1';
+
+my @components = |(%m<components> // []);
+ok @components.elems > 0, 'manifest declares at least one component';
+
+# ---------------------------------------------------------------- #
+# Known-good vocabularies
+# ---------------------------------------------------------------- #
+
+# SPDX identifiers we are prepared to convey under. Kept as a closed
+# set on purpose: adding a component under a licence nobody on this
+# project has read should require editing this line, which is a
+# decision point, rather than sailing through because the string
+# happened to look like an identifier.
+my constant %KNOWN-SPDX = set <
+    Apache-2.0
+    Artistic-2.0
+    BSD-2-Clause
+    BSD-3-Clause
+    GPL-2.0-or-later
+    GPL-3.0-or-later
+    LGPL-2.1-or-later
+    LGPL-3.0-or-later
+    MIT
+    X11
+    Zlib
+>;
+my constant %KNOWN-EXCEPTIONS = set <
+    GCC-exception-3.1
+    LLVM-exception
+>;
+my constant %KNOWN-SOURCE-KINDS = set <
+    tarball git in-tree package-manager
+>;
+my constant @PLATFORMS = <macos linux windows>;
+
+# Components that must ship on every platform we build for. These are
+# the ones notcurses cannot start without (or, for notcurses-native,
+# the ones we put there ourselves), so a manifest that stops claiming
+# one of them on some platform is a manifest that has drifted from
+# what the lanes actually produce.
+my constant @UNIVERSAL = <
+    notcurses notcurses-native ffmpeg dav1d opus libdeflate
+    libunistring ncursesw
+>;
+
+# The source tarballs the publish job attaches to every binary
+# release. Pinned as an exact set rather than a count: dropping one
+# silently would remove the corresponding source for a copyleft
+# library, and adding one silently would attach a tarball nobody
+# decided to publish.
+my constant @ATTACHED = <
+    ffmpeg dav1d libvpx opus libdeflate libunistring
+>;
+
+# ---------------------------------------------------------------- #
+# Per-component shape
+# ---------------------------------------------------------------- #
+
+my @ids = @components.map(*.<id>);
+is @ids.elems, @ids.unique.elems, 'component ids are unique';
+
+for @components -> %c {
+    my Str $id = %c<id> // '(missing id)';
+
+    ok $id ~~ /^ <[a..z0..9]> <[a..z0..9-]>* $/,
+        "$id: id is lowercase-kebab";
+
+    for <name version spdx-license license-files copyright
+         project-url source binaries notes> -> Str $key {
+        ok %c{$key}:exists && %c{$key}.defined,
+            "$id: has non-null '$key'";
+    }
+
+    ok (%c<name> // '').chars > 0,      "$id: name is non-empty";
+    ok (%c<version> // '').chars > 0,   "$id: version is non-empty";
+    ok (%c<copyright> // '').chars > 0, "$id: carries a copyright notice";
+    ok (%c<notes> // '').chars > 20,
+        "$id: notes say something a reader could not have guessed";
+
+    ok (%c<project-url> // '').starts-with('https://'),
+        "$id: project-url is https";
+
+    # --- SPDX expression --------------------------------------- #
+    # Only the two shapes we actually use: `A OR B` for a
+    # dual-licensed component, `A WITH E` for a licence-plus-exception.
+    # Anything more elaborate would need the tooling that renders
+    # THIRD-PARTY.md to understand it too, so it should not appear
+    # here without that work being done.
+    my Str $spdx = %c<spdx-license> // '';
+    my @atoms = $spdx.split(/ \s+ [ 'OR' | 'WITH' ] \s+ /).map(*.trim);
+    ok @atoms.elems >= 1 && @atoms.elems <= 2,
+        "$id: spdx expression is a bare id, an OR pair, or a WITH pair";
+    ok @atoms[0] ∈ %KNOWN-SPDX,
+        "$id: '{@atoms[0]}' is a known SPDX licence id";
+    if @atoms.elems == 2 {
+        ok @atoms[1] ∈ %KNOWN-SPDX || @atoms[1] ∈ %KNOWN-EXCEPTIONS,
+            "$id: '{@atoms[1]}' is a known SPDX licence id or exception";
+    }
+    if $spdx.contains(' OR ') {
+        ok (%c<conveyed-under> // '') ∈ %KNOWN-SPDX,
+            "$id: dual-licensed, so names the arm it is conveyed under";
+    }
+
+    # --- licence texts ------------------------------------------ #
+    my @lics = |(%c<license-files> // []);
+    ok @lics.elems > 0, "$id: references at least one licence text";
+    for @lics -> Str $lic {
+        ok $lic.ends-with('.txt'), "$id: licence file '$lic' is a .txt";
+        my IO::Path $path = $lic-dir.child($lic);
+        ok $path.e && $path.s > 200,
+            "$id: resources/licenses/$lic exists and has real content";
+    }
+
+    # --- source -------------------------------------------------- #
+    my %src  = %(%c<source> // {});
+    my Str $kind = %src<kind> // '';
+    ok $kind ∈ %KNOWN-SOURCE-KINDS, "$id: source.kind '$kind' is known";
+    ok %src<attach-to-release> ~~ Bool,
+        "$id: source.attach-to-release is a Bool";
+
+    given $kind {
+        when 'tarball' {
+            ok (%src<url> // '').starts-with('https://'),
+                "$id: tarball url is https";
+            ok (%src<url> // '').contains(%c<version> // '\0'),
+                "$id: tarball url names version {%c<version>}";
+            ok (%src<sha256> // '') ~~ /^ <[0..9a..f]> ** 64 $/,
+                "$id: sha256 is 64 lowercase hex digits";
+            ok %src<attach-to-release>,
+                "$id: a pinned tarball is attached to the release";
+            # The release-asset name is explicit rather than derived
+            # from the URL: GitHub serves tag archives as
+            # `v1.16.0.tar.gz`, which is both uninformative and a
+            # collision waiting for the next component pinned at the
+            # same version.
+            my Str $fn = %src<filename> // '';
+            ok $fn.chars > 0 && !$fn.contains('/'),
+                "$id: filename is a bare asset name";
+            ok $fn.contains(%c<version> // '\0'),
+                "$id: filename '$fn' names version {%c<version>}";
+            ok $fn.ends-with(any('.tar.gz', '.tar.xz', '.tar.bz2', '.zip')),
+                "$id: filename '$fn' has a source-archive extension";
+        }
+        when 'git' {
+            ok (%src<url> // '').starts-with('https://'),
+                "$id: git url is https";
+            ok (%src<ref> // '') ~~ /^ <[0..9a..f]> ** 40 $/,
+                "$id: git ref is a full commit SHA, not a branch or tag";
+        }
+        when 'in-tree' {
+            ok (%src<url> // '').starts-with('https://'),
+                "$id: in-tree url is https";
+        }
+        when 'package-manager' {
+            nok %src<attach-to-release>,
+                "$id: nothing we did not build gets attached as our source";
+        }
+    }
+
+    # --- binaries ------------------------------------------------ #
+    my %bins = %(%c<binaries> // {});
+    is %bins.keys.sort.List, @PLATFORMS.sort.List,
+        "$id: binaries covers exactly {@PLATFORMS}";
+    for @PLATFORMS -> Str $plat {
+        my %b = %(%bins{$plat} // {});
+        ok %b<required> ~~ Bool, "$id/$plat: required is a Bool";
+        my @pats = |(%b<patterns> // []);
+        ok @pats.all ~~ Str, "$id/$plat: patterns are strings";
+        is @pats.elems, @pats.unique.elems,
+            "$id/$plat: no duplicate patterns";
+        for @pats -> Str $pat {
+            ok $pat.chars > 0, "$id/$plat: pattern is non-empty";
+            nok $pat.contains(' '),
+                "$id/$plat: pattern '$pat' has no space (the audit "
+                ~ "splits its pattern list on whitespace)";
+        }
+        # A component cannot be required on a platform it declares no
+        # way of recognising: the gate would fail every single run.
+        if %b<required> {
+            ok @pats.elems > 0,
+                "$id/$plat: required, so declares at least one pattern";
+        }
+    }
+}
+
+# ---------------------------------------------------------------- #
+# Cross-component invariants
+# ---------------------------------------------------------------- #
+
+# Two components claiming the same pattern on the same platform would
+# make "which component is this file?" ambiguous, and the audit would
+# credit both — masking a genuinely missing library behind an
+# unrelated one's files.
+for @PLATFORMS -> Str $plat {
+    my @all;
+    for @components -> %c {
+        @all.append: |(%(%(%c<binaries> // {}){$plat} // {})<patterns> // []);
+    }
+    is @all.elems, @all.unique.elems,
+        "$plat: no pattern is claimed by two components";
+}
+
+for @UNIVERSAL -> Str $id {
+    my %c = %(@components.first(*.<id> eq $id) // {});
+    ok %c<id>:exists, "universal component '$id' is in the manifest";
+    next unless %c<id>:exists;
+    for @PLATFORMS -> Str $plat {
+        my %b = %(%(%c<binaries>){$plat} // {});
+        ok (|(%b<patterns> // [])).elems > 0 && %b<required>,
+            "$id is required and recognisable on $plat";
+    }
+}
+
+my @attached = @components.grep({ %(.<source>)<attach-to-release> });
+is @attached.map(*.<id>).sort.List, @ATTACHED.sort.List,
+    'exactly the six self-built upstreams are attached to the release';
+
+# Two components attaching the same asset name would silently
+# overwrite each other in the publish job's `release/` staging dir,
+# and the release would ship one tarball claiming to be both.
+my @asset-names = @attached.map({ %(.<source>)<filename> });
+is @asset-names.elems, @asset-names.unique.elems,
+    'attached source tarballs have distinct asset names';
+
+# Every licence text we check in must be reachable from some
+# component. An orphan is either a leftover from a component that was
+# removed — in which case it is dead weight in every pack — or a text
+# somebody added and then forgot to reference, which means a licence
+# we are silently not shipping.
+my @referenced = @components.map({ |(.<license-files> // []) }).unique.sort;
+my @on-disk    = $lic-dir.dir(test => *.ends-with('.txt'))
+                         .map(*.basename).sort;
+is @on-disk.List, @referenced.List,
+    'resources/licenses/ and the manifest reference each other exactly';
+
+# ---------------------------------------------------------------- #
+# Agreement with the rest of the repository
+# ---------------------------------------------------------------- #
+
+# NOTCURSES_FORK is the single source of truth for what notcurses we
+# build. The manifest tells users where to get its source. If those
+# two ever disagree, we are pointing people at source that did not
+# produce the binary in their hands.
+{
+    my IO::Path $pin = $root.child('NOTCURSES_FORK');
+    ok $pin.e, 'NOTCURSES_FORK exists';
+    my %pin = $pin.slurp.lines
+                  .grep({ .trim.chars && !.trim.starts-with('#') })
+                  .map({ .trim.split('=', 2) })
+                  .grep(*.elems == 2)
+                  .map({ .[0] => .[1] })
+                  .Hash;
+    my %nc  = %(@components.first(*.<id> eq 'notcurses') // {});
+    is %(%nc<source>)<ref>, %pin<sha>,
+        'manifest notcurses ref matches the NOTCURSES_FORK pin';
+    is %(%nc<source>)<url>, %pin<url>,
+        'manifest notcurses url matches the NOTCURSES_FORK pin';
+}
+
+# The distribution's own entry in its own manifest has to track
+# META6.json, or every pack ships a THIRD-PARTY.md attributing its
+# shim to a version of this dist that never built it.
+{
+    my IO::Path $meta = $root.child('META6.json');
+    ok $meta.e, 'META6.json exists';
+    my %meta = Rakudo::Internals::JSON.from-json($meta.slurp);
+    my %own  = %(@components.first(*.<id> eq 'notcurses-native') // {});
+    is %own<version>, %meta<version>,
+        'manifest notcurses-native version matches META6.json';
+}
+
+# The build scripts are the source of truth for versions; the manifest
+# only records them for the humans and for the publish job's fetch.
+# A bump applied to one and not the other would attach the source for
+# 8.1.2 next to binaries built from 8.1.3.
+{
+    my %script-for =
+        ffmpeg       => 'build-ffmpeg.sh',
+        dav1d        => 'build-libdav1d.sh',
+        libvpx       => 'build-libvpx.sh',
+        opus         => 'build-libopus.sh',
+        libdeflate   => 'build-libdeflate.sh',
+        libunistring => 'build-libunistring.sh';
+
+    for %script-for.kv -> Str $id, Str $script {
+        my IO::Path $path = $root.child('scripts').child('ci').child($script);
+        ok $path.e, "scripts/ci/$script exists";
+        next unless $path.e;
+        # First bare `VERSION='x'` assignment in the script. Anchored
+        # to the line start so a mention inside a comment cannot win.
+        my $ver = $path.slurp.lines.first(*.starts-with("VERSION="));
+        ok $ver.defined, "scripts/ci/$script pins a VERSION";
+        next unless $ver.defined;
+        my $pinned = $ver.subst(/^ 'VERSION=' /, '').trim.subst(/^ \' /, '')
+                         .subst(/ \' $/, '');
+        my %c = %(@components.first(*.<id> eq $id) // {});
+        is %c<version>, $pinned,
+            "manifest $id version matches scripts/ci/$script";
+    }
+}
+
+done-testing;

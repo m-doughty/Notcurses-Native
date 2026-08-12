@@ -3,8 +3,8 @@
 # than ffmpeg's internal AV1 decoder on 4K content. Linked into our
 # source-built ffmpeg via --enable-libdav1d so AV1 video playback in
 # notcurses matches the perf profile users get on package-managed
-# lanes (musl/macOS arm64/Windows already bundle dav1d via their
-# system ffmpeg).
+# lanes (musl/Windows still bundle dav1d via their system ffmpeg;
+# macOS arm64 source-builds it here as of the LGPL conversion).
 #
 # Honours $PREFIX (default /usr/local). Honours $MACOSX_DEPLOYMENT_TARGET
 # on macOS — meson reads it via clang's defaults so produced dylibs
@@ -14,12 +14,17 @@
 # invoking this script:
 #   * manylinux_2_28: pip install meson ninja via /opt/python/cp*/bin
 #   * macOS x86_64: brew install meson ninja (via x86_64 brew)
+#   * macOS arm64: brew install meson ninja (native brew)
 #
 # nasm is needed on x86_64 for SIMD acceleration; not used on
 # aarch64 (dav1d uses ARM-native NEON assembly there).
 set -euxo pipefail
 
-VERSION='1.4.3'
+# 1.5.4 — newest release tag upstream has cut (brew is a point
+# release behind at 1.5.3). Matters more than it used to: the macOS
+# arm64 lane now source-builds this rather than inheriting brew's
+# dav1d as a transitive dep of brew's ffmpeg.
+VERSION='1.5.4'
 URL="https://code.videolan.org/videolan/dav1d/-/archive/${VERSION}/dav1d-${VERSION}.tar.bz2"
 PREFIX="${PREFIX:-/usr/local}"
 mkdir -p "$PREFIX"

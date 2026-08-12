@@ -16,7 +16,8 @@
 # minos on every produced dylib.
 set -euxo pipefail
 
-VERSION='1.20'
+# 1.25 — current stable.
+VERSION='1.25'
 URL="https://github.com/ebiggers/libdeflate/releases/download/v${VERSION}/libdeflate-${VERSION}.tar.gz"
 PREFIX="${PREFIX:-/usr/local}"
 mkdir -p "$PREFIX"

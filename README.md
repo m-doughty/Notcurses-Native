@@ -362,6 +362,17 @@ Every prebuilt bundles libavcodec configured with:
 
 Image formats (PNG, JPEG, GIF, WebP, TIFF, BMP, etc.) and the other common video / audio codecs (H.264, HEVC, MPEG-4, MP3, AAC, Vorbis, FLAC, …) use ffmpeg's internal decoders — same code path on every platform.
 
+Third-party licensing
+---------------------
+
+A prebuilt archive is a binary redistribution, so every archive ships its own `THIRD-PARTY.md` and a `LICENSES/` directory next to the libraries. Between them they name every component in that particular archive, its version, its SPDX licence, its copyright notice, the exact upstream source it was built from (tarball URL plus SHA-256, or a commit SHA), and the full text of every licence involved.
+
+Both are generated from `resources/third-party.json` in this repository, which doubles as a release gate: every file in an archive must match a component listed there, and every component listed for that platform must be present, or the build lane fails. A dependency cannot arrive in a shipped archive without somebody having read its licence first.
+
+The bundled ffmpeg is a decoder-only build with neither `--enable-gpl` nor `--enable-nonfree`, so it is conveyed under the LGPL v2.1 or later. It and GNU libunistring are the two copyleft libraries in the archives; the exact source tarballs both were built from are attached to every binary release alongside the archives, and are covered by the same `checksums.txt`. Everything else is permissive (Apache-2.0, BSD-2, BSD-3, MIT, X11-style, Zlib) apart from the MSYS2 toolchain runtimes the Windows archives carry, which are listed individually in their `THIRD-PARTY.md`.
+
+Platform C runtimes — glibc, musl, Apple's `/usr/lib` and frameworks, Windows' own DLLs — are dynamically linked against whatever the user's machine provides and are never bundled, so they are not redistributed here at all.
+
 Source-build fallback
 ---------------------
 

@@ -16,18 +16,84 @@
 # musl ABI is stable in the 1.2.x series — building on alpine:3.20
 # (musl 1.2.5) produces binaries that load on any musl 1.2.x runtime
 # (Alpine 3.13+, Postmarket OS, Void, Adelie).
+#
+# Why the codec stack is source-built here rather than `apk add
+# ffmpeg-dev`: Alpine's ffmpeg is a GPL build. Its libavcodec has
+# DT_NEEDEDs on libx264, libx265, libSvtAv1Enc, libmp3lame and
+# libxvidcore, and `avutil_license()` reports "GPL version 3 or
+# later" — so bundle-elf.sh's ldd walk dragged that entire encoder
+# chain into the archive we publish, making the two musl prebuilts
+# GPL-encumbered (for a library that only ever decodes) and much
+# fatter than they needed to be. Building the same LGPL-2.1,
+# decoder-only ffmpeg the glibc and macOS lanes already use puts
+# every shipped lane on identical codec surface.
+# build-ffmpeg.sh asserts the LGPL license line at configure time so
+# this can't silently regress.
+#
+# libdeflate is source-built for the same reason the glibc lane does
+# it — not licensing (it's MIT), but so that all four lanes ship the
+# same pinned version rather than whatever the distro froze. Alpine
+# 3.20's is 1.20; build-libdeflate.sh pins 1.25.
+#
+# Cache contract: CACHE_DIR (defaulting to /work/_ci-cache/alpine-3.20)
+# may already contain a populated lib/ + include/ from a previous
+# run's actions/cache restore. If so, skip the ~15-min codec source
+# build. Otherwise build + populate. Same contract as
+# build-linux-glibc.sh.
 
 set -euxo pipefail
+
+CACHE_DIR="${CACHE_DIR:-/work/_ci-cache/alpine-3.20}"
+mkdir -p "$CACHE_DIR"
 
 # Alpine doesn't pre-install ANY toolchain — bash isn't even there
 # until we apk add it. The docker-run invocation can use sh as the
 # entry shell, but we want bash for the build to match the script
 # header.
-apk add --no-cache \
-    bash coreutils findutils tar git \
-    cmake make pkgconf patchelf \
-    gcc g++ musl-dev linux-headers \
-    ffmpeg-dev ncurses-dev libunistring-dev libdeflate-dev
+#
+#   * curl / xz / bzip2: the source-build scripts fetch with
+#     `curl -fSL` and unpack .tar.xz (ffmpeg) + .tar.bz2 (dav1d).
+#     Alpine's base image has neither curl nor GNU tar, and GNU tar
+#     shells out to the xz / bzip2 binaries for those two.
+#   * meson + ninja: libdav1d's build system. Alpine's `ninja`
+#     package is samurai, a ninja-compatible reimplementation
+#     providing /usr/bin/ninja — which is what Alpine builds dav1d
+#     with itself, and what meson drives here.
+#   * perl: libvpx's configure/build generates its assembly
+#     offsets + version header through perl scripts.
+#   * diffutils: libvpx's configure probes `diff --version` and
+#     hard-fails ("diff missing: Try installing diffutils via your
+#     package manager.") on busybox's applet, which doesn't
+#     implement --version. It's a real dependency, not just a
+#     version probe — the build diffs generated asm offsets.
+#   * zlib-dev: ffmpeg's png decoder has a hard `zlib` dependency,
+#     so --enable-decoder=png fails configure without the headers.
+#     Came in transitively via ffmpeg-dev before; now explicit.
+#
+# libunistring-dev is deliberately absent. It is LGPL and it ships
+# inside the pack, so we have to be able to hand a user the exact
+# corresponding source for the binary they got — which an apk package
+# version that moves under us cannot do. It is source-built into
+# $CACHE_DIR below from a pinned, SHA-256-recorded tarball.
+# ncurses-dev stays: MIT-style X11, no source-conveyance duty, and
+# its terminfo-directory configuration makes a source build fiddly.
+APK_PKGS=(
+    bash coreutils findutils diffutils tar git
+    curl xz bzip2
+    cmake make pkgconf patchelf
+    meson ninja perl
+    gcc g++ musl-dev linux-headers
+    zlib-dev ncurses-dev
+)
+# nasm / yasm assemble x86 SIMD and nothing else — dav1d, libvpx and
+# ffmpeg all use ARM-native GAS assembly on aarch64, which gcc
+# handles. Installing them on the aarch64 lane would be asking for
+# packages that lane can't use; build-ffmpeg.sh's own nasm gate is
+# x86-only for the same reason.
+case "$(uname -m)" in
+    x86_64|amd64|i[3-6]86) APK_PKGS+=(nasm yasm) ;;
+esac
+apk add --no-cache "${APK_PKGS[@]}"
 
 # Fetch notcurses source from the pinned NOTCURSES_FORK SHA. Cache
 # under /work/_ci-cache so actions/cache on the host can persist
@@ -37,9 +103,60 @@ export NOTCURSES_SRC_CACHE="${NOTCURSES_SRC_CACHE:-/work/_ci-cache/notcurses-sou
 NOTCURSES_SRC_DIR=$(bash scripts/ci/fetch-notcurses-source.sh)
 export NOTCURSES_SRC_DIR
 cmake --version
+meson --version
+ninja --version
 # No `ldd --version` on musl; the loader prints its info if invoked
 # directly, but only as a side-effect.
 /lib/ld-musl-*.so.1 --version 2>&1 | head -2 || true
+
+# Point every lookup mechanism at the codec cache prefix. Same five
+# variables the glibc lane exports, for the same reasons:
+#   * PKG_CONFIG_PATH — how ffmpeg's configure finds dav1d/vpx/opus,
+#     and how notcurses' CMakeLists finds libav*.
+#   * LD_LIBRARY_PATH — so the linker-produced binaries (and
+#     bundle-elf.sh's ldd walk) can resolve the .so files before
+#     they've been copied into bundle/.
+#   * CMAKE_PREFIX_PATH — CMake's find_path / find_library /
+#     find_package don't read PKG_CONFIG_PATH, and notcurses locates
+#     libdeflate via a raw find_path, so without this it bails with
+#     "Couldn't find libdeflate.h" despite libdeflate sitting in
+#     $CACHE_DIR/include.
+#   * CPATH / LIBRARY_PATH — defensive, for the places notcurses'
+#     build invokes cc/ld outside CMake's find_X-managed flag set
+#     (the perf-shim compile at the bottom of this script is exactly
+#     that case).
+export PKG_CONFIG_PATH="$CACHE_DIR/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+export LD_LIBRARY_PATH="$CACHE_DIR/lib:${LD_LIBRARY_PATH:-}"
+export CMAKE_PREFIX_PATH="$CACHE_DIR:${CMAKE_PREFIX_PATH:-}"
+export CPATH="$CACHE_DIR/include:${CPATH:-}"
+export LIBRARY_PATH="$CACHE_DIR/lib:${LIBRARY_PATH:-}"
+
+# Cache-hit detection: ffmpeg's pkg-config file is the cheapest
+# all-or-nothing probe. ffmpeg is the LAST thing built, so if it's
+# present every prerequisite (libdeflate, libdav1d, libvpx, libopus)
+# is too.
+if [[ -f "$CACHE_DIR/lib/pkgconfig/libavcodec.pc" ]]; then
+  echo "✅ Cache hit — skipping libunistring / libdeflate / libdav1d / libvpx / libopus / ffmpeg builds."
+else
+  # Codec libs MUST land before ffmpeg — ffmpeg's configure probes
+  # them via pkg-config + --enable-libfoo to wire its libfoo-backed
+  # decoder dispatches. libunistring is independent of all of them
+  # (notcurses links it directly, ffmpeg never sees it); it goes
+  # first only so the cache-hit probe below — which keys on ffmpeg,
+  # the last thing built — still implies everything else is present.
+  echo "⏳ Cache miss — building accelerated codec stack from source (~15-20 min first run)."
+  PREFIX="$CACHE_DIR" bash scripts/ci/build-libunistring.sh
+  PREFIX="$CACHE_DIR" bash scripts/ci/build-libdeflate.sh
+  PREFIX="$CACHE_DIR" bash scripts/ci/build-libdav1d.sh
+  PREFIX="$CACHE_DIR" bash scripts/ci/build-libvpx.sh
+  PREFIX="$CACHE_DIR" bash scripts/ci/build-libopus.sh
+  PREFIX="$CACHE_DIR" bash scripts/ci/build-ffmpeg.sh
+fi
+
+# Verify deps resolve before kicking off notcurses build.
+pkg-config --modversion libdeflate
+pkg-config --modversion dav1d vpx opus
+pkg-config --modversion libavcodec libavformat libavutil libswscale libswresample
 
 CMAKE_FLAGS=(
   -DUSE_MULTIMEDIA=ffmpeg
@@ -57,6 +174,27 @@ CMAKE_FLAGS=(
   cd "$NOTCURSES_SRC_DIR"
   mkdir -p build
   cmake -B build -S . "${CMAKE_FLAGS[@]}"
+  # Assert notcurses linked OUR libunistring, not a stray system one.
+  # `find_library(unistring unistring REQUIRED)` searches
+  # CMAKE_PREFIX_PATH first and /usr/lib after, and alpine can still
+  # acquire a libunistring.so as a transitive apk dependency of
+  # something else — in which case cmake would happily link that one
+  # while bundle-elf.sh copies whichever the runtime loader picks.
+  # Same class of check as the Windows lane's DEFLATE:FILEPATH
+  # assertion. awk-with-exit rather than `grep | head -1`: head
+  # closing the pipe SIGPIPEs its producer and `set -o pipefail`
+  # turns that into a mystery failure.
+  unistring_lib=$(awk -F= '/^unistring:FILEPATH=/{print $2; exit}' build/CMakeCache.txt)
+  case "$unistring_lib" in
+    "$CACHE_DIR"/*)
+      echo "ok: unistring resolved to $unistring_lib" ;;
+    *)
+      echo "❌ find_library(unistring) resolved to '$unistring_lib',"
+      echo "   which is outside the source-built prefix '$CACHE_DIR'."
+      echo "   The pack would ship a libunistring we never built,"
+      echo "   pinned, or recorded a source tarball for."
+      exit 1 ;;
+  esac
   cmake --build build -j"$(nproc)"
 )
 
@@ -90,8 +228,10 @@ nm -g --defined-only bundle/libnotcurses_native_shim.so \
 sha256sum src/notcurses_native_shim.c | awk '{print $1}' \
   > bundle/libnotcurses_native_shim.so.srchash
 
-# Release gate: confirm bundled libavcodec has the required
-# accelerated decoders (libdav1d, libvpx_vp8, libvpx_vp9, libopus).
-# Alpine's ffmpeg-dev package usually has all of them, but a future
-# apk update could drop a feature; the probe blocks publish if so.
+# Release gate: confirm bundled libavcodec actually got linked
+# against libdav1d / libvpx / libopus during ffmpeg's configure, and
+# that PNG / JPEG / BMP really decode. Catches the regression class
+# where pkg-config silently failed and ffmpeg fell back to its
+# internal decoders. If the probe fails, the build job fails, and
+# release.yml's `needs:` chain refuses to publish this artefact.
 bash scripts/ci/run-codec-probe.sh

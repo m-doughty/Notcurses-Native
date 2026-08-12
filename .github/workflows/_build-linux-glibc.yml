@@ -14,9 +14,12 @@
 # about, and gives us headroom if GHA bumps node again.
 #
 # RHEL 8's repos don't ship modern ffmpeg / libdeflate, so we
-# source-build both inside the container. ncurses + libunistring
-# are available via dnf. cmake comes from pip (RHEL 8 ships 3.20,
-# notcurses needs 3.21+).
+# source-build both inside the container, along with libunistring —
+# that one for licensing rather than availability: it is LGPL, it
+# ships in the pack, and a dnf package version we can't pin isn't a
+# corresponding source we can still produce later. ncurses is still
+# dnf's (MIT-style X11, no source duty). cmake comes from pip
+# (RHEL 8 ships 3.20, notcurses needs 3.21+).
 
 name: _build-linux-glibc
 
@@ -53,13 +56,27 @@ jobs:
       - name: Cache notcurses source checkout (per-SHA)
         uses: actions/cache@v4
         with:
-          path: _ci-cache/notcurses-source
+          # The checkout only — NOT the build tree cmake creates
+          # inside it. This key is shared by all four Linux lanes
+          # (glibc/musl x x86_64/aarch64): whichever finishes first
+          # saves the cache and the rest restore it on the next run.
+          # A `build/` in there would hand a manylinux-x86_64
+          # CMakeCache, and its object files, to an alpine-aarch64
+          # configure — same /work path, so cmake would not even
+          # notice the source dir had moved. Reproduced locally by
+          # accident while proving out this chunk, which is how it
+          # was found; in CI it would have surfaced as an
+          # inexplicable cross-lane build failure long after the
+          # commit that caused it.
+          path: |
+            _ci-cache/notcurses-source
+            !_ci-cache/notcurses-source/*/build
           # Pin-keyed so bumping NOTCURSES_FORK invalidates the cache
           # automatically. No fallback restore-keys — a stale half-
           # checkout is worse than re-fetching (~5s shallow clone).
           key: notcurses-source-${{ steps.ncpin.outputs.sha }}
 
-      - name: Cache source-built ffmpeg + libdeflate
+      - name: Cache source-built codec + ffmpeg chain
         uses: actions/cache@v4
         with:
           # Cached path is workspace-relative so the docker bind
@@ -72,7 +89,7 @@ jobs:
           #     bump or config change invalidates the cache.
           # No fallback restore-keys — partial caches would corrupt
           # the install tree mid-pkgconfig.
-          key: vendored-deps-manylinux_2_28-${{ inputs.arch }}-${{ hashFiles('scripts/ci/build-ffmpeg.sh', 'scripts/ci/build-libdeflate.sh', 'scripts/ci/build-libdav1d.sh', 'scripts/ci/build-libvpx.sh', 'scripts/ci/build-libopus.sh') }}
+          key: vendored-deps-manylinux_2_28-${{ inputs.arch }}-${{ hashFiles('scripts/ci/build-ffmpeg.sh', 'scripts/ci/build-libdeflate.sh', 'scripts/ci/build-libdav1d.sh', 'scripts/ci/build-libvpx.sh', 'scripts/ci/build-libopus.sh', 'scripts/ci/build-libunistring.sh') }}
 
       - name: Pull build image
         run: docker pull quay.io/pypa/manylinux_2_28_${{ inputs.arch }}
@@ -94,3 +111,4 @@ jobs:
         with:
           artifact-name: ${{ inputs.artifact-name }}
           format: tar.gz
+          platform: linux

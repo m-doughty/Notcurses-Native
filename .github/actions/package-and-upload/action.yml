@@ -1,8 +1,16 @@
 name: package-and-upload
 description: >-
-  Tar/zip up `bundle/` into a platform-specific archive, compute its
-  SHA256, stage everything under `artefacts/`, and upload as a GHA
-  artifact for the release-publish job to collect.
+  Write the third-party licensing kit into `bundle/`, gate the result
+  against `resources/third-party.json`, then tar/zip `bundle/` into a
+  platform-specific archive, compute its SHA256, stage everything
+  under `artefacts/`, and upload as a GHA artifact for the
+  release-publish job to collect.
+
+  The licensing steps live here rather than in each build workflow on
+  purpose: this action is the single choke point every lane goes
+  through on its way to producing an archive, so a new lane cannot be
+  added that ships an unaudited pack, and a lane cannot be edited to
+  skip the gate without also losing its upload.
 
 inputs:
   artifact-name:
@@ -10,6 +18,13 @@ inputs:
       Archive basename without extension, e.g. `notcurses-macos-arm64`
       or `notcurses-linux-x86_64-musl`. Also used as the
       actions/upload-artifact name.
+    required: true
+  platform:
+    description: >-
+      `macos`, `linux` or `windows` — which set of basename patterns in
+      resources/third-party.json describes this pack. Both Linux lanes
+      pass `linux`: glibc and musl packs have the same file inventory
+      because neither bundles a libc.
     required: true
   format:
     description: '`tar.gz` (Unix) or `zip` (Windows).'
@@ -30,6 +45,26 @@ inputs:
 runs:
   using: composite
   steps:
+    # Order is load-bearing: the kit is written INTO bundle/ first, so
+    # the audit that follows sees exactly the file set the archive will
+    # contain — including THIRD-PARTY.md and LICENSES/ themselves,
+    # which the manifest accounts for under the notcurses-native
+    # component. Auditing before generation would leave the two
+    # documents unchecked, which is the one part of a licensing kit
+    # nobody would notice going stale.
+    - name: Write third-party licensing kit into the bundle
+      shell: ${{ inputs.shell }}
+      run: bash scripts/ci/emit-third-party-kit.sh '${{ inputs.platform }}' bundle
+
+    # Release gate. Fails the lane if the pack contains a file no
+    # manifest component describes (we would be redistributing a
+    # binary whose licence nobody vetted) or is missing a component
+    # the manifest promises is there (the pack is broken, or the
+    # manifest has started lying). See the header of the script.
+    - name: Audit bundle against the third-party manifest (release gate)
+      shell: ${{ inputs.shell }}
+      run: bash scripts/ci/audit-third-party.sh '${{ inputs.platform }}' bundle
+
     - name: Package archive (tar.gz)
       if: inputs.format == 'tar.gz'
       shell: ${{ inputs.shell }}

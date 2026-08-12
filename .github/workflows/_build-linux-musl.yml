@@ -11,9 +11,16 @@
 # is to run JS actions on the native ubuntu-22.04 / -arm runner and
 # only invoke the alpine container for the build itself.
 #
-# Alpine 3.20 ships every dep we need as apk packages, so this lane
-# is cheaper than the manylinux2014 glibc lane (no ffmpeg source
-# build).
+# The toolchain and the leaf libraries (ncurses, zlib) come from apk,
+# but the codec stack — libdeflate, libdav1d, libvpx, libopus,
+# ffmpeg — plus libunistring is source-built inside the container
+# exactly as the glibc lane does it. (libunistring for a licensing
+# reason rather than a codec one: it is LGPL, it ships in the pack,
+# and an apk version that moves under us isn't a corresponding source
+# we can still produce later.) Alpine's `ffmpeg-dev` is a GPL build
+# (libavcodec DT_NEEDEDs x264, x265, SvtAv1Enc, mp3lame, xvidcore),
+# and bundle-elf.sh's ldd walk pulled that whole encoder chain into
+# the published archive. See the header of build-linux-musl.sh.
 
 name: _build-linux-musl
 
@@ -48,17 +55,54 @@ jobs:
       - name: Cache notcurses source checkout (per-SHA)
         uses: actions/cache@v4
         with:
-          path: _ci-cache/notcurses-source
+          # The checkout only — NOT the build tree cmake creates
+          # inside it. This key is shared by all four Linux lanes
+          # (glibc/musl x x86_64/aarch64): whichever finishes first
+          # saves the cache and the rest restore it on the next run.
+          # A `build/` in there would hand a manylinux-x86_64
+          # CMakeCache, and its object files, to an alpine-aarch64
+          # configure — same /work path, so cmake would not even
+          # notice the source dir had moved. Reproduced locally by
+          # accident while proving out this chunk, which is how it
+          # was found; in CI it would have surfaced as an
+          # inexplicable cross-lane build failure long after the
+          # commit that caused it.
+          path: |
+            _ci-cache/notcurses-source
+            !_ci-cache/notcurses-source/*/build
+          # Pin-keyed so bumping NOTCURSES_FORK invalidates the cache
+          # automatically. No fallback restore-keys — a stale half-
+          # checkout is worse than re-fetching (~5s shallow clone).
           key: notcurses-source-${{ steps.ncpin.outputs.sha }}
+
+      - name: Cache source-built codec stack
+        uses: actions/cache@v4
+        with:
+          # Cached path is workspace-relative so the docker bind
+          # mount picks it up automatically. The build script reads
+          # it via $CACHE_DIR.
+          path: _ci-cache/alpine-3.20-${{ inputs.arch }}
+          # Key on:
+          #   * the alpine tag + arch (image baseline — musl version,
+          #     gcc version, and the arch the .so files are built for)
+          #   * hashes of every source-build script so a version bump
+          #     or config change invalidates the cache.
+          # No fallback restore-keys — partial caches would corrupt
+          # the install tree mid-pkgconfig.
+          key: vendored-deps-alpine-3.20-${{ inputs.arch }}-${{ hashFiles('scripts/ci/build-ffmpeg.sh', 'scripts/ci/build-libdeflate.sh', 'scripts/ci/build-libdav1d.sh', 'scripts/ci/build-libvpx.sh', 'scripts/ci/build-libopus.sh', 'scripts/ci/build-libunistring.sh') }}
 
       - name: Pull build image
         run: docker pull alpine:3.20
 
       - name: Build + bundle in alpine:3.20 container
         run: |
+          # $PWD on the runner is bind-mounted to /work in the
+          # container — so checkout's output AND both cache dirs are
+          # visible to the build script.
           docker run --rm \
             -v "$PWD:/work" \
             -w /work \
+            -e CACHE_DIR=/work/_ci-cache/alpine-3.20-${{ inputs.arch }} \
             alpine:3.20 \
             sh -c 'apk add --no-cache bash >/dev/null && bash scripts/ci/build-linux-musl.sh'
 
@@ -67,3 +111,4 @@ jobs:
         with:
           artifact-name: ${{ inputs.artifact-name }}
           format: tar.gz
+          platform: linux
