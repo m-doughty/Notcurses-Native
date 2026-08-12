@@ -2,6 +2,20 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.4.4  2026-08-12T10:43:56+01:00
+    - Fix `Build.rakumod`'s `!sha256` unconditionally shelling out to
+      `shasum -a 256` on every POSIX platform. manylinux/EL-minimal
+      containers ship `sha256sum` (coreutils) but no `shasum` (a Perl
+      tool) — the run failed, the digest came back undefined, and the
+      caller reported "Checksum mismatch ... got unknown", rejecting
+      a perfectly valid prebuilt pack and falling back to a source
+      compile that then dies for want of ncursesw/libunistring. POSIX
+      now tries `sha256sum` first (universal on Linux), then
+      `shasum -a 256` (macOS/BSD); either tool missing, unspawnable,
+      non-zero-exit, or producing no 64-char lowercase-hex digest
+      falls through to the next. The mismatch note now also names
+      which tool(s) were tried when the digest came back unknown.
+
 0.4.3  2026-08-11T15:36:14+01:00
     - Bump BINARY_TAG to binaries-notcurses-3.0.17-r9 — first pack
       that ships the shim .srchash sidecars.

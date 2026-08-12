@@ -295,8 +295,13 @@ class Build {
 
         my Str $actual = self!sha256($cached);
         unless $actual.defined && $actual.lc eq $expected.lc {
+            my Str $tried = $actual.defined
+                ?? ''
+                !! ($*DISTRO.is-win
+                        ?? ' (tried: certutil)'
+                        !! ' (tried: sha256sum, shasum)');
             note "Checksum mismatch for $artifact "
-                ~ "(expected $expected, got {$actual // 'unknown'}).";
+                ~ "(expected $expected, got {$actual // 'unknown'}$tried).";
             $cached.unlink;
             return False;
         }
@@ -425,6 +430,30 @@ class Build {
         Str;
     }
 
+    #| Compute a file's SHA-256 hex digest, shelling out to whatever
+    #| the platform actually ships. On POSIX this is a fallback chain,
+    #| not a single tool — the platform matrix is:
+    #|
+    #|   Linux (incl. minimal containers: manylinux, EL, Alpine)
+    #|     → `sha256sum` only (GNU/BusyBox coreutils; no `shasum`
+    #|       binary on a stock manylinux_2_28 image).
+    #|   macOS / BSD
+    #|     → `shasum -a 256` only (Perl tool from the base install;
+    #|       no `sha256sum` unless coreutils was brew-installed).
+    #|
+    #| `sha256sum` is tried first since it's the more common case in
+    #| CI (Linux runners/containers); a tool that's missing, un-
+    #| spawnable, exits non-zero, or produces no recognizable digest
+    #| falls through to the next rather than aborting the chain. Both
+    #| exhausted → Str (undefined) — the caller's checksum-mismatch
+    #| report already treats that as "unknown" and rejects the
+    #| prebuilt, which is the correct fail-closed behaviour.
+    #|
+    #| The digest is parsed as the first 64-char lowercase-hex run in
+    #| the first output line, rather than assuming a fixed column
+    #| layout — GNU coreutils prefixes a bare `\` fused to the hex
+    #| when the input path contains a backslash (irrelevant on POSIX
+    #| paths, but harmless to tolerate rather than choke on).
     method !sha256(IO::Path $file --> Str) {
         if $*DISTRO.is-win {
             my $proc = run 'certutil', '-hashfile', $file.Str, 'SHA256',
@@ -437,10 +466,21 @@ class Build {
             }
             return Str;
         }
-        my $proc = run 'shasum', '-a', '256', $file.Str, :out, :err;
-        my $out = $proc.out.slurp(:close);
-        $proc.err.slurp(:close);
-        $out.words.head;
+
+        for ('sha256sum', $file.Str), ('shasum', '-a', '256', $file.Str)
+            -> @cmd
+        {
+            my $proc = try run |@cmd, :out, :err;
+            next without $proc;
+            my Str $out = $proc.out.slurp(:close);
+            $proc.err.slurp(:close);
+            next unless $proc.exitcode == 0;
+            my Str $first = $out.lines.head // '';
+            if $first ~~ / (<[0..9a..f]> ** 64) / {
+                return ~$0;
+            }
+        }
+        Str;
     }
 
     # --- Source compile path (CMake, ffmpeg, etc.) ----------------------
