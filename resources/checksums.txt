@@ -24,17 +24,18 @@
 # @loader_path (macOS) / $ORIGIN (Linux) / sibling DLL layout
 # (Windows) so they load from the same resources/lib/ directory.
 
+1f8a964675d3c176d8ce5a34f8a7aed18f2411bcf90c40789a7590fcd6713132  notcurses-windows-x86_64.zip
+274c2c9eb25fab9d5868ec85dadba64d2de78c7b4d2bdc18603511512f0b5fc4  notcurses-linux-aarch64-glibc.tar.gz
 2abfb0c89212e6e4733a54e0ae509ec00a5b845a6360946f918806e14aedb011  dav1d-1.5.4.tar.bz2
-448169d5bf57d3c4952e9c5e5eb3f51f9d9b86dc412b1d4f3d1a0be91764ed97  notcurses-linux-aarch64-glibc.tar.gz
-5a87dbe6f749b9a92553976ca70b30435ca63363188342832ed99d3604fe22bd  notcurses-windows-x86_64.zip
+5fe0dcc2360706aba7b29ef408b696e09add920c2fb34950f2c3422075b340ad  notcurses-linux-x86_64-musl.tar.gz
+62696cc960d85d77ed6608305809aa16f07030c06248b3564ea89f16ed831bd5  notcurses-macos-arm64.tar.gz
 6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1  opus-1.6.1.tar.gz
 7a479a3c66b9f5d5542a4c6a1b7d3768a983b1e5c14c60a9396edc9b649e015c  libvpx-1.16.0.tar.gz
-7ac0ae86d028876734fa67bc96390d117a74eb54ad825a776b2e15e55c02b38e  notcurses-linux-x86_64-musl.tar.gz
+854439331d5ead3031a6edcc4ef091f3206e1e23dc92c8c10d12c93d29867072  notcurses-linux-aarch64-musl.tar.gz
+88dd96a8c0464eca144fc791ae60cd31cd8ee78321e67397e25fc095c4a19aa6  libiconv-1.19.tar.gz
 9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7  ffmpeg-n8.1.2.tar.gz
-a550846c95dc75741b00ac4f70233d744e31ad24f0a3c706f1701099428b117b  notcurses-linux-aarch64-musl.tar.gz
-af5728f1c199a011bc44af7177bb6c6dd9c18a6e8210647efd9d9a21c4579733  notcurses-linux-x86_64-glibc.tar.gz
-b395be043e8e033d7516fd2509e2a90b6bc2da62efe7f2c0ee2ddf2b101e1b9c  notcurses-macos-x86_64.tar.gz
+b332ebeb4880baabfdfed022c07caaa7ef91d22b28acc7a152aa2ab5ca8aaf4d  notcurses-windows-arm64.zip
+c09f3325f0d2983eddd18db5e35516b0c5268c0d2ac86c434e6a3fb87215e252  notcurses-macos-x86_64.tar.gz
 e82664b170064e62331962126b259d452d53b227bb4a93ab20040d846fec01d8  libunistring-1.4.2.tar.gz
-efde5348e269daf352431afee389d81644fe5d9733f1f5f2e325d4fe8cffd7cf  notcurses-macos-arm64.tar.gz
-fad7b4f1168455cc1c7676170568e424e40e516b80bf0f69f3de0f31a6acce06  notcurses-windows-arm64.zip
+fd1b3f91cacb8099185952f32c270f76b28abd4c157793a0115f1cb13ad97540  notcurses-linux-x86_64-glibc.tar.gz
 fed5cd22f00f30cc4c2e5329f94e2b8a901df9fa45ee255cb70e2b0b42344477  libdeflate-1.25.tar.gz

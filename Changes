@@ -2,6 +2,413 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.5.0  2026-08-12T18:42:31+01:00
+    - Both Windows lanes source-build GNU libiconv 1.19 instead of
+      taking MSYS2's. It is the last copyleft library in the packs
+      that we could not point a user at the exact source for: LGPL-2.1,
+      shipped inside the .zip, and sourced from a pacman package whose
+      version moves under us and is garbage-collected off the mirrors
+      — the identical argument that moved libunistring onto the
+      self-built chain. A PE import scan of both published r10 packs
+      settled who actually needs it: avcodec-62.dll (our ffmpeg's
+      configure autodetects iconv) and libunistring-5.dll (its
+      AM_ICONV takes an external libiconv on any platform whose libc
+      has none), and nothing else — ncursesw included. Both importers
+      are libraries we build, so this is a self-contained change
+      rather than an attempt to out-run the toolchain's package
+      closure. The pinned tarball and its SHA-256 are in
+      resources/third-party.json and are now attached to every binary
+      release like the other six.
+    - MSYS2's libiconv cannot be uninstalled — the toolchain group
+      depends on it — and its DLL has the identical basename, so
+      "ours, not theirs" is enforced three times rather than assumed.
+      build-libiconv.sh runs before libunistring and ffmpeg so the
+      prefix is populated when they configure; libunistring gets
+      --with-libiconv-prefix and ffmpeg gets --extra-cflags/-ldflags
+      pointing at that prefix (iconv ships no .pc file, so
+      PKG_CONFIG_PATH cannot steer either of them); and a new step
+      re-hashes every bundled DLL against the one the lane staged,
+      failing the release if they differ. Both configure changes are
+      conditional on an iconv.h actually existing in the prefix, so
+      the Linux and macOS lanes — which take iconv from libc — build
+      exactly as before.
+    - The Windows packs stop shipping four DLLs that nothing in them
+      loads. A PE import-reachability closure from
+      libnotcurses{,-core,-ffi}.dll over the published r10 packs found
+      libintl-8.dll (both lanes) imported by nothing at all;
+      libstdc++-6.dll and libgomp-1.dll (UCRT64) likewise — notcurses
+      builds -DUSE_CXX=OFF and a decoder-only ffmpeg uses no OpenMP —
+      and libgcc_s_seh-1.dll imported only by libstdc++, i.e.
+      reachable only from another orphan. Every one of them arrived
+      because bundle-dll's belt-and-braces sweep list named it, which
+      is a list that copies things whether or not anything needs them.
+      libintl was the expensive one: LGPL, package-manager sourced, no
+      producible corresponding source, and no caller — the whole cost
+      of a compliance obligation for none of the benefit. It is also
+      why build-libiconv.sh configures --disable-nls, since libiconv
+      would otherwise link libintl straight back in.
+    - New release gate behind that: bundle-dll now fails the lane on
+      any bundled DLL that nothing in the pack imports. The sweep list
+      exists to survive an ldd that lies, so it will always
+      over-collect at the margin; this is the counterweight, and it is
+      general rather than a deny-list of four names. gcc-runtime keeps
+      its manifest entry (the licences are the reason the decision
+      went the way it did) but with empty pattern lists, so a
+      reappearance now fails the third-party audit as an unlisted file
+      too. What is left of GCC's runtime in the packs is the part gcc
+      links statically into the UCRT64 DLLs, which is exactly what the
+      GCC Runtime Library Exception exists to permit.
+    - The macOS lanes gained the same "is this really ours?" check,
+      by LC_UUID rather than by hash: bundle-macos rewrites install
+      names, strips and re-signs every dylib it stages, so the bytes
+      cannot match by design, while LC_UUID survives all three. It
+      matters most for libunistring, which the macos-14 runner also
+      has under brew as a transitive dependency of several preinstalled
+      formulae — brew's bottle is 1.4.2 today, the same version we
+      pin, so shipping it would even produce a true THIRD-PARTY.md,
+      which is precisely the kind of coincidence that stops being true
+      without anyone noticing.
+    - opus builds with --disable-rtcd on Windows ARM64. opus's ARM
+      runtime CPU detection has backends for Linux, Apple and MSVC —
+      and none for mingw/clang on aarch64, where celt/arm/armcpu.c
+      stops the build with an #error naming this exact flag. Safe
+      rather than a compromise: NEON is architecturally baseline on
+      aarch64, so the compile-time paths are always valid; the loss is
+      runtime dispatch to optional dotprod/i8mm extensions, which
+      matters to nobody decoding audio in a terminal. Proven on real
+      aarch64 (alpine container): the flag removes every armcpu
+      compile unit and the library builds clean.
+    - build-ffmpeg.sh's architecture assertion reads config.h's exact
+      ARCH_* macros instead of the configure summary's ARCH line. The
+      summary normalises to the architecture family — an x86_64 build
+      prints "ARCH x86", identical to i686 — so the assertion could
+      never pass on UCRT64 and failed the first r10 dispatch against a
+      correctly-configured build; aarch64 survives normalisation
+      unchanged, so the arm lanes would have passed by luck rather
+      than by checking anything. config.h defines ARCH_X86_64 /
+      ARCH_AARCH64 exactly (verified against a real 8.1.2 configure),
+      which is the question the assertion was always trying to ask.
+    - The macos-arm64 release lane source-builds ffmpeg instead of
+      installing brew's. brew's ffmpeg formula is a GPLv3 build
+      (--enable-gpl, plus x264, x265, SvtAv1Enc and mp3lame), and
+      dylibbundler dutifully pulled that whole encoder chain into the
+      arm64 archive — a GPL-encumbered and considerably fatter bundle
+      for a library that never encodes anything. That lane now runs
+      the same build-{libdav1d,libvpx,libopus,ffmpeg}.sh chain
+      macos-x86_64 and the Linux lanes already used: LGPL-2.1,
+      decoder-only, and a bundle whose load commands name nothing but
+      our own codec libs and Apple system frameworks. ncurses is the
+      one library still taken from brew there — arm64 bottles target
+      11.0+, which already matches that lane's floor, and X11-style
+      licensing asks nothing of us beyond the notice we ship.
+      libunistring and libdeflate left that list later in this same
+      release; see their entries below.
+    - build-ffmpeg.sh now asserts what it built. configure's output
+      is tee'd, and the script fails if ffmpeg reports anything other
+      than "License: LGPL version 2.1 or later", or if any
+      --enable-decoder / -demuxer / -parser / -protocol name "did not
+      match anything". ffmpeg only *warns* on an unmatched component,
+      so a codec renamed out from under us would otherwise ship as a
+      silently missing decoder — a build that succeeds and an archive
+      that can't open the file.
+    - Which immediately caught one: the Truevision TGA decoder is
+      named `targa`; `tga` is only ever the file extension. TGA has
+      been listed in the decoder allowlist — and absent from every
+      bundle we ever shipped — for as long as the allowlist has
+      existed. Now spelled correctly, and now actually present.
+    - Pinned versions: ffmpeg 6.1.2 → 8.1.2 (newest 8.1 point release;
+      staying a series behind 9.0 deliberately), dav1d 1.4.3 → 1.5.4,
+      libvpx 1.14.1 → 1.16.0, opus 1.5.2 → 1.6.1, libdeflate 1.20 →
+      1.25. opus now comes from downloads.xiph.org: xiph stopped
+      attaching dist tarballs to their GitHub releases after 1.5.2,
+      and the auto-generated tag tarball has no `configure` in it.
+    - build-ffmpeg.sh also pins off the [autodetect] platform
+      libraries — xlib, libxcb, sdl2, vulkan, libdrm. Every one of
+      them serves a component we'd already switched off, but
+      autodetection still put them on the link line: on a host with
+      brew's libxcb installed, libavcodec came out with load commands
+      on /opt/homebrew/opt/libx11 and friends, which dylibbundler
+      would have dragged into the archive. What we ship should be a
+      function of these scripts, not of the runner's package list.
+    - nasm is only demanded of x86 hosts now. It assembles x86 SIMD
+      and nothing else, so the arm64 lanes were being asked for a
+      package they have no use for.
+    - Both musl release lanes (linux-x86_64-musl, linux-aarch64-musl)
+      source-build that same chain instead of `apk add ffmpeg-dev`.
+      Alpine's ffmpeg is a GPLv3 build too: its libavcodec carries
+      DT_NEEDEDs on libx264, libx265, libSvtAv1Enc, libmp3lame,
+      libxvidcore, libaom and librav1e, `avutil_license()` answers
+      "GPL version 3 or later", and bundle-elf.sh's ldd walk copied
+      that entire 20 MB encoder chain into the archive we publish.
+      Both lanes now run build-{libdeflate,libdav1d,libvpx,libopus,
+      ffmpeg}.sh into a per-arch cache prefix with the same
+      PKG_CONFIG_PATH / CMAKE_PREFIX_PATH wiring the glibc lanes use.
+      The bundle's whole DT_NEEDED closure is now our own codec libs
+      plus ncurses, libunistring, zlib and musl libc — 19 files,
+      15.7 MB — and `avutil_license()` reports LGPL 2.1.
+    - Windows (windows-x86_64 UCRT64 + windows-arm64 CLANGARM64) now
+      source-builds the same LGPL-2.1, decoder-only ffmpeg chain
+      (libdeflate, libdav1d, libvpx, libopus, ffmpeg) the other
+      platforms use, instead of installing MSYS2's mingw-w64-*-ffmpeg.
+      That package is a `--enable-gpl --enable-version3` build and
+      bundle-dll swept its whole encoder tree — x264, x265, SvtAv1Enc,
+      lame, rubberband — into the published archive, making the
+      Windows prebuilts GPL-encumbered for a library that only ever
+      decodes. The chain is cached per-msystem, verified for
+      prefix-containment on every run (including cache hits), and a
+      new release gate re-checks the shipped binaries for GPL imports
+      and reads avcodec's embedded licence string. libvpx is linked
+      statically on Windows — its configure refuses to emit a DLL off
+      ELF/OS-2/Darwin — so it lives inside avcodec there; the
+      libvpx_vp8 / libvpx_vp9 decoders the codec probe gates on are
+      unaffected. Also fixes a latent arch bug: build-ffmpeg.sh's
+      nasm gate read `uname -m`, which reports x86_64 under MSYS2
+      even on Windows-on-ARM. With this, no lane installs a
+      package-manager ffmpeg: all four platforms ship the identical
+      decoder-only, LGPL-2.1 codec surface.
+    - A workflow_dispatch of release.yml no longer publishes. It used
+      to — useful when dispatch was the release path — but it meant
+      "validate the recipe on a branch" and "overwrite the published
+      archives every installed dist checksum-verifies against" were
+      one click apart. Dispatch now builds and smokes all eight lanes
+      and stops; only pushing the binaries-* tag itself publishes,
+      the same contract as the app release workflows downstream.
+    - musl apk list follows: `ffmpeg-dev` and `libdeflate-dev` out
+      (libdeflate is source-built for version parity, not licensing —
+      Alpine froze 1.20, we pin 1.25); curl / xz / bzip2 in, since
+      the base image has neither curl nor GNU tar and the dep
+      tarballs are .tar.xz and .tar.bz2; meson + ninja for dav1d;
+      perl and diffutils for libvpx, whose configure hard-fails with
+      "diff missing: Try installing diffutils" on busybox's applet;
+      zlib-dev, because ffmpeg's png decoder has a hard zlib
+      dependency that used to arrive transitively with ffmpeg-dev.
+      nasm/yasm are added on the x86_64 lane only.
+    - `_build-linux-musl.yml` gained the source-built-deps cache the
+      lane never previously needed — actions/cache over
+      `_ci-cache/alpine-3.20-<arch>`, keyed on the image tag, the
+      arch, and a hash of all five build-lib*.sh / build-ffmpeg.sh
+      scripts, with no restore-keys. Same discipline as the glibc
+      lane's, for the same reason: a partially-restored prefix would
+      corrupt the install tree mid-pkgconfig.
+    - GNU libunistring joins the self-built chain on all four
+      platforms, pinned at 1.4.2. It was the last package-manager
+      library in the packs with a source-conveyance duty attached to
+      it: it is LGPL-3.0-or-later OR GPL-2.0-or-later, we ship it as
+      a binary, and conveying it under the LGPL means being able to
+      hand a recipient the corresponding source for the exact
+      `libunistring.so.5` they were given. dnf, apk, brew and pacman
+      versions all move under us and get garbage-collected off the
+      mirrors, so that was unanswerable a few months after any given
+      release; a pinned tarball with its SHA-256 recorded in
+      `resources/third-party.json` answers it indefinitely. Out of
+      dnf's list on manylinux (which was still on 0.9.9, so the glibc
+      packs shipped `libunistring.so.2` — they now ship `.so.5` like
+      everyone else), out of apk's on alpine, out of `brew install`
+      on macos-arm64, out of pacman's on both Windows lanes. macOS
+      x86_64 already built it from source for deployment-target
+      reasons and simply moved its invocation into the shared step.
+    - `scripts/ci/build-libunistring.sh` stopped being the macOS
+      x86_64 lane's private helper and became a peer of the codec
+      scripts — same `$PREFIX` contract, same fetch-with-fallback,
+      and a real post-install check (`unigbrk.h` plus a linkable
+      `libunistring.*`) instead of an `ls | head`. The cache keys in
+      all four `_build-*.yml` now hash it along with the rest.
+    - Every lane now asserts that notcurses actually linked OUR
+      libunistring, by reading `unistring:FILEPATH` out of
+      `CMakeCache.txt` and requiring it to sit inside the source-built
+      prefix — the same shape as the Windows lane's existing
+      `DEFLATE:FILEPATH` check. This is not theoretical: locally, with
+      the prefix deliberately missing libunistring, notcurses'
+      `find_library(unistring unistring REQUIRED)` silently resolved
+      `/opt/homebrew/lib/libunistring.dylib` and configured happily.
+      A brew or dnf copy arriving transitively as some other package's
+      dependency would have shipped a binary we never built, pinned,
+      or published source for, which is precisely the failure this
+      whole change exists to make impossible.
+    - New `resources/third-party.json`: one entry per component that
+      ships inside a pack, with SPDX licence, copyright notice,
+      upstream URL, the exact pinned source (tarball URL + SHA-256,
+      git URL + commit, or an honest "package manager"), and
+      per-platform binary basename patterns. Fifteen components,
+      including the ones nobody had written down before: the MSYS2
+      toolchain runtimes the Windows packs carry (`libwinpthread-1`,
+      the `libgcc_s_*`/`libstdc++`/`libgomp` set under the GCC Runtime
+      Library Exception, or `libc++`/`libomp` under
+      Apache-2.0-with-LLVM-exception on CLANGARM64), and `libiconv` /
+      `libintl`. Those last two are a KNOWN GAP recorded in the file:
+      they are LGPL and package-manager-sourced, i.e. exactly the
+      problem libunistring just stopped having, but they arrive
+      transitively rather than by our choosing and moving them is a
+      separate piece of work. `zlib` and `ncursesw` stay
+      package-managed with no gap — Zlib and X11-style licences ask
+      for a notice, which we now ship, and nothing else.
+    - Generated licensing kit in every archive: `THIRD-PARTY.md`
+      (component / version / licence / copyright / source URL + hash
+      table, plus the per-component notes) and a `LICENSES/` directory
+      with the full text of every licence that pack's contents are
+      under. Written by `scripts/ci/emit-third-party-kit.sh` from the
+      manifest. It ships inside the archive rather than only in the
+      repository because the archive is what a user actually receives,
+      and a notice they have to go and find discharges nothing.
+    - New release gate, `scripts/ci/audit-third-party.sh`, run in
+      every lane: every file in `bundle/` must match some component's
+      patterns for that platform (or the platform's system-library
+      allow-list), and every component the manifest says ships there
+      must actually be present. The first direction catches the
+      accident that started this whole thread — the x264 / x265 /
+      SvtAv1Enc encoder tree arrived in the packs because nobody chose
+      it, it just came in on ffmpeg's dependency closure, and it took
+      a licence audit rather than a build failure to notice. The
+      second catches a library silently dropped by a bundling walk,
+      which is a pack that breaks at `dlopen` on a user's machine.
+      Verified against real locally-built artefacts: the macos-arm64
+      bundle passes, the published r9 macos-arm64 pack fails naming
+      all eight of its GPL/OpenSSL strays, a planted `libx264.165.dylib`
+      fails, a removed `libunistring.5.dylib` fails, and a
+      `libunistring.2.dylib` renamed in from a distro build fails on
+      both counts at once.
+    - Both licensing steps live in the `package-and-upload` composite
+      action rather than in the four build workflows. That action is
+      the single choke point every lane goes through on the way to
+      producing an archive, so a lane cannot be added that ships an
+      unaudited pack, and cannot be edited to skip the gate without
+      also losing its upload.
+    - `_release-publish.yml` attaches the six source tarballs
+      (ffmpeg, dav1d, libvpx, opus, libdeflate, libunistring) to every
+      binary release, downloading them at publish time from the same
+      pinned URLs the build scripts use and hard-failing if any does
+      not match the manifest's SHA-256 — attaching source that does
+      not correspond to the shipped binaries would be worse than
+      attaching none. `checksums.txt` now covers the tarballs as well
+      as the eight archives; `Build.rakumod` looks entries up by
+      artefact name, so the extra lines are inert to it.
+    - The release body was also two years stale: it advertised
+      `quay.io/pypa/manylinux2014_*` and a glibc 2.17 floor for lanes
+      that have been manylinux_2_28 / glibc 2.28 for a while, and did
+      not mention the Windows lanes at all. Fixed, and given a
+      Licensing section that inventories what is copyleft (ffmpeg,
+      libunistring — with their source attached) versus permissive,
+      and states plainly that platform C runtimes are dynamically
+      linked and therefore not redistributed.
+    - `t/17-third-party-manifest.rakutest` validates the manifest
+      hermetically on every `prove6`: SPDX strings come from a closed
+      known-good set (adding a component under an unread licence has
+      to be a decision, not a typo that sails through), URLs are
+      https, tarball hashes are 64 hex digits, git refs are full
+      commit SHAs, patterns are non-empty and whitespace-free and not
+      claimed by two components at once, `required` is never true with
+      an empty pattern list, and `resources/licenses/` and the
+      manifest reference each other exactly — no orphan texts, no
+      dangling references. It also cross-checks the notcurses ref
+      against `NOTCURSES_FORK` and every component version against the
+      `VERSION=` line in its `scripts/ci/build-*.sh`, so a version
+      bump applied to one and not the other cannot ship source for
+      8.1.2 alongside binaries built from 8.1.3.
+    - Fixed in passing, found by tripping over it while proving this
+      chunk out locally: the `notcurses-source-<sha>` actions/cache
+      entry included the `build/` tree cmake creates inside the
+      checkout. That key is shared by all four Linux lanes, so
+      whichever finished first saved its CMakeCache — absolute paths,
+      compiler paths, object files and all — and the other three
+      restored it on the next run. Both container lanes bind-mount to
+      `/work`, so cmake could not even notice the source directory had
+      moved; it would have reused a manylinux-x86_64 configure in an
+      alpine-aarch64 build. The cache path now excludes
+      `*/build`. (Locally the same collision surfaced as cmake
+      refusing to configure at all, which is how it got noticed —
+      in CI it would have been a mystifying cross-lane failure
+      appearing long after the commit that enabled it.)
+    - `.gitattributes` pins `*.txt` and `*.json` to LF. The licence
+      texts are copied verbatim into every pack, so without this the
+      same file would hash differently in a Windows .zip than in a
+      Linux .tar.gz depending on the runner's checkout settings.
+    - ncursesw stays package-managed, deliberately. Its licence is
+      MIT-style X11: a notice duty, which `LICENSES/X11.txt` and the
+      copyright line in `THIRD-PARTY.md` now discharge, and no source
+      duty at all. Source-building it for uniformity is a reasonable
+      future pass, but its `--with-default-terminfo-dir` / `ticdir`
+      configuration is genuinely delicate per platform (the macOS
+      x86_64 lane, which does build it, has to skip `install.data`
+      because `tic` would write to SIP-protected `/usr/share/terminfo`),
+      and that is a poor trade against a licence that asks nothing of
+      us.
+    - The first live CI dispatch of the above found four more bugs the
+      local proofs hadn't:
+    - ffmpeg.org is flaky from GitHub-hosted runners — every lane's
+      ffmpeg download saw connection timeouts/resets against it,
+      reproduced locally too, so it wasn't a one-off. `build-ffmpeg.sh`
+      now fetches ffmpeg's own GitHub mirror tag archive
+      (`FFmpeg/FFmpeg` @ `refs/tags/n8.1.2.tar.gz`) instead of
+      `ffmpeg.org/releases`. That only works because ffmpeg checks
+      `configure` into git rather than generating it via `make dist` —
+      most projects' tag archives have no buildable configure, this
+      one does. VERSION stays the bare `8.1.2` (still what t/17
+      cross-checks the manifest against); a new TAG variable carries
+      the `n`-prefixed release-tag spelling. `resources/third-party.json`
+      picked up the new URL, sha256 and an explicit `filename`
+      (`ffmpeg-n8.1.2.tar.gz` — the bare `n8.1.2.tar.gz` says nothing
+      about what it is and would collide with the next project pinned
+      at the same tag, same reasoning as libvpx's entry already
+      documents), and t/17 gained an ffmpeg-specific check tying the
+      manifest's URL/filename to `build-ffmpeg.sh`'s `n${VERSION}` tag
+      convention explicitly, rather than trusting the generic
+      substring-contains-version check to have caught a dropped `n` or
+      a reversion to the old ffmpeg.org layout.
+    - The two container lanes (`build-linux-glibc.sh`,
+      `build-linux-musl.sh`) now `chown` `bundle/` and `$CACHE_DIR`
+      back to the host user before exiting. Docker on a Linux runner
+      runs these containers as root against a bind-mounted `/work`, so
+      everything they create there — the bundle directory above all —
+      comes out root-owned on the host. The new `package-and-upload`
+      composite action's `emit-third-party-kit.sh` step runs
+      afterwards, on the host, as the unprivileged runner user, and
+      its `mkdir bundle/LICENSES` hit exactly that: "Permission
+      denied" on musl (both arches) and glibc-aarch64. Ownership is
+      restored by reading `/work`'s own uid:gid off the bind mount
+      itself (`stat -c '%u:%g' /work`) rather than assuming a fixed
+      runner uid, so the fix holds regardless of which uid GitHub
+      happens to run the job as. `_ci-cache/notcurses-source` didn't
+      need the same treatment — nothing host-side ever writes into it,
+      only containers read and write it across runs.
+    - `_build-macos.yml`'s arm64 lane stopped taking libdeflate from
+      brew and now source-builds it into the same workspace cache
+      prefix as ffmpeg and friends, alongside the ncurses it still
+      keeps from brew. The lane's `PKG_CONFIG_PATH` /
+      `CMAKE_PREFIX_PATH` / `CPATH` env block only ever pointed at
+      that cache prefix, never at brew's include path, so notcurses'
+      `find_path(libdeflate.h)` came up empty despite the brew keg
+      being installed — "Couldn't find libdeflate.h" at configure
+      time. The earlier local proof of this lane missed it because it
+      built libdeflate into the prefix on both arches by hand; the
+      live workflow, as written, hadn't. This also makes
+      `resources/third-party.json`'s libdeflate entry — which already
+      claims "ours everywhere" — actually true on arm64 instead of
+      silently shipping brew's copy under that claim. The cache key's
+      `hashFiles` list already covered `build-libdeflate.sh`, so no
+      cache-invalidation change was needed.
+    - All four `_build-*.yml` dependency-chain caches moved from the
+      combined `actions/cache` to a restore/save split. The combined
+      action only saves in a post step gated on job success, and this
+      dispatch showed exactly what that costs: the Windows lane built
+      the entire libdeflate→dav1d→vpx→opus chain, died at the ffmpeg
+      download (see above), and saved nothing — the next push would
+      have re-paid the whole ~15-20 min build for a failure that had
+      nothing to do with the codec chain. `_build-windows.yml` and
+      `_build-macos.yml` now save immediately after their
+      already-separate source-build step, before the steps that can
+      still fail (notcurses configure/build). The two container lanes
+      needed more than a step reorder: their entire build previously
+      ran as one `docker run` per architecture, chain and notcurses
+      build together, so there was no step boundary to save at. Both
+      `build-linux-glibc.sh` and `build-linux-musl.sh` gained a
+      `DEPS_ONLY=1` escape hatch that stops (and chowns `$CACHE_DIR`,
+      per the fix above) right after the codec chain is ready, letting
+      the workflow split the single docker invocation into two: one
+      that builds (or, cache-hit, skips) just the chain, cached and
+      saved immediately after; a second, unconditional one that builds
+      notcurses against the now-warm cache. Precedent for the
+      restore/save shape is App-Moneymoor's vcpkg cache block.
+
 0.4.4  2026-08-12T10:43:56+01:00
     - Fix `Build.rakumod`'s `!sha256` unconditionally shelling out to
       `shasum -a 256` on every POSIX platform. manylinux/EL-minimal
