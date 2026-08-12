@@ -284,10 +284,25 @@ fi
 # the wrong CPU" failures that nothing downstream would notice until a
 # user's LoadLibrary fails.
 if [[ -n "${MSYSTEM_CARCH:-}" ]]; then
-    ff_arch=$(awk '/^ARCH[[:space:]]/{print $2; exit}' "$configure_log")
-    if [[ "$ff_arch" != "$MSYSTEM_CARCH" ]]; then
-        echo "❌ ffmpeg configured for ARCH='$ff_arch' but MSYSTEM_CARCH='$MSYSTEM_CARCH'." >&2
-        echo "   The produced DLLs would not match the MSYS2 environment's toolchain." >&2
+    # Not the configure log's `ARCH` line: ffmpeg normalises that to the
+    # architecture FAMILY — an x86_64 build prints `ARCH x86`, the same
+    # as i686 — so comparing it against MSYSTEM_CARCH can never pass on
+    # UCRT64 (first r10 dispatch proved it). config.h records the exact
+    # architecture as macros, so ask that instead.
+    case "$MSYSTEM_CARCH" in
+        x86_64)  want_macro='ARCH_X86_64' ;;
+        aarch64) want_macro='ARCH_AARCH64' ;;
+        *)
+            echo "❌ unrecognised MSYSTEM_CARCH='$MSYSTEM_CARCH' — teach this" >&2
+            echo "   assertion its config.h macro before building for it." >&2
+            exit 1
+            ;;
+    esac
+    if ! grep -q "^#define ${want_macro} 1\$" config.h; then
+        echo "❌ ffmpeg's config.h does not define ${want_macro}=1, but" >&2
+        echo "   MSYSTEM_CARCH='$MSYSTEM_CARCH'. The produced DLLs would" >&2
+        echo "   not match the MSYS2 environment's toolchain." >&2
+        grep '^#define ARCH_' config.h | grep ' 1$' >&2 || true
         exit 1
     fi
 fi

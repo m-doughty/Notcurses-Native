@@ -33,12 +33,27 @@ cd "opus-${VERSION}"
 # --disable-doc — no html/man output.
 # --disable-extra-programs — opusdec, opusenc CLIs (we link the
 # library, not the binaries).
+extra_flags=()
+
+# opus's ARM runtime CPU detection (rtcd) has backends for Linux
+# (/proc/cpuinfo), Apple and MSVC — and none for mingw/clang on
+# Windows ARM64, where celt/arm/armcpu.c stops the build with its own
+# #error naming this flag. Disabling rtcd there is safe, not a
+# compromise: NEON is architecturally baseline on aarch64, so the
+# compile-time paths are always valid; the only loss is optional
+# runtime dispatch to dotprod/i8mm extensions, which matters to
+# nobody decoding audio in a terminal.
+if [[ "${MSYSTEM_CARCH:-}" == 'aarch64' ]]; then
+    extra_flags+=('--disable-rtcd')
+fi
+
 ./configure \
     --prefix="$PREFIX" \
     --enable-shared \
     --disable-static \
     --disable-doc \
-    --disable-extra-programs
+    --disable-extra-programs \
+    ${extra_flags[@]+"${extra_flags[@]}"}
 make -j"$JOBS"
 make install
 
