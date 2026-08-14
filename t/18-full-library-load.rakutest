@@ -2,20 +2,31 @@ use Test;
 use NativeCall;
 use Notcurses::Native;
 
-plan 5;
+plan 6;
 
-my Str $resolved = nc-lib();
-ok $resolved.IO.e, 'full notcurses library resolves to an existing file';
+# On Windows nc-lib() eagerly preloads libnotcurses with LoadLibraryExW,
+# proving its complete FFmpeg dependency closure before any symbol call.
+my Str $resolved;
+lives-ok { $resolved = nc-lib() },
+    $*DISTRO.is-win
+        ?? 'full library and its FFmpeg dependency closure load on Windows'
+        !! 'full library path resolves on non-Windows';
+ok $resolved.defined && $resolved.IO.e,
+    'full notcurses library resolves to an existing file';
 
 if $*DISTRO.is-win {
-    my Str $path-head = (%*ENV<PATH> // '').split(';')[0];
-    is $path-head.IO.absolute.Str, $resolved.IO.parent.absolute.Str,
-        'resolved notcurses directory is first on Windows PATH';
+    if $resolved.defined {
+        my Str $path-head = (%*ENV<PATH> // '').split(';')[0];
+        is $path-head.IO.absolute.Str, $resolved.IO.parent.absolute.Str,
+            'resolved notcurses directory is first on Windows PATH';
+    } else {
+        skip 'full notcurses library did not resolve', 1;
+    }
 } else {
     pass 'Windows PATH ordering is not applicable on this platform';
 }
 
-subtest 'full notcurses library loads without a TTY' => {
+subtest 'core visual bindings work without a TTY' => {
     plan 3;
 
     my $pixels = CArray[uint32].allocate(1);
@@ -27,14 +38,14 @@ subtest 'full notcurses library loads without a TTY' => {
         $visual = ncvisual_from_rgba(
             nativecast(Pointer, $pixels), 1, 4, 1
         );
-    }, 'one-pixel RGBA visual loads through the full library';
-    ok $visual.defined, 'full library returns a defined visual handle';
+    }, 'one-pixel RGBA visual loads through the core library';
+    ok $visual.defined, 'core library returns a defined visual handle';
 
     if $visual.defined {
         my $to-destroy = $visual;
         $visual = Nil;
         lives-ok { ncvisual_destroy($to-destroy) },
-            'visual handle is destroyed through the full library';
+            'visual handle is destroyed through the core library';
     } else {
         skip 'visual handle was not created', 1;
     }

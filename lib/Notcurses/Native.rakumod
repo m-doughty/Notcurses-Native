@@ -5,9 +5,10 @@ use Notcurses::Native::Str;
 unit module Notcurses::Native;
 
 # === Library paths ===
-# We load three notcurses libs: core (init, context, plane, channels),
-# full (adds multimedia/image via ffmpeg), and ffi (C wrappers for
-# static-inline functions). NativeCall picks the right one per binding.
+# We load three notcurses libs: core (the operational API, including
+# visual/blit), full (notcurses_init/ncdirect_init plus the FFmpeg
+# dependency closure), and ffi (C wrappers for static-inline functions).
+# NativeCall picks the library that actually exports each binding.
 #
 # We deliberately do NOT use %?RESOURCES for the libs themselves. zef
 # stages every resource under a SHA-keyed filename, which breaks the
@@ -260,9 +261,9 @@ _configure-runtime-env();
 # installed package can still try to load libs from the *old* path.
 # Doing the lookup inside a `state $r = _resolve-lib(...)` sub
 # defers it to first call in each process — fresh every time, but
-# still O(1) after the first invocation. Pair with
-# `is native(&nc-lib)` on each binding (not `is native(&nc-lib)`)
-# so NativeCall invokes the resolver lazily.
+# still O(1) after the first invocation. Pair each binding with the
+# resolver for the library that exports it (for example,
+# `is native(&core-lib)`) so NativeCall invokes the resolver lazily.
 sub nc-lib   is export { state $r = _resolve-and-prepare-lib('libnotcurses');      $r }
 sub ffi-lib  is export { state $r = _resolve-and-prepare-lib('libnotcurses-ffi');  $r }
 sub core-lib is export { state $r = _resolve-and-prepare-lib('libnotcurses-core'); $r }
@@ -526,19 +527,19 @@ sub ncplane_move_below(NcplaneHandle $n, NcplaneHandle $below --> int32)
 
 # === Cell functions (FFI) ===
 
-# === Visual (must use &nc-lib to get FFmpeg multimedia backend) ===
+# === Visual (implemented and exported by libnotcurses-core) ===
 
 sub ncvisual_from_file(Str $file --> NcvisualHandle)
-	is native(&nc-lib) is export { * }
+	is native(&core-lib) is export { * }
 
 sub ncvisual_from_rgba(Pointer $rgba, int32 $rows, int32 $rowstride, int32 $cols --> NcvisualHandle)
-	is native(&nc-lib) is export { * }
+	is native(&core-lib) is export { * }
 
 sub ncvisual_destroy(NcvisualHandle $v)
-	is native(&nc-lib) is export { * }
+	is native(&core-lib) is export { * }
 
 sub ncvisual_decode(NcvisualHandle $v --> int32)
-	is native(&nc-lib) is export { * }
+	is native(&core-lib) is export { * }
 
 sub ncvisual_resize(NcvisualHandle $v, int32 $rows, int32 $cols --> int32)
-	is native(&nc-lib) is export { * }
+	is native(&core-lib) is export { * }

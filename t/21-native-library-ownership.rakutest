@@ -1,0 +1,96 @@
+use Test;
+
+my constant @CORE-VISUAL-BINDINGS = <
+    ncvisual_from_file
+    ncvisual_from_rgba
+    ncvisual_destroy
+    ncvisual_decode
+    ncvisual_resize
+    ncvisual_from_rgb_packed
+    ncvisual_from_rgb_loose
+    ncvisual_from_bgra
+    ncvisual_from_palidx
+    ncvisual_from_plane
+    ncvisual_from_sixel
+    ncvisual_decode_loop
+    ncvisual_geom
+    ncvisual_rotate
+    ncvisual_resize_noninterpolative
+    ncvisual_polyfill_yx
+    ncvisual_at_yx
+    ncvisual_set_yx
+    ncvisual_blit
+    ncvisual_subtitle_plane
+    ncvisual_media_defblitter
+    ncvisual_simple_streamer
+    ncvisual_stream
+    ncblit_rgba
+    ncblit_bgrx
+    ncblit_rgb_packed
+    ncblit_rgb_loose
+>;
+
+sub rakumod-files(IO::Path:D $dir --> Seq:D) {
+    gather {
+        for $dir.dir.sort -> IO::Path $entry {
+            if $entry.d {
+                take $_ for rakumod-files($entry);
+            } elsif $entry.f && $entry.extension eq 'rakumod' {
+                take $entry;
+            }
+        }
+    }
+}
+
+my IO::Path $lib-root = $*PROGRAM.parent.parent.child('lib');
+my @bindings;
+for rakumod-files($lib-root) -> IO::Path $module {
+    my @lines = $module.lines;
+    for @lines.kv -> Int $index, Str $line {
+        my $binding = $line.trim.match(
+            /^ 'is native(&' $<resolver>=(<[A..Za..z0..9_-]>+) ')' /
+        );
+        next unless $binding;
+
+        my Int $declaration = $index;
+        while $declaration >= 0
+            && @lines[$declaration] !~~ /^ \s* 'sub' \s+ / {
+            $declaration--;
+        }
+
+        my $sub-name = $declaration >= 0
+            ?? @lines[$declaration].match(
+                /^ \s* 'sub' \s+ $<name>=(<[A..Za..z0..9_-]>+) /
+            )
+            !! Nil;
+        @bindings.push({
+            name => $sub-name ?? $sub-name<name>.Str
+                              !! "<unknown:{ $module.basename }:{ $index + 1 }>",
+            resolver => $binding<resolver>.Str,
+        });
+    }
+}
+
+my @full-bindings = @bindings
+    .grep(*<resolver> eq 'nc-lib')
+    .map(*<name>);
+is-deeply @full-bindings.sort, <ncdirect_init notcurses_init>.sort,
+    'only the two init entry points bind to the full notcurses library';
+
+my @visual-bindings = @bindings
+    .grep({ .<name>.starts-with('ncvisual') || .<name>.starts-with('ncblit') });
+is-deeply @visual-bindings.map(*<name>).sort,
+    (|@CORE-VISUAL-BINDINGS, 'ncvisualplane_create').sort,
+    'source contains the exact visual and blit binding set';
+
+my %core-owners = @CORE-VISUAL-BINDINGS.map(-> Str $name {
+    $name => (@visual-bindings.first(*<name> eq $name)<resolver> // '<missing>')
+});
+my %expected-core-owners = @CORE-VISUAL-BINDINGS.map({ $_ => 'core-lib' });
+is-deeply %core-owners, %expected-core-owners,
+    'all 27 visual and blit operations bind to libnotcurses-core';
+
+is @visual-bindings.first(*<name> eq 'ncvisualplane_create')<resolver>,
+    'ffi-lib', 'ncvisualplane_create remains an FFI wrapper binding';
+
+done-testing;
