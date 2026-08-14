@@ -1,0 +1,16 @@
+use Test;
+
+my IO::Path $script = $*PROGRAM.parent.parent
+    .child('scripts').child('ci').child('verify-windows-loader.ps1');
+
+ok $script.e, 'Windows loader verification script exists';
+
+my @unsafe = $script.slurp.match(
+    / '$' $<name>=(<[A..Za..z_]><[A..Za..z0..9_]>*) ':' /,
+    :g,
+).grep({ .<name>.Str.lc ∉ <env global local private script using>.Set });
+
+is-deeply @unsafe.map(*.Str).Array, [],
+    'PowerShell interpolation braces variables immediately followed by colon';
+
+done-testing;

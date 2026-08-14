@@ -22,7 +22,7 @@ function Invoke-RakuChecked {
 
     & $raku @Arguments
     if ($LASTEXITCODE -ne 0) {
-        throw "raku failed with exit $LASTEXITCODE: $($Arguments -join ' ')"
+        throw "raku failed with exit ${LASTEXITCODE}: $($Arguments -join ' ')"
     }
 }
 
