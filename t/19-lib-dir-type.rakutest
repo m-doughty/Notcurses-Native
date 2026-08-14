@@ -1,0 +1,23 @@
+use Test;
+use Notcurses::Native :INTERNAL;
+
+plan 6;
+
+my IO::Path $relative =
+    "notcurses-native-lib-dir-type-{$*PID}-{now.Int}".IO;
+
+my IO::Path $from-str;
+lives-ok { $from-str = _absolute-io($relative.Str) },
+    'absolute-path conversion accepts a Str';
+isa-ok $from-str, IO::Path,
+    'absolute-path conversion of a Str returns an IO::Path';
+is $from-str, $relative.absolute.IO,
+    'Str input resolves to the expected absolute path';
+
+my IO::Path $from-io;
+lives-ok { $from-io = _absolute-io($relative) },
+    'absolute-path conversion accepts an IO::Path';
+isa-ok $from-io, IO::Path,
+    'absolute-path conversion preserves the IO::Path type';
+is $from-io, $relative.absolute.IO,
+    'IO::Path input resolves to the expected absolute path';

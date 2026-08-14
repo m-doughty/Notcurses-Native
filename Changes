@@ -1,6 +1,19 @@
 Revision history for Notcurses::Native
 
 {{$NEXT}}
+    - Fix Windows loading of the bundled notcurses dependency closure.
+      Loading libnotcurses.dll by absolute path does not make Windows
+      search that DLL's directory for its FFmpeg, ncurses, and notcurses
+      imports. Each NativeCall library is now preloaded lazily with
+      LoadLibraryExW and LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, while the staged
+      directory is also prepended to PATH for child processes. This avoids
+      SetDllDirectoryW's single process-global slot and applies equally to
+      the normal BINARY_TAG stage and NOTCURSES_NATIVE_LIB_DIR overrides.
+    - Add a TTY-free full-library load test to both Windows workflow
+      definitions. The active x86_64 lane runs it with MSYS2/toolchain
+      directories removed from PATH, so CI cannot accidentally satisfy a
+      missing bundled DLL from the build environment; the same gate is
+      ready for the arm64 workflow when that lane is re-enabled.
 
 0.5.0  2026-08-12T18:42:31+01:00
     - Both Windows lanes source-build GNU libiconv 1.19 instead of

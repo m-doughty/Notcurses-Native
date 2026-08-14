@@ -98,15 +98,19 @@ sub _resolve-lib(Str $name --> Str) {
     "{ _staged-lib-dir() }/$name.$ext";
 }
 
+sub _absolute-io(IO() $path --> IO::Path) is export(:INTERNAL) {
+    $path.IO.absolute.IO;
+}
+
 # Pick the directory whose libraries the resolver will use. This must
 # stay in lockstep with _resolve-lib: the explicit override wins when it
 # names a real directory, otherwise the BINARY_TAG-keyed staged dir wins.
 sub _resolve-lib-dir(--> IO::Path) {
     if (my $override = %*ENV<NOTCURSES_NATIVE_LIB_DIR>) && $override.IO.d {
-        return $override.IO.absolute;
+        return _absolute-io($override);
     }
     my $staged = _staged-lib-dir();
-    return $staged.absolute if $staged.d;
+    return _absolute-io($staged) if $staged.d;
     IO::Path;
 }
 
@@ -141,7 +145,7 @@ sub _GetLastError(--> uint32)
 sub _prepare-windows-lib(Str $path --> Str) {
     return $path unless $*DISTRO.is-win;
 
-    my IO::Path $absolute = $path.IO.absolute;
+    my IO::Path $absolute = _absolute-io($path);
     # Preserve _resolve-lib's actionable missing-path fallback. NativeCall
     # will report that exact path if installation/staging did not happen.
     return $path unless $absolute.e;
