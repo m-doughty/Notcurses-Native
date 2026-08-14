@@ -1,19 +1,29 @@
 Revision history for Notcurses::Native
 
 {{$NEXT}}
+
+0.5.2  2026-08-14T21:21:56+01:00
     - Fix Windows loading of the bundled notcurses dependency closure.
       Loading libnotcurses.dll by absolute path does not make Windows
       search that DLL's directory for its FFmpeg, ncurses, and notcurses
-      imports. Each NativeCall library is now preloaded lazily with
-      LoadLibraryExW and LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, while the staged
-      directory is also prepended to PATH for child processes. This avoids
-      SetDllDirectoryW's single process-global slot and applies equally to
-      the normal BINARY_TAG stage and NOTCURSES_NATIVE_LIB_DIR overrides.
+      imports. Prebuilt libraries are now loaded lazily with LoadLibraryExW
+      and strict LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR plus default-directory
+      flags. Source installs replace the whole stage, write a durable marker,
+      and use LOAD_WITH_ALTERED_SEARCH_PATH so their ordinary MSYS2 PATH
+      dependencies remain available. Reinstalling through either path clears
+      the other path's files and provenance.
     - Add a TTY-free full-library load test to both Windows workflow
-      definitions. The active x86_64 lane runs it with MSYS2/toolchain
-      directories removed from PATH, so CI cannot accidentally satisfy a
-      missing bundled DLL from the build environment; the same gate is
-      ready for the arm64 workflow when that lane is re-enabled.
+      definitions. Prebuilt probes remove MSYS2/toolchain directories from
+      PATH so CI cannot mask a missing bundled DLL. The MSYS2 source-build
+      step records its active $MINGW_PREFIX/bin as a Windows path, and the
+      source probe explicitly prepends that validated directory. Each probe
+      fails early unless its mode agrees with the actual BINARY_TAG marker.
+    - Bind every ncvisual and ncblit operation to libnotcurses-core, which
+      owns and exports those symbols. Unix dependency-symbol lookup had
+      hidden the incorrect libnotcurses bindings; Windows resolves exports
+      only from the named DLL. The two multimedia-library bindings remain
+      notcurses_init and ncdirect_init, which install the selected media
+      implementation into core.
 
 0.5.0  2026-08-12T18:42:31+01:00
     - Both Windows lanes source-build GNU libiconv 1.19 instead of
