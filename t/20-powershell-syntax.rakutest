@@ -24,15 +24,29 @@ like $source, / '_windows-staged-load-mode()' /,
 like $source, / '$stagedMode -ne $Mode' /,
     'PowerShell probe rejects a mode that disagrees with the stage marker';
 my Int $prebuilt-guard = $source.index(q[if ($Mode -eq 'prebuilt')]);
-my Int $path-assignment = $source.index(q[$env:PATH =]);
+my Int $path-assignment = $source.index(
+    q[$env:PATH = @($rakuDir, $system32, $env:SystemRoot) -join ';']
+);
 my Int $guard-end = $source.index('}', $prebuilt-guard);
 ok $prebuilt-guard.defined
         && $path-assignment.defined
         && $guard-end.defined
         && $prebuilt-guard < $path-assignment < $guard-end,
     'restricted PATH assignment is confined to prebuilt mode';
-is $source.match(/ '$env:PATH =' /, :g).elems, 1,
-    'source mode has no PATH assignment and preserves its inherited MSYS2 PATH';
+like $source, / 'Remove-Item Env:NOTCURSES_TEST_MSYS2_BIN' /,
+    'prebuilt mode removes the source-build runtime-directory override';
+like $source, / 'IsNullOrWhiteSpace($msys2Bin)' /,
+    'source mode rejects a missing MSYS2 runtime directory';
+like $source,
+    / 'Test-Path -LiteralPath $msys2Bin -PathType Container' /,
+    'source mode rejects an invalid MSYS2 runtime directory';
+like $source,
+    / '$env:PATH = @($msys2Bin, $env:PATH)' /,
+    'source mode prepends the captured MSYS2 runtime directory';
+is $source.match(/ '$env:PATH =' /, :g).elems, 2,
+    'the two loader modes have exactly one PATH assignment each';
+unlike $source.lc, / 'c:\\msys' /,
+    'PowerShell probe does not hardcode an MSYS2 installation path';
 
 for <_verify-windows-x86_64.yml _verify-windows-arm64.yml> -> Str $name {
     my Str $workflow = $workflow-dir.child($name).slurp;
@@ -44,6 +58,16 @@ for <_verify-windows-x86_64.yml _verify-windows-arm64.yml> -> Str $name {
         / 'verify-windows-loader.ps1 -Mode source' /,
         :g,
     ).elems, 1, "$name selects source mode exactly once";
+    is $workflow.match(
+        / 'cygpath -w "$MINGW_PREFIX/bin"' /,
+        :g,
+    ).elems, 1, "$name captures its active MSYS2 runtime directory";
+    is $workflow.match(
+        / 'NOTCURSES_TEST_MSYS2_BIN=' /,
+        :g,
+    ).elems, 1, "$name persists the captured directory for PowerShell";
+    unlike $workflow.lc, / 'c:\\msys' /,
+        "$name does not hardcode an MSYS2 installation path";
 }
 
 done-testing;

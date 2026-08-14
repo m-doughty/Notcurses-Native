@@ -32,10 +32,21 @@ if ($stagedMode -ne $Mode) {
 
 # A prebuilt archive must be sibling-closed, so exclude every MSYS2/toolchain
 # directory that could mask a missing bundled DLL. A source build deliberately
-# retains ordinary MSYS2 dependencies; preserve the process's original PATH so
-# its marked LOAD_WITH_ALTERED_SEARCH_PATH contract can resolve them.
+# retains ordinary MSYS2 dependencies. The MSYS2 build step records its real
+# Windows runtime directory because a later pwsh step does not inherit the
+# shell's $MINGW_PREFIX/bin path.
 if ($Mode -eq 'prebuilt') {
+    Remove-Item Env:NOTCURSES_TEST_MSYS2_BIN -ErrorAction SilentlyContinue
     $env:PATH = @($rakuDir, $system32, $env:SystemRoot) -join ';'
+} else {
+    $msys2Bin = $env:NOTCURSES_TEST_MSYS2_BIN
+    if ([string]::IsNullOrWhiteSpace($msys2Bin)) {
+        throw 'source mode requires NOTCURSES_TEST_MSYS2_BIN'
+    }
+    if (-not (Test-Path -LiteralPath $msys2Bin -PathType Container)) {
+        throw "source-mode MSYS2 runtime directory does not exist: $msys2Bin"
+    }
+    $env:PATH = @($msys2Bin, $env:PATH) -join ';'
 }
 
 function Invoke-RakuChecked {

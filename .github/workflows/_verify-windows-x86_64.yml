@@ -58,7 +58,10 @@ jobs:
 
       - name: zef install (source-build path)
         env: { NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1' }
-        run: zef install --/test --force-install .
+        run: |
+          printf 'NOTCURSES_TEST_MSYS2_BIN=%s\n' \
+            "$(cygpath -w "$MINGW_PREFIX/bin")" >> "$GITHUB_ENV"
+          zef install --/test --force-install .
 
       - name: Source-built DLLs load with MSYS2 PATH
         shell: pwsh
