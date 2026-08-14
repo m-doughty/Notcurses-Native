@@ -2,15 +2,48 @@ use Test;
 
 my IO::Path $script = $*PROGRAM.parent.parent
     .child('scripts').child('ci').child('verify-windows-loader.ps1');
+my IO::Path $workflow-dir = $*PROGRAM.parent.parent
+    .child('.github').child('workflows');
 
 ok $script.e, 'Windows loader verification script exists';
 
-my @unsafe = $script.slurp.match(
+my Str $source = $script.slurp;
+
+my @unsafe = $source.match(
     / '$' $<name>=(<[A..Za..z_]><[A..Za..z0..9_]>*) ':' /,
     :g,
 ).grep({ .<name>.Str.lc ∉ <env global local private script using>.Set });
 
 is-deeply @unsafe.map(*.Str).Array, [],
     'PowerShell interpolation braces variables immediately followed by colon';
+
+like $source, / "[ValidateSet('prebuilt', 'source')]" /,
+    'PowerShell probe accepts only the two explicit loader modes';
+like $source, / '_windows-staged-load-mode()' /,
+    'PowerShell probe reads provenance from the actual BINARY_TAG stage';
+like $source, / '$stagedMode -ne $Mode' /,
+    'PowerShell probe rejects a mode that disagrees with the stage marker';
+my Int $prebuilt-guard = $source.index(q[if ($Mode -eq 'prebuilt')]);
+my Int $path-assignment = $source.index(q[$env:PATH =]);
+my Int $guard-end = $source.index('}', $prebuilt-guard);
+ok $prebuilt-guard.defined
+        && $path-assignment.defined
+        && $guard-end.defined
+        && $prebuilt-guard < $path-assignment < $guard-end,
+    'restricted PATH assignment is confined to prebuilt mode';
+is $source.match(/ '$env:PATH =' /, :g).elems, 1,
+    'source mode has no PATH assignment and preserves its inherited MSYS2 PATH';
+
+for <_verify-windows-x86_64.yml _verify-windows-arm64.yml> -> Str $name {
+    my Str $workflow = $workflow-dir.child($name).slurp;
+    is $workflow.match(
+        / 'verify-windows-loader.ps1 -Mode prebuilt' /,
+        :g,
+    ).elems, 1, "$name selects prebuilt mode exactly once";
+    is $workflow.match(
+        / 'verify-windows-loader.ps1 -Mode source' /,
+        :g,
+    ).elems, 1, "$name selects source mode exactly once";
+}
 
 done-testing;

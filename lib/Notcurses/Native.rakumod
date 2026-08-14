@@ -121,17 +121,33 @@ sub _resolve-lib-dir(--> IO::Path) {
 # ERROR_MOD_NOT_FOUND even while every required FFmpeg/notcurses DLL is
 # beside it.
 #
-# Pre-load each library lazily with LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR before
-# handing the same absolute path to NativeCall. That flag applies the top
-# DLL's directory to this one load and its dependency closure without
-# changing process-global loader policy. In particular, this deliberately
-# avoids SetDllDirectoryW: Windows exposes only one such process-global slot,
-# so using it here would silently evict a directory installed by another FFI
-# package (or be evicted by one later). App launchers should still put native
-# directories on PATH before process start; this scoped load is the package's
-# standalone safety net and also covers NOTCURSES_NATIVE_LIB_DIR overrides.
+# Prebuilt stages carry a closed sibling dependency set, so load them with
+# LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR plus the safe default directories. Source
+# builds are explicitly marked by Build.rakumod: their notcurses DLLs retain
+# ordinary MSYS2 dependencies, so LOAD_WITH_ALTERED_SEARCH_PATH gives the
+# target DLL's directory priority and then uses the documented ordinary search
+# path, including PATH. The modes are deliberately mutually exclusive.
+#
+# Both paths avoid SetDllDirectoryW: Windows exposes only one such
+# process-global slot, so using it here would silently evict a directory
+# installed by another FFI package (or be evicted by one later).
+my constant $SOURCE_BUILD_MARKER = '.notcurses-native-source-build';
+my constant $LOAD_WITH_ALTERED_SEARCH_PATH = 0x00000008;
 my constant $LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR = 0x00000100;
 my constant $LOAD_LIBRARY_SEARCH_DEFAULT_DIRS = 0x00001000;
+
+sub _windows-load-flags(IO() $path --> uint32) is export(:INTERNAL) {
+    $path.IO.parent.add($SOURCE_BUILD_MARKER).f
+        ?? $LOAD_WITH_ALTERED_SEARCH_PATH
+        !! $LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+            +| $LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
+}
+
+sub _windows-staged-load-mode(--> Str) is export(:INTERNAL) {
+    _staged-lib-dir().add($SOURCE_BUILD_MARKER).f
+        ?? 'source'
+        !! 'prebuilt';
+}
 
 sub _LoadLibraryExW(
     Str is encoded('utf16'),
@@ -151,6 +167,11 @@ sub _prepare-windows-lib(Str $path --> Str) {
     # will report that exact path if installation/staging did not happen.
     return $path unless $absolute.e;
 
+    my uint32 $flags = _windows-load-flags($absolute);
+    my Str $load-contract = $flags == $LOAD_WITH_ALTERED_SEARCH_PATH
+        ?? 'source-build directory plus ordinary PATH dependencies'
+        !! 'prebuilt sibling dependency closure';
+
     # Resolve the GetLastError binding before the load attempt. Doing that
     # for the first time after a failure could itself touch loader state and
     # obscure the error code set by LoadLibraryExW.
@@ -158,13 +179,12 @@ sub _prepare-windows-lib(Str $path --> Str) {
     my Pointer $handle = _LoadLibraryExW(
         $absolute.Str,
         Pointer,
-        $LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR +| $LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
+        $flags,
     );
     unless $handle.defined {
         my uint32 $error = _GetLastError();
         die "Notcurses::Native: Windows could not load '{$absolute.Str}' "
-          ~ "with its sibling dependency directory (Win32 error $error). "
-          ~ "The staged DLL closure may be incomplete or unavailable.";
+          ~ "using its $load-contract (Win32 error $error).";
     }
 
     $absolute.Str;

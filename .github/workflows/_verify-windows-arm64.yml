@@ -92,12 +92,12 @@ jobs:
 
       - name: Full DLL closure loads with restricted PATH (prebuilt)
         shell: pwsh
-        run: ./scripts/ci/verify-windows-loader.ps1
+        run: ./scripts/ci/verify-windows-loader.ps1 -Mode prebuilt
 
       - name: zef install (source-build path)
         env: { NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1' }
         run: zef install --/test --force-install .
 
-      - name: Full DLL closure loads with restricted PATH (source build)
+      - name: Source-built DLLs load with MSYS2 PATH
         shell: pwsh
-        run: ./scripts/ci/verify-windows-loader.ps1
+        run: ./scripts/ci/verify-windows-loader.ps1 -Mode source

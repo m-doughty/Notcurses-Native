@@ -378,6 +378,8 @@ Source-build fallback
 
 For platforms outside the matrix (FreeBSD, OpenBSD, i686, riscv64, ppc64le, …) or when you explicitly set `NOTCURSES_NATIVE_BUILD_FROM_SOURCE=1`, Notcurses::Native compiles notcurses from source via CMake. That path needs the system packages listed in **BUILD REQUIREMENTS**. The source build takes 5–15 minutes depending on the machine; the prebuilt download path is seconds.
 
+On Windows, keep the MSYS2 UCRT64 `bin` directory on `PATH` when running an application against a source-built install. Source builds retain ordinary MSYS2 DLL dependencies; the installer records that provenance beside the staged libraries so the runtime searches the DLL's own directory first and then the ordinary Windows search path. Published prebuilts remain independent of MSYS2 `PATH` and are loaded only from their closed sibling DLL set plus Windows system directories.
+
 Environment knobs
 -----------------
 
@@ -425,4 +427,3 @@ COPYRIGHT AND LICENSE
 Copyright 2026 Matt Doughty
 
 This library is free software; you can redistribute it and/or modify it under the Artistic License 2.0.
-

@@ -1,0 +1,88 @@
+use Test;
+use Notcurses::Native :INTERNAL;
+
+BEGIN EVALFILE $*PROGRAM.parent.parent.child('Build.rakumod').absolute;
+
+my constant $STRICT-PREBUILT-FLAGS = 0x00001100;
+my constant $ALTERED-SOURCE-FLAGS = 0x00000008;
+my constant $MARKER = '.notcurses-native-source-build';
+
+my $build = Build.new;
+my &reset-stage = Build.HOW.find_private_method(Build, 'reset-stage');
+my &mark-source = Build.HOW.find_private_method(Build, 'mark-source-build');
+
+ok &reset-stage.defined, 'Build exposes its private stage reset implementation';
+ok &mark-source.defined, 'Build exposes its private source marker implementation';
+
+my IO::Path $root = $*TMPDIR.add(
+    "notcurses-load-contract-{$*PID}-{now.Int}-{(100000.rand).Int}"
+);
+my Str $binary-tag = $*PROGRAM.parent.parent.child('BINARY_TAG').slurp.trim;
+my IO::Path $package-dir = $root.add('Notcurses-Native');
+my IO::Path $tag-dir = $package-dir.add($binary-tag);
+my IO::Path $stage = $tag-dir.add('lib');
+my IO::Path $library = $stage.add('libnotcurses.dll');
+my IO::Path $marker = $stage.add($MARKER);
+my IO::Path $bad-stage = $root.add('not-a-directory');
+temp %*ENV<NOTCURSES_NATIVE_DATA_DIR> = $root.Str;
+
+LEAVE {
+    try {
+        reset-stage($build, $stage) if $stage.e;
+        $stage.rmdir if $stage.d;
+        $tag-dir.rmdir if $tag-dir.d;
+        $package-dir.rmdir if $package-dir.d;
+        $bad-stage.unlink if $bad-stage.e;
+        $root.rmdir if $root.d;
+    }
+}
+
+$stage.mkdir;
+$library.spurt('prebuilt');
+is _windows-load-flags($library), $STRICT-PREBUILT-FLAGS,
+    'an unmarked prebuilt stage selects strict sibling/default search';
+is _windows-staged-load-mode(), 'prebuilt',
+    'the actual BINARY_TAG stage reports prebuilt mode when unmarked';
+
+# prebuilt -> source: no dependency from the closed archive may survive.
+my IO::Path $prebuilt-dependency = $stage.add('avcodec-62.dll');
+my IO::Path $prebuilt-subdir = $stage.add('stale');
+$prebuilt-dependency.spurt('prebuilt dependency');
+$prebuilt-subdir.mkdir;
+$prebuilt-subdir.add('nested.dll').spurt('nested prebuilt dependency');
+reset-stage($build, $stage);
+is $stage.dir.elems, 0,
+    'source staging clears every file and directory from the prebuilt stage';
+mark-source($build, $stage);
+$library.spurt('source');
+ok $marker.f, 'a successful source stage has a durable file marker';
+is $marker.slurp, "source-build\n", 'source marker content is deterministic';
+is _windows-load-flags($library.Str), $ALTERED-SOURCE-FLAGS,
+    'a marked source stage selects LOAD_WITH_ALTERED_SEARCH_PATH alone';
+is _windows-staged-load-mode(), 'source',
+    'the actual BINARY_TAG stage reports source mode when marked';
+is $ALTERED-SOURCE-FLAGS +& $STRICT-PREBUILT-FLAGS, 0,
+    'source and prebuilt loader flags are mutually exclusive';
+ok !$prebuilt-dependency.e,
+    'marked source stage does not retain a prebuilt FFmpeg dependency';
+
+# source -> prebuilt: reset must clear the marker before archive extraction.
+reset-stage($build, $stage);
+$library.spurt('prebuilt replacement');
+ok !$marker.e, 'prebuilt staging clears a stale source-build marker';
+is _windows-load-flags($library), $STRICT-PREBUILT-FLAGS,
+    'replacement prebuilt stage returns to strict search flags';
+is _windows-staged-load-mode(), 'prebuilt',
+    'stale-marker removal changes the staged mode back to prebuilt';
+
+# A directory with the marker name is corrupt, not an affirmative marker.
+$marker.mkdir;
+is _windows-load-flags($library), $STRICT-PREBUILT-FLAGS,
+    'only a marker file selects the source-build contract';
+
+$bad-stage.spurt('collision');
+dies-ok { reset-stage($build, $bad-stage) },
+    'stage reset rejects a non-directory destination';
+ok $bad-stage.f, 'failed stage reset preserves the colliding file';
+
+done-testing;

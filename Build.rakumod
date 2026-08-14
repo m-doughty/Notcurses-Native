@@ -81,6 +81,12 @@ class Build {
     constant $DEFAULT-BASE-URL =
         'https://github.com/m-doughty/Notcurses-Native/releases/download';
 
+    # Source-built Windows DLLs retain ordinary MSYS2 runtime dependencies,
+    # unlike release archives whose dependency closure is self-contained.
+    # Keep that provenance beside the staged libraries so runtime loading can
+    # select the corresponding Win32 search contract in a fresh process.
+    constant $SOURCE-BUILD-MARKER = '.notcurses-native-source-build';
+
     # Minimum glibc the prebuilt Linux archives are compatible with.
     # The CI workflow builds inside manylinux_2_28 containers (RHEL 8
     # baseline, glibc 2.28); libnotcurses + sibling ffmpeg dylibs only
@@ -268,6 +274,34 @@ class Build {
         copy $src, $dst;
     }
 
+    method !remove-stage-entry(IO::Path $entry --> Nil) {
+        if $entry.d && !$entry.l {
+            self!remove-stage-entry($_) for $entry.dir;
+            $entry.rmdir;
+        }
+        elsif $entry.e || $entry.l {
+            $entry.unlink;
+        }
+    }
+
+    # A binary tag can be reinstalled through the other provenance path.
+    # Always start either install from an empty stage so a source build cannot
+    # inherit a prebuilt FFmpeg closure, and a prebuilt cannot retain the
+    # source marker (or any ordinary-PATH assumptions it represents).
+    method !reset-stage(IO::Path $stage --> Nil) {
+        if $stage.d {
+            self!remove-stage-entry($_) for $stage.dir;
+        }
+        elsif $stage.e || $stage.l {
+            die "❌ Staged library path exists but is not a directory: $stage";
+        }
+        $stage.mkdir;
+    }
+
+    method !mark-source-build(IO::Path $stage --> Nil) {
+        $stage.add($SOURCE-BUILD-MARKER).spurt("source-build\n");
+    }
+
     # --- Prebuilt binary pathing ----------------------------------------
 
     method !try-prebuilt($dist-path, Str $plat, Str $binary-tag, IO::Path $stage --> Bool) {
@@ -321,10 +355,7 @@ class Build {
         # Wipe + recreate: avoid mixing files from a prior install of
         # the same tag (eg if the user manually swapped archives). Tag
         # dir is versioned so other versions are unaffected.
-        if $dest.d {
-            for $dest.dir { .unlink if .f || .l }
-        }
-        $dest.mkdir;
+        self!reset-stage($dest);
 
         if $archive.Str.ends-with('.zip') {
             # Windows zip extraction via PowerShell. We deliberately
@@ -602,8 +633,6 @@ class Build {
                    !! $*DISTRO.is-win ?? 'dll'
                    !! 'so';
 
-        $stage.mkdir;
-
         my @cmake-args = (
             'cmake', '-B', $build-dir, '-S', $vendor,
             '-DUSE_MULTIMEDIA=ffmpeg',
@@ -668,6 +697,11 @@ class Build {
             die "CMake build failed:\n$build-err";
         }
 
+        # The same BINARY_TAG may already hold a prebuilt install. Clear its
+        # complete sibling closure only after the source build itself has
+        # succeeded, immediately before staging the newly-built libraries.
+        self!reset-stage($stage);
+
         # Stage the three libs into the XDG-style staged-libs dir.
         # Upstream naming varies per platform — recursive find-lib
         # walks the build tree and matches each library's expected
@@ -698,6 +732,10 @@ class Build {
         if $os ~~ /darwin/ {
             self!rewrite-macos-install-names($stage, $build-dir);
         }
+
+        # Written last: absence means the source install never completed.
+        # Prebuilt extraction starts with !reset-stage, clearing this marker.
+        self!mark-source-build($stage);
     }
 
     #| For each staged dylib (and its version symlinks copied as real

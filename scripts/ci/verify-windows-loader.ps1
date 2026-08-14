@@ -1,3 +1,8 @@
+param(
+    [ValidateSet('prebuilt', 'source')]
+    [string]$Mode = 'prebuilt'
+)
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -10,12 +15,28 @@ if (-not (Test-Path -LiteralPath $raku -PathType Leaf)) {
 }
 $rakuDir = Split-Path -Parent $raku
 $system32 = [Environment]::GetFolderPath([Environment+SpecialFolder]::System)
-
-# Exclude every MSYS2/toolchain directory. Those directories contain many
-# of the same FFmpeg/ncurses DLLs as the published pack and previously made
-# CI green even though a normal installed application failed with 0x7e.
-$env:PATH = @($rakuDir, $system32, $env:SystemRoot) -join ';'
 Remove-Item Env:NOTCURSES_NATIVE_LIB_DIR -ErrorAction SilentlyContinue
+
+# Fail before changing PATH or loading a DLL when the workflow label disagrees
+# with the durable provenance marker in the actual BINARY_TAG-keyed stage.
+$stagedModeOutput = @(& $raku -Ilib -e 'use Notcurses::Native :INTERNAL; print _windows-staged-load-mode()')
+$stagedModeExit = $LASTEXITCODE
+$stagedMode = [string]($stagedModeOutput | Select-Object -Last 1)
+if ($stagedModeExit -ne 0 -or [string]::IsNullOrWhiteSpace($stagedMode)) {
+    throw 'could not determine the staged Notcurses loader mode'
+}
+$stagedMode = $stagedMode.Trim()
+if ($stagedMode -ne $Mode) {
+    throw "requested loader mode '$Mode' does not match staged mode '$stagedMode'"
+}
+
+# A prebuilt archive must be sibling-closed, so exclude every MSYS2/toolchain
+# directory that could mask a missing bundled DLL. A source build deliberately
+# retains ordinary MSYS2 dependencies; preserve the process's original PATH so
+# its marked LOAD_WITH_ALTERED_SEARCH_PATH contract can resolve them.
+if ($Mode -eq 'prebuilt') {
+    $env:PATH = @($rakuDir, $system32, $env:SystemRoot) -join ';'
+}
 
 function Invoke-RakuChecked {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
