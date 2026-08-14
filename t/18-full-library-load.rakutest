@@ -2,15 +2,7 @@ use Test;
 use NativeCall;
 use Notcurses::Native;
 
-# notcurses_version is intentionally rebound against &nc-lib here. The
-# public binding uses &core-lib, which would prove only the small core DLL
-# can load and would miss failures in the FFmpeg-backed full library's much
-# larger dependency closure. This call needs no terminal and creates no
-# notcurses context, so it is safe under prove/zef and Windows CI.
-sub full-notcurses-version(--> Str)
-    is native(&nc-lib) is symbol('notcurses_version') { * }
-
-plan 4;
+plan 5;
 
 my Str $resolved = nc-lib();
 ok $resolved.IO.e, 'full notcurses library resolves to an existing file';
@@ -23,8 +15,33 @@ if $*DISTRO.is-win {
     pass 'Windows PATH ordering is not applicable on this platform';
 }
 
+subtest 'full notcurses library loads without a TTY' => {
+    plan 3;
+
+    my $pixels = CArray[uint32].allocate(1);
+    $pixels[0] = 0xFF0000FF;  # ABGR: opaque red
+    my $visual;
+    LEAVE { ncvisual_destroy($visual) if $visual.defined }
+
+    lives-ok {
+        $visual = ncvisual_from_rgba(
+            nativecast(Pointer, $pixels), 1, 4, 1
+        );
+    }, 'one-pixel RGBA visual loads through the full library';
+    ok $visual.defined, 'full library returns a defined visual handle';
+
+    if $visual.defined {
+        my $to-destroy = $visual;
+        $visual = Nil;
+        lives-ok { ncvisual_destroy($to-destroy) },
+            'visual handle is destroyed through the full library';
+    } else {
+        skip 'visual handle was not created', 1;
+    }
+};
+
 my Str $version;
-lives-ok { $version = full-notcurses-version() },
-    'full notcurses library and its dependency closure load without a TTY';
+lives-ok { $version = notcurses_version() },
+    'core library version binding loads without a TTY';
 like $version, /^ \d+ '.' \d+ '.' \d+ /,
-    'full library reports a semantic notcurses version';
+    'core library reports a semantic notcurses version';
