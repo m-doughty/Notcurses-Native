@@ -315,7 +315,7 @@ On supported platforms this downloads a prebuilt self-contained archive from Git
 
 If you're on an unsupported platform, the build falls back to compiling notcurses from source via CMake — see **BUILD REQUIREMENTS** above for the dev packages that needs.
 
-Installation runs `t/` tests only — pure-Raku channel math and input struct tests that don't need a terminal. The full terminal-dependent test suite lives in `xt/` and can be run manually:
+Installation runs `t/` tests only — pure-Raku channel math and input struct tests plus one TTY-free full-library dependency-load probe. The full terminal-dependent test suite lives in `xt/` and can be run manually:
 
     prove -e 'raku -I lib -I t/lib' xt/*.rakutest
 
@@ -324,7 +324,7 @@ Installation runs `t/` tests only — pure-Raku channel math and input struct te
 PREBUILT BINARIES
 =================
 
-Each prebuilt archive contains the notcurses libraries plus every non-system runtime dependency, with linker paths (`@loader_path` on macOS, `$ORIGIN` on Linux, sibling-DLL on Windows) rewritten so the binaries find each other inside the staged directory without touching the host system's libraries.
+Each prebuilt archive contains the notcurses libraries plus every non-system runtime dependency. macOS and Linux linker paths are relocated to `@loader_path` and `$ORIGIN`; Windows keeps the complete DLL closure flat and `Notcurses::Native` loads each entry point with that directory explicitly enabled for dependency resolution. The binaries therefore find each other inside the staged directory without touching host libraries.
 
 Supported platforms
 -------------------

@@ -4,8 +4,9 @@
 # CLANGARM64 — the same MSYS2 environment we use to build the
 # prebuilt. Build takes ~10-20 min on first run; cached after.
 #
-# Upstream notcurses-tester is broken on Windows so we don't run
-# prove6 — successful zef install is what verifies the bundle.
+# Upstream notcurses-tester is broken on Windows so we don't run the
+# terminal suite. The focused PowerShell probe below removes MSYS2 from
+# PATH and calls a symbol through the full libnotcurses DLL.
 
 name: _verify-windows-arm64
 
@@ -81,9 +82,22 @@ jobs:
           echo "$HOME/.rakubrew/shims" >> "$GITHUB_PATH"
           echo "$HOME/.rakubrew/versions/moar-${{ env.RAKUDO_VERSION }}/install/share/perl6/site/bin" >> "$GITHUB_PATH"
 
+      - name: Record native Raku executable for restricted-PATH probe
+        run: |
+          raku_exe=$(raku -e 'print $*EXECUTABLE.absolute')
+          printf 'NOTCURSES_TEST_RAKU=%s\n' "$raku_exe" >> "$GITHUB_ENV"
+
       - name: zef install (prebuilt path)
         run: zef install --/test .
+
+      - name: Full DLL closure loads with restricted PATH (prebuilt)
+        shell: pwsh
+        run: ./scripts/ci/verify-windows-loader.ps1
 
       - name: zef install (source-build path)
         env: { NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1' }
         run: zef install --/test --force-install .
+
+      - name: Full DLL closure loads with restricted PATH (source build)
+        shell: pwsh
+        run: ./scripts/ci/verify-windows-loader.ps1

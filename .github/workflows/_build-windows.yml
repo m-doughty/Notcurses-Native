@@ -740,9 +740,10 @@ jobs:
       # every symbol resolved at link time — no equivalent of macOS's
       # -undefined dynamic_lookup or GNU ld's --unresolved-symbols.
       # We link against $NOTCURSES_SRC_DIR/build's libnotcurses-core.dll.a
-      # import lib instead. At runtime the shim's import table resolves
-      # to the libnotcurses-core.dll sibling in the same archive
-      # directory (Windows DLL search order finds same-dir DLLs first).
+      # import lib instead. At runtime the shim's import table names
+      # libnotcurses-core.dll by basename; Notcurses::Native loads the
+      # shim with the archive directory explicitly enabled for dependency
+      # resolution (Windows does not infer that from the shim's location).
       - name: Compile perf shim
         run: |
           set -euxo pipefail

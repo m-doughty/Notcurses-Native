@@ -1,0 +1,30 @@
+use Test;
+use NativeCall;
+use Notcurses::Native;
+
+# notcurses_version is intentionally rebound against &nc-lib here. The
+# public binding uses &core-lib, which would prove only the small core DLL
+# can load and would miss failures in the FFmpeg-backed full library's much
+# larger dependency closure. This call needs no terminal and creates no
+# notcurses context, so it is safe under prove/zef and Windows CI.
+sub full-notcurses-version(--> Str)
+    is native(&nc-lib) is symbol('notcurses_version') { * }
+
+plan 4;
+
+my Str $resolved = nc-lib();
+ok $resolved.IO.e, 'full notcurses library resolves to an existing file';
+
+if $*DISTRO.is-win {
+    my Str $path-head = (%*ENV<PATH> // '').split(';')[0];
+    is $path-head.IO.absolute.Str, $resolved.IO.parent.absolute.Str,
+        'resolved notcurses directory is first on Windows PATH';
+} else {
+    pass 'Windows PATH ordering is not applicable on this platform';
+}
+
+my Str $version;
+lives-ok { $version = full-notcurses-version() },
+    'full notcurses library and its dependency closure load without a TTY';
+like $version, /^ \d+ '.' \d+ '.' \d+ /,
+    'full library reports a semantic notcurses version';

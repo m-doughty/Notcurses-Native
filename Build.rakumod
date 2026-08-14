@@ -6,7 +6,8 @@
 #|      archive per platform contains libnotcurses, libnotcurses-core,
 #|      libnotcurses-ffi, plus any ffmpeg sibling dylibs relocated to
 #|      load from the same directory (@loader_path on macOS, $ORIGIN
-#|      on Linux, sibling-DLL on Windows). Archive format is .tar.gz
+#|      on Linux, and a flat dependency closure plus explicit loader
+#|      search setup on Windows). Archive format is .tar.gz
 #|      on Unix and .zip on Windows. SHA256 verified against bundled
 #|      resources/checksums.txt. Typically ~15–40 MB unpacked
 #|      (ffmpeg is most of the bulk).
@@ -21,7 +22,8 @@
 #|
 #|   zef hashes every staged resource filename to a SHA-keyed name in
 #|   .../resources/. notcurses dylibs/sos/dlls have inter-dep references
-#|   baked in via @loader_path / $ORIGIN / sibling-DLL load
+#|   baked in via @loader_path / $ORIGIN, while Windows import tables
+#|   retain the sibling DLL basenames
 #|   (e.g. libnotcurses.dylib needs libnotcurses-core.3.0.17.dylib next
 #|   to it on disk by that exact name). Renamed-to-hash files break
 #|   those refs and the loader fails at first dlopen with cryptic

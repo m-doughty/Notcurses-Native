@@ -20,9 +20,9 @@
 # from the system package manager at build time).
 #
 # Each platform's archive bundles three notcurses libs plus any
-# ffmpeg sibling dylibs that notcurses dyn-links; relocated with
-# @loader_path (macOS) / $ORIGIN (Linux) / sibling DLL layout
-# (Windows) so they load from the same resources/lib/ directory.
+# ffmpeg sibling libraries that notcurses dyn-links; relocated with
+# @loader_path (macOS) / $ORIGIN (Linux), or kept as a flat DLL closure
+# whose directory the runtime loader enables explicitly (Windows).
 
 1f8a964675d3c176d8ce5a34f8a7aed18f2411bcf90c40789a7590fcd6713132  notcurses-windows-x86_64.zip
 274c2c9eb25fab9d5868ec85dadba64d2de78c7b4d2bdc18603511512f0b5fc4  notcurses-linux-aarch64-glibc.tar.gz

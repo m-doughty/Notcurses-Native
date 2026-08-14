@@ -100,10 +100,11 @@ runs:
 
         cd "$workspace"
 
-        # On Windows, DLL search order finds siblings in the same
-        # directory as the DLL being loaded — no rpath needed.
-        # We just need to ensure every transitive dep is present
-        # in bundle/. MSYS2's `ldd` works on Windows DLLs, with the
+        # Windows PE import tables contain bare DLL basenames and have no
+        # rpath equivalent. Keep the whole dependency closure flat in
+        # bundle/; Notcurses::Native's runtime loader supplies that exact
+        # directory for dependent-DLL resolution. MSYS2's `ldd` works on
+        # Windows DLLs, with the
         # objdump backstop below covering the cases where ldd lies
         # (notably on CLANGARM64).
         #

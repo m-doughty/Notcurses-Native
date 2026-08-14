@@ -98,6 +98,77 @@ sub _resolve-lib(Str $name --> Str) {
     "{ _staged-lib-dir() }/$name.$ext";
 }
 
+# Pick the directory whose libraries the resolver will use. This must
+# stay in lockstep with _resolve-lib: the explicit override wins when it
+# names a real directory, otherwise the BINARY_TAG-keyed staged dir wins.
+sub _resolve-lib-dir(--> IO::Path) {
+    if (my $override = %*ENV<NOTCURSES_NATIVE_LIB_DIR>) && $override.IO.d {
+        return $override.IO.absolute;
+    }
+    my $staged = _staged-lib-dir();
+    return $staged.absolute if $staged.d;
+    IO::Path;
+}
+
+# Windows does not search the directory of a DLL loaded by absolute path
+# when resolving that DLL's imports. NativeCall ultimately uses the normal
+# LoadLibrary path, so loading C:\...\libnotcurses.dll can still fail with
+# ERROR_MOD_NOT_FOUND even while every required FFmpeg/notcurses DLL is
+# beside it.
+#
+# Pre-load each library lazily with LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR before
+# handing the same absolute path to NativeCall. That flag applies the top
+# DLL's directory to this one load and its dependency closure without
+# changing process-global loader policy. In particular, this deliberately
+# avoids SetDllDirectoryW: Windows exposes only one such process-global slot,
+# so using it here would silently evict a directory installed by another FFI
+# package (or be evicted by one later). App launchers should still put native
+# directories on PATH before process start; this scoped load is the package's
+# standalone safety net and also covers NOTCURSES_NATIVE_LIB_DIR overrides.
+my constant $LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR = 0x00000100;
+my constant $LOAD_LIBRARY_SEARCH_DEFAULT_DIRS = 0x00001000;
+
+sub _LoadLibraryExW(
+    Str is encoded('utf16'),
+    Pointer,
+    uint32
+    --> Pointer
+) is native('kernel32') is symbol('LoadLibraryExW') { * }
+
+sub _GetLastError(--> uint32)
+    is native('kernel32') is symbol('GetLastError') { * }
+
+sub _prepare-windows-lib(Str $path --> Str) {
+    return $path unless $*DISTRO.is-win;
+
+    my IO::Path $absolute = $path.IO.absolute;
+    # Preserve _resolve-lib's actionable missing-path fallback. NativeCall
+    # will report that exact path if installation/staging did not happen.
+    return $path unless $absolute.e;
+
+    # Resolve the GetLastError binding before the load attempt. Doing that
+    # for the first time after a failure could itself touch loader state and
+    # obscure the error code set by LoadLibraryExW.
+    _GetLastError();
+    my Pointer $handle = _LoadLibraryExW(
+        $absolute.Str,
+        Pointer,
+        $LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR +| $LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
+    );
+    unless $handle.defined {
+        my uint32 $error = _GetLastError();
+        die "Notcurses::Native: Windows could not load '{$absolute.Str}' "
+          ~ "with its sibling dependency directory (Win32 error $error). "
+          ~ "The staged DLL closure may be incomplete or unavailable.";
+    }
+
+    $absolute.Str;
+}
+
+sub _resolve-and-prepare-lib(Str $name --> Str) {
+    _prepare-windows-lib(_resolve-lib($name));
+}
+
 # --- Runtime env setup ---
 #
 # Our bundled libncursesw was compiled against Homebrew's ncurses,
@@ -140,7 +211,28 @@ sub _setenv-c(Str $name, Str $value) {
 }
 
 sub _configure-runtime-env() {
-    return if %*ENV<NOTCURSES_NATIVE_LIB_DIR>;  # user override
+    if $*DISTRO.is-win {
+        # PATH is useful to child processes and to consumers that perform
+        # their own ordinary DLL loads after importing this module. Raku's
+        # runtime PATH mutation is not relied on for our NativeCall loads:
+        # _prepare-windows-lib uses scoped LoadLibraryExW flags because the
+        # Windows loader and the CRT can observe different environment state.
+        my $lib-dir = _resolve-lib-dir();
+        with $lib-dir {
+            my Str $lib-str = .Str;
+            my Str $current = %*ENV<PATH> // '';
+            unless $current eq $lib-str
+                || $current.starts-with("$lib-str;") {
+                %*ENV<PATH> = $current.chars
+                    ?? "$lib-str;$current"
+                    !! $lib-str;
+            }
+        }
+    }
+
+    # A custom build owns its terminfo configuration, but its Windows DLL
+    # dependency closure still needs the loader setup above.
+    return if %*ENV<NOTCURSES_NATIVE_LIB_DIR>;
 
     unless %*ENV<TERMINFO_DIRS> {
         # Colon-separated list. Include both common system paths so
@@ -167,9 +259,9 @@ _configure-runtime-env();
 # still O(1) after the first invocation. Pair with
 # `is native(&nc-lib)` on each binding (not `is native(&nc-lib)`)
 # so NativeCall invokes the resolver lazily.
-sub nc-lib   is export { state $r = _resolve-lib('libnotcurses');      $r }
-sub ffi-lib  is export { state $r = _resolve-lib('libnotcurses-ffi');  $r }
-sub core-lib is export { state $r = _resolve-lib('libnotcurses-core'); $r }
+sub nc-lib   is export { state $r = _resolve-and-prepare-lib('libnotcurses');      $r }
+sub ffi-lib  is export { state $r = _resolve-and-prepare-lib('libnotcurses-ffi');  $r }
+sub core-lib is export { state $r = _resolve-and-prepare-lib('libnotcurses-core'); $r }
 
 #|( Resolved path to the perf shim that lives alongside the staged
     libnotcurses libs (see src/notcurses_native_shim.c +
@@ -187,7 +279,10 @@ sub core-lib is export { state $r = _resolve-lib('libnotcurses-core'); $r }
     State-cached sub (not a `constant`) for the same precomp-staleness
     reason as nc-lib / ffi-lib / core-lib — see those for the full
     rationale. )
-sub shim-lib is export { state $r = _resolve-lib('libnotcurses_native_shim'); $r }
+sub shim-lib is export {
+    state $r = _resolve-and-prepare-lib('libnotcurses_native_shim');
+    $r;
+}
 
 # === Version ===
 

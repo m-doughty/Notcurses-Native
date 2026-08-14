@@ -164,8 +164,9 @@ jobs:
 
             Each archive contains `libnotcurses`, `libnotcurses-core`,
             `libnotcurses-ffi`, plus ffmpeg sibling dylibs/sos/DLLs
-            that notcurses dyn-links — all with rpaths relocated so
-            they load siblings from the archive's own directory — and a
+            that notcurses dyn-links — with relocated loader paths on
+            macOS/Linux and a flat, runtime-enabled DLL search directory
+            on Windows — and a
             `THIRD-PARTY.md` + `LICENSES/` licensing kit describing
             everything in that particular archive.
 

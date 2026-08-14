@@ -3,10 +3,11 @@
 # x86_64 Rakudo for windows-2022.
 #
 # Upstream notcurses-tester is broken on Windows (per
-# doc/notcurses.md, "Microsoft Windows" section), so we don't run
-# prove6 here — successful `zef install` exercises Build.rakumod's
-# prebuilt-download + DLL-load + symbol-resolution path, which is
-# what would fail in practice if the prebuilt were broken.
+# doc/notcurses.md, "Microsoft Windows" section), so we don't run the
+# terminal suite. The focused PowerShell probe below removes MSYS2 from
+# PATH and calls a symbol through the full libnotcurses DLL, exercising
+# the install, loader, dependency closure, and symbol resolution without
+# requiring a TTY.
 
 name: _verify-windows-x86_64
 
@@ -43,9 +44,22 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-toolchain
 
+      - name: Record native Raku executable for restricted-PATH probe
+        run: |
+          raku_exe=$(raku -e 'print $*EXECUTABLE.absolute')
+          printf 'NOTCURSES_TEST_RAKU=%s\n' "$raku_exe" >> "$GITHUB_ENV"
+
       - name: zef install (prebuilt path)
         run: zef install --/test .
+
+      - name: Full DLL closure loads with restricted PATH (prebuilt)
+        shell: pwsh
+        run: ./scripts/ci/verify-windows-loader.ps1
 
       - name: zef install (source-build path)
         env: { NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1' }
         run: zef install --/test --force-install .
+
+      - name: Full DLL closure loads with restricted PATH (source build)
+        shell: pwsh
+        run: ./scripts/ci/verify-windows-loader.ps1
