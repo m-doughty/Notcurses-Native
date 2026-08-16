@@ -56,6 +56,17 @@ jobs:
         shell: pwsh
         run: ./scripts/ci/verify-windows-loader.ps1 -Mode prebuilt
 
+      - name: zef install App::Prove6
+        run: zef install --/test App::Prove6
+
+      # The Raku suite runs here exactly as it does on the linux and macos
+      # lanes. Only the upstream C notcurses-tester is unusable on Windows
+      # (see the header); t/ is pure Raku and needs no TTY. The xt/ suite is
+      # deliberately not run — those tests are terminal-dependent and this
+      # runner has no console.
+      - name: prove6 (prebuilt path)
+        run: prove6 --verbose -I lib -I t/lib t
+
       - name: zef install (source-build path)
         env: { NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1' }
         run: |
@@ -66,3 +77,6 @@ jobs:
       - name: Source-built DLLs load with MSYS2 PATH
         shell: pwsh
         run: ./scripts/ci/verify-windows-loader.ps1 -Mode source
+
+      - name: prove6 (source-build path)
+        run: prove6 --verbose -I lib -I t/lib t
