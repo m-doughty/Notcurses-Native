@@ -92,7 +92,7 @@
       "source": {
         "kind": "git",
         "url": "https://github.com/m-doughty/notcurses.git",
-        "ref": "e46585a5c03d4037235a12af77cb56eee8075324",
+        "ref": "804b8e8ecd44240d884441069dd34d13be9b113c",
         "attach-to-release": false
       },
       "binaries": {

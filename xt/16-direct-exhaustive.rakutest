@@ -106,8 +106,19 @@ subtest 'Capabilities struct fields' => {
 subtest 'Input ready file descriptor' => {
 	plan 1;
 
+	# Assert the real per-platform contract rather than skipping. notcurses'
+	# inputready_fd() returns ictx->readypipes[0] on POSIX, but is an explicit
+	# `return -1` on Windows ("readiness descriptor unavailable on windows"):
+	# there is no pollable readiness descriptor there, because a Win32
+	# anonymous pipe handle is not a waitable object and the input layer wakes
+	# on an event instead. A consumer must therefore not poll() for input on
+	# Windows, and this pins that difference so it cannot change unnoticed.
 	my $fd = ncdirect_inputready_fd($ncd);
-	ok $fd >= 0, "inputready_fd returned valid fd ($fd)";
+	if $*DISTRO.is-win {
+		is $fd, -1, "no readiness descriptor on Windows, as documented ($fd)";
+	} else {
+		ok $fd >= 0, "inputready_fd returned valid fd ($fd)";
+	}
 };
 
 done-testing;

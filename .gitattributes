@@ -24,3 +24,16 @@ BINARY_TAG        text eol=lf
 # and is parsed line-by-line by Build.rakumod.
 *.txt             text eol=lf
 *.json            text eol=lf
+
+# src/notcurses_native_shim.c is SHA-256'd by every build lane and the digest
+# ships inside the archive as libnotcurses_native_shim.<ext>.srchash, which
+# Build.rakumod then compares against a hash of this same file in the user's
+# checkout. GitHub's Windows runners default to core.autocrlf=true, so without
+# this the Windows lane hashed CRLF bytes and recorded a digest no LF checkout
+# can reproduce — the shim is judged stale on every single install, and a
+# prebuilt-only Windows install cannot recompile it (the archive carries no
+# libnotcurses-core.dll.a), so it silently loses the shim and Selkie's
+# ViewportedCardList falls back to the slower Raku per-cell merge. The macOS
+# and Linux lanes were unaffected only because their runners check out LF.
+*.c               text eol=lf
+*.h               text eol=lf
