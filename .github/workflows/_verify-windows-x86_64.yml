@@ -56,7 +56,16 @@ jobs:
         shell: pwsh
         run: ./scripts/ci/verify-windows-loader.ps1 -Mode prebuilt
 
+      # pwsh, not the job's msys2 default shell. Under MSYS2, TMPDIR=/tmp makes
+      # Rakudo report $*TMPDIR as a Windows path (D:\a\_temp\msys64\tmp) which
+      # zef then extends with forward slashes; its git/tar extractor plugins
+      # fail on the resulting mixed-separator path and the fetch aborts. Every
+      # other repo here installs App::Prove6 from a native Windows shell and
+      # has no such trouble. Only the fetch/extract is affected, so the prove6
+      # runs below stay in the msys2 shell, where the source-built DLLs find
+      # their MSYS2 dependencies on PATH.
       - name: zef install App::Prove6
+        shell: pwsh
         run: zef install --/test App::Prove6
 
       # The Raku suite runs here exactly as it does on the linux and macos
