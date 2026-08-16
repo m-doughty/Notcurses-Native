@@ -2,6 +2,23 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.6.1  2026-08-16T22:52:24+01:00
+
+    - Stop destroying the process PATH on Windows. The staged library
+      directory is prepended to PATH so a consumer's own DLL loads keep
+      working after importing this module — but Windows names the variable
+      'Path', not 'PATH', and %*ENV is an ordinary case-sensitive Hash. So
+      `%*ENV<PATH> // ''` answered the empty string and the branch replaced
+      the entire search path with our single directory; because environment
+      names are case-insensitive to the OS, the freshly created 'PATH' key
+      then won outright.
+
+      Every native library loaded after notcurses consequently lost its own
+      dependency search path. It surfaced as SQLCipher being unable to find
+      libcrypto — reported, misleadingly, as "sqlcipher.dll not found" — but
+      would equally have hit libvips, onnxruntime or any other consumer.
+      Whichever spelling the host actually uses is now updated in place.
+
 0.6.0  2026-08-16T20:32:48+01:00
 
     - Free caller-owned notcurses strings through the Universal CRT

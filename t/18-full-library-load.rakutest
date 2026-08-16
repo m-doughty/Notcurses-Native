@@ -2,7 +2,7 @@ use Test;
 use NativeCall;
 use Notcurses::Native;
 
-plan 6;
+plan 7;
 
 # On Windows nc-lib() eagerly preloads libnotcurses with LoadLibraryExW,
 # proving its complete FFmpeg dependency closure before any symbol call.
@@ -15,14 +15,24 @@ ok $resolved.defined && $resolved.IO.e,
     'full notcurses library resolves to an existing file';
 
 if $*DISTRO.is-win {
-    if $resolved.defined {
-        my Str $path-head = (%*ENV<PATH> // '').split(';')[0];
+    if $resolved.defined && $resolved.chars {
+        # Windows spells it 'Path'; %*ENV is case-sensitive, so hardcoding
+        # 'PATH' reads an absent key. This assertion used to pass only
+        # because _configure-runtime-env had the same bug and created that
+        # key — look up whichever spelling the host actually uses, exactly as
+        # the module now does.
+        my Str $key = %*ENV.keys.first({ .lc eq 'path' }) // 'PATH';
+        my Str $path-head = (%*ENV{$key} // '').split(';').first(*.chars) // '';
+        ok $path-head.chars,
+            'the environment carries a PATH we can inspect'
+            or diag "no PATH-like key among: {%*ENV.keys.sort}";
         is $path-head.IO.absolute.Str, $resolved.IO.parent.absolute.Str,
             'resolved notcurses directory is first on Windows PATH';
     } else {
-        skip 'full notcurses library did not resolve', 1;
+        skip 'full notcurses library did not resolve', 2;
     }
 } else {
+    pass 'PATH inspection is not applicable on this platform';
     pass 'Windows PATH ordering is not applicable on this platform';
 }
 

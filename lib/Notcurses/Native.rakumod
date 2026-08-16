@@ -245,10 +245,20 @@ sub _configure-runtime-env() {
         my $lib-dir = _resolve-lib-dir();
         with $lib-dir {
             my Str $lib-str = .Str;
-            my Str $current = %*ENV<PATH> // '';
+            # Windows names this variable 'Path', not 'PATH', and %*ENV is an
+            # ordinary case-sensitive Hash — so reading %*ENV<PATH> answered
+            # Nil and the branch below replaced the entire process PATH with
+            # this single directory instead of prepending to it. Environment
+            # names ARE case-insensitive to the OS, so the freshly created
+            # 'PATH' key won and every other DLL search path vanished: any
+            # library loaded after notcurses stopped resolving its own
+            # dependencies (SQLCipher failing to find libcrypto was how this
+            # surfaced). Update whichever spelling the host actually uses.
+            my Str $key = %*ENV.keys.first({ .lc eq 'path' }) // 'PATH';
+            my Str $current = %*ENV{$key} // '';
             unless $current eq $lib-str
                 || $current.starts-with("$lib-str;") {
-                %*ENV<PATH> = $current.chars
+                %*ENV{$key} = $current.chars
                     ?? "$lib-str;$current"
                     !! $lib-str;
             }

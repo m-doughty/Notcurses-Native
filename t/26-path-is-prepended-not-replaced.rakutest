@@ -1,0 +1,69 @@
+use Test;
+
+# _configure-runtime-env() prepends the staged library directory to PATH so a
+# consumer's own DLL loads keep working after importing this module. It must
+# PREPEND, never replace.
+#
+# It used to replace. Windows names the variable 'Path', not 'PATH', and
+# %*ENV is an ordinary case-sensitive Hash — so `%*ENV<PATH> // ''` answered
+# the empty string, and the whole process search path was overwritten with
+# our single directory. Environment names are case-insensitive to the OS, so
+# the newly created 'PATH' key won outright. Every library loaded after
+# notcurses then failed to resolve its own dependencies; the way it surfaced
+# was SQLCipher no longer finding libcrypto, reported (misleadingly) as
+# "sqlcipher.dll not found".
+#
+# Exercised in a child process on purpose: the mutation happens once, at
+# module load, so there is nothing meaningful left to observe in-process.
+
+plan 4;
+
+my IO::Path $root = $*PROGRAM.parent.parent;
+my Str $sentinel = $*DISTRO.is-win ?? 'C:\\notcurses-path-sentinel'
+                                   !! '/notcurses-path-sentinel';
+my Str $sep = $*DISTRO.is-win ?? ';' !! ':';
+
+# Print the live PATH from whichever spelling the host uses, after the module
+# has had its chance to rewrite it.
+my IO::Path $child = $*TMPDIR.add("nc-path-probe-{$*PID}.raku");
+$child.spurt(q:to/PROBE/);
+    use Notcurses::Native;
+    my Str $key = %*ENV.keys.first({ .lc eq 'path' }) // 'PATH';
+    print $key ~ "\t"
+        ~ %*ENV.keys.grep({ .lc eq 'path' }).elems ~ "\t"
+        ~ (%*ENV{$key} // '');
+    PROBE
+LEAVE { $child.unlink if $child.e }
+
+my %env = %*ENV;
+my Str $key = %env.keys.first({ .lc eq 'path' }) // 'PATH';
+%env{$key} = $sentinel ~ $sep ~ (%env{$key} // '');
+
+my $proc = run $*EXECUTABLE, '-I', $root.child('lib').Str, $child.Str,
+                :out, :err, :%env;
+my Str $stdout = $proc.out.slurp(:close);
+my Str $stderr = $proc.err.slurp(:close);
+
+is $proc.exitcode, 0, 'the probe process loaded Notcurses::Native'
+    or diag $stderr;
+
+my ($seen-key, $key-count, $path) = $stdout.split("\t", 3);
+
+is $key-count.Int, 1,
+    'exactly one PATH-ish environment key — no second spelling was created';
+
+ok ($path // '').contains($sentinel),
+    'a directory that was on PATH before the import is still on it after';
+
+# The prepend itself only happens on Windows; elsewhere the block is skipped
+# entirely and PATH must come back untouched.
+if $*DISTRO.is-win {
+    ok ($path // '').split($sep).grep(*.chars).elems > 1,
+        'PATH still has more than the one directory this module adds';
+} else {
+    is ($path // '').split($sep).grep(*.chars).elems,
+       (%env{$key} // '').split($sep).grep(*.chars).elems,
+       'PATH is left exactly as it was on non-Windows';
+}
+
+done-testing;
