@@ -2,6 +2,76 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.6.0  2026-08-16T20:32:48+01:00
+
+    - Free caller-owned notcurses strings through the Universal CRT
+      (ucrtbase.dll) rather than msvcrt.dll. Heap pointers returned by
+      notcurses must be released by the same CRT family that allocated
+      them; handing a UCRT allocation to msvcrt's free() can corrupt the
+      process heap.
+
+    - Add NOTCURSES-GET-ERROR, the sentinel every notcurses_get* returns
+      on error. Those subs are bound with a uint32 return, so the error
+      arrives as 4294967295 and the obvious `$id == -1` test silently
+      never matches — leaving a failed read to be decoded as a valid
+      input event. Consumers should compare against this constant.
+
+    - A source build whose CMake configure fails no longer downgrades
+      itself to -DUSE_MULTIMEDIA=none behind a warning. That produced a
+      library with no image or video support, which nothing downstream
+      could detect until it failed at runtime. The configure failure is
+      now fatal and names the FFmpeg package to install for each
+      platform; set NOTCURSES_NATIVE_ALLOW_NO_MULTIMEDIA=1 to opt into a
+      core-only build deliberately.
+
+    - The test helper's stdout/stderr redirection bound dup(), dup2() and
+      open() with a bare `is native`, which resolves against the running
+      executable. That finds libc on POSIX, but MoarVM exports none of
+      them on Windows, so every xt file died at compile time. They now
+      resolve through the same C runtime as the rest of the distribution,
+      using the UCRT's underscore-prefixed spellings. The redirection
+      itself is skipped on Windows, where MoarVM shares the descriptor
+      with the TAP stream, and moved into an INIT phaser so it runs in
+      the test process rather than during precompilation.
+
+    - Bump the pinned notcurses fork (BINARY_TAG r13). Beyond the input
+      and shutdown work — a waitable wake handle so the input thread can
+      be broken out of its blocking wait, console-mode preservation and
+      restoration, a redirected-handle fallback so notcurses_init
+      succeeds when stdin/stdout are not a console, end-of-stream
+      handling on redirected stdin, and a bounded, race-free
+      terminal-interrogation timeout — this run fixes five further
+      Windows defects:
+
+      * blocking_write() rejects a negative descriptor instead of
+        relying on write(2) answering EBADF. The Windows CRT routes an
+        invalid descriptor through its invalid-parameter handler, which
+        terminates the process outright; a ttyfd of -1 is normal for any
+        redirected or headless output, so cursor operations killed the
+        caller.
+      * notcurses_stop() and ncdirect_stop() emit their final sequences
+        to the FILE* the caller supplied rather than to stdout, so a
+        caller that isolated the library onto a null device no longer
+        finds escape sequences on its real output.
+      * The C runtime is put into UTF-8 mode even when the caller passes
+        NCOPTION_INHIBIT_SETLOCALE. That option is about the
+        LANG-derived locale; on Windows the CRT decoding mode is
+        separate, and without it multi-byte grapheme clusters were split
+        one byte per cell.
+      * A NUL terminator no longer contributes a column in
+        utf8_egc_len(), so ncstrwidth("") answers 0 rather than 1.
+      * linesigs_enable() and linesigs_disable() treat "no controlling
+        terminal" as a successful no-op on every platform, as the POSIX
+        path already did.
+
+    - Pin *.c and *.h to LF. The shim source is hashed into a .srchash
+      sidecar that ships inside each prebuilt pack and is compared
+      against a hash of the same file in the consumer's checkout. The
+      Windows runner checks out CRLF by default, so it recorded a digest
+      no other checkout could reproduce: the shim was judged stale on
+      every install, and a prebuilt-only Windows install cannot rebuild
+      it, so it was silently dropped.
+
 0.5.2  2026-08-14T21:21:56+01:00
     - Fix Windows loading of the bundled notcurses dependency closure.
       Loading libnotcurses.dll by absolute path does not make Windows

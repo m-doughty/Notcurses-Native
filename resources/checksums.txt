@@ -24,18 +24,18 @@
 # @loader_path (macOS) / $ORIGIN (Linux), or kept as a flat DLL closure
 # whose directory the runtime loader enables explicitly (Windows).
 
-115865c2a06757af696fc946feca3e664cdc6943082dba39b5f4c2cd53ee76df  notcurses-linux-aarch64-glibc.tar.gz
-169b06e95e48729f8b204e9cd6c67c7be5d2029a94b02a80b12503cd963cc5c9  notcurses-macos-arm64.tar.gz
-1b3ad67ce5bc50e16fdd678f3a318db564b03d528acc9df2f7673691f270467a  notcurses-linux-x86_64-musl.tar.gz
+1c5e358e3b6868dac16bd3ce54257dfb4514d7200423d87d7c7ec533c476d40c  notcurses-linux-x86_64-glibc.tar.gz
 2abfb0c89212e6e4733a54e0ae509ec00a5b845a6360946f918806e14aedb011  dav1d-1.5.4.tar.bz2
-343fe43c6c07740654d41f0678dfd9b91263baef1586f37b0ef34ed9ca5014d5  notcurses-windows-arm64.zip
+2f0eb2db1e1f3b23883e37de3e77f3508ecc524f5c607511d709254de52d4a04  notcurses-macos-x86_64.tar.gz
 6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1  opus-1.6.1.tar.gz
 7a479a3c66b9f5d5542a4c6a1b7d3768a983b1e5c14c60a9396edc9b649e015c  libvpx-1.16.0.tar.gz
-7a86d71eb6c56cd27abc8c4390c5deaabdd290471fb67c02763d6f21c9a3bdbf  notcurses-linux-aarch64-musl.tar.gz
 88dd96a8c0464eca144fc791ae60cd31cd8ee78321e67397e25fc095c4a19aa6  libiconv-1.19.tar.gz
+9f12bbe02c8d97b8b52c3e42f16067de540969319f9b3fdf442939f0ea13e0c9  notcurses-linux-aarch64-musl.tar.gz
 9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7  ffmpeg-n8.1.2.tar.gz
-bfb1c98088bc7dd30559fd587e2216489cc504bab0cf76f0aa668e10facabda8  notcurses-windows-x86_64.zip
-e50091828fab0885a48f9ca1349c5c047ccd9039e49796ee51b3dfff9852c035  notcurses-macos-x86_64.tar.gz
+a6fb7c5bcb2065a19bff9c77f0c7dec96260f136ee792b7362af9adbef9c79cf  notcurses-macos-arm64.tar.gz
+cc4da8911bfef3e3a8da60cdacb036128d9d919bd114b4c98521ad5bc1c1a4bf  notcurses-linux-x86_64-musl.tar.gz
+cd7ccb26d9ca6466e49f43937b4bbece6087547e4b74a7b878dbf50b1e9cceff  notcurses-windows-arm64.zip
 e82664b170064e62331962126b259d452d53b227bb4a93ab20040d846fec01d8  libunistring-1.4.2.tar.gz
-ee8627edf2e07b1b6dd807d145ebc43574473180d938d5c7133bb3db0854b0ac  notcurses-linux-x86_64-glibc.tar.gz
+f4a3aa6547223b6e392b8a68e8225e5d1470f3ea64b124c7ad10454332183385  notcurses-windows-x86_64.zip
+fce06ac88740ebc95de47b95d5bcc37f69f8640478e62a1451c1ec0111d4c5ae  notcurses-linux-aarch64-glibc.tar.gz
 fed5cd22f00f30cc4c2e5329f94e2b8a901df9fa45ee255cb70e2b0b42344477  libdeflate-1.25.tar.gz
