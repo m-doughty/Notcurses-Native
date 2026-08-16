@@ -665,11 +665,32 @@ class Build {
         unless $configure.exitcode == 0 {
             say $cfg-out;
             say $cfg-err;
-            # Retry without multimedia as last-resort fallback
-            # (disables image/video support — Cantina's avatar flow
-            # won't work, but core TUI still does).
-            note "⚠️  FFmpeg not found — retrying core-only build "
-               ~ "(no image/video support).";
+            # A core-only build is a silently degraded product: image and
+            # video support vanish, Cantina's avatar flow stops working, and
+            # nothing downstream can tell the difference until a user hits it
+            # at runtime. Every shipped binary is expected to carry the
+            # multimedia backend, so this is a hard failure by default and
+            # only ever a deliberate, opted-into choice.
+            unless (%*ENV<NOTCURSES_NATIVE_ALLOW_NO_MULTIMEDIA> // '') eq '1' {
+                die join "\n",
+                    'CMake configure failed with -DUSE_MULTIMEDIA=ffmpeg.',
+                    '',
+                    'This usually means the FFmpeg development headers are',
+                    'missing. Install them and retry:',
+                    '',
+                    '  Debian/Ubuntu  apt install libavdevice-dev',
+                    '  Fedora         dnf install ffmpeg-devel',
+                    '  macOS          brew install ffmpeg',
+                    '  MSYS2/UCRT64   pacman -S mingw-w64-ucrt-x86_64-ffmpeg',
+                    '',
+                    'To build without image/video support anyway, set',
+                    'NOTCURSES_NATIVE_ALLOW_NO_MULTIMEDIA=1. The resulting',
+                    'library cannot decode images or video.',
+                    '',
+                    $cfg-err;
+            }
+            note "⚠️  NOTCURSES_NATIVE_ALLOW_NO_MULTIMEDIA=1 — building "
+               ~ "core-only (no image/video support).";
             @cmake-args[5] = '-DUSE_MULTIMEDIA=none';
             $configure = run |@cmake-args, :out, :err, :%env;
             $cfg-out = $configure.out.slurp(:close);

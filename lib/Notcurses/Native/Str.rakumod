@@ -33,7 +33,11 @@ unit module Notcurses::Native::Str;
 sub libc-name(--> Str) is export {
     state $resolved = do {
         if $*DISTRO.is-win {
-            'msvcrt'
+            # Windows prebuilts and source builds use the Universal CRT.
+            # Heap pointers returned by notcurses must be released by the
+            # same CRT family that allocated them; msvcrt.dll's free() can
+            # corrupt the process heap when handed a UCRT allocation.
+            'ucrtbase.dll'
         }
         elsif $*KERNEL.name.lc.contains('darwin') {
             'libc.dylib'

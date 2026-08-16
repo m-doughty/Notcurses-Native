@@ -410,6 +410,12 @@ sub notcurses_cursor_yx(NotcursesHandle $nc, int32 $y is rw, int32 $x is rw --> 
 
 # === Input ===
 
+#| Sentinel returned by every C<notcurses_get*> on error — C's C<(uint32_t)-1>.
+#| These subs are bound with a C<uint32> return type, so an error arrives as
+#| 4294967295 and a Raku-side C<== -1> test silently never matches. Compare
+#| against this constant instead. C<0> still means "no input available".
+constant NOTCURSES-GET-ERROR is export = 0xFFFFFFFF;
+
 sub notcurses_get(NotcursesHandle $nc, Timespec $ts, Ncinput $ni --> uint32)
 	is native(&core-lib) is export { * }
 

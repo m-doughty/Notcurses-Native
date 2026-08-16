@@ -1,0 +1,44 @@
+use Test;
+use NativeCall;
+use Notcurses::Native;
+
+# The notcurses_get* family returns (uint32_t)-1 on error. Our bindings declare
+# a uint32 return, so the value surfaces in Raku as 4294967295 and the obvious
+# `$id == -1` test silently never matches — an error then reads as a valid
+# input id. NOTCURSES-GET-ERROR exists so consumers compare against the right
+# thing; these tests pin both the value and the signedness assumption behind it.
+
+plan 5;
+
+is NOTCURSES-GET-ERROR, 4294967295,
+    'NOTCURSES-GET-ERROR is the uint32 image of C -1';
+
+isnt NOTCURSES-GET-ERROR, -1,
+    'and is deliberately NOT -1 — comparing against -1 is the bug it prevents';
+
+ok NOTCURSES-GET-ERROR > 0,
+    'a naive `$id > 0` guard admits the error sentinel, so it needs excluding';
+
+subtest 'the sentinel matches what a uint32 return actually yields' => {
+    plan 2;
+    # Round-trip -1 through the same width the binding declares, so this test
+    # fails if the return type is ever widened or made signed.
+    my $wrapped = (-1) +& 0xFFFFFFFF;
+    is $wrapped, NOTCURSES-GET-ERROR,
+        'C (uint32_t)-1 round-trips to the sentinel';
+    is NOTCURSES-GET-ERROR +& 0xFFFFFFFF, NOTCURSES-GET-ERROR,
+        'the sentinel fits in 32 bits';
+};
+
+subtest 'the input bindings still declare an unsigned return' => {
+    plan 3;
+    # If any of these ever became int32, -1 would be the correct comparison and
+    # NOTCURSES-GET-ERROR would be wrong; fail loudly rather than drift.
+    for <notcurses_get notcurses_get_nblock notcurses_get_blocking> -> $name {
+        my $sub = ::('&' ~ $name);
+        is $sub.signature.returns.^name, 'uint32',
+            "$name returns uint32";
+    }
+};
+
+done-testing;
