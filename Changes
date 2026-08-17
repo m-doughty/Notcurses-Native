@@ -2,6 +2,41 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.6.3  2026-08-17T19:27:37+01:00
+
+    - [2026-08-17] Source builds now stage version aliases as relative
+      symlinks (one real dylib/so per logical library) instead of
+      materializing each alias as a separate copy, matching the layout
+      the prebuilt archives ship. On macOS the copies were two distinct
+      dyld images — dyld dedupes by real path, not install-name — so
+      NativeCall's dlopen of libnotcurses-core.dylib and libnotcurses'
+      LC_LOAD_DYLIB of libnotcurses-core.3.dylib each got their own
+      image. Heap state (tinfo) was shared but per-image globals were
+      not: set_pixel_blitter() patched notcurses_blitters' NCBLIT_PIXEL
+      entry in the init image while the blitting image still held NULL,
+      a jump-to-zero segfault on the first pixel blit in Kitty. Latent
+      since the staging code was written: prebuilt stages always had the
+      symlink layout (tar preserves it), Linux ld.so dedupes by SONAME,
+      and on macOS the interrogation clock bug (below) had been masking
+      the pixel path entirely. New t/27-staged-lib-single-image.rakutest
+      enforces the one-real-file-per-library invariant on POSIX.
+
+    - [2026-08-17] Bump the pinned notcurses fork (b52f1d95) and
+      prebuilts to binaries-notcurses-3.0.17-r15: fix the terminal
+      interrogation timeout added in r14 firing instantly on macOS and
+      Windows. inputlayer_get_responses() computed its 1-second deadline
+      with CLOCK_MONOTONIC, but pthread_condmonotonic_init() cannot set
+      CLOCK_MONOTONIC on those platforms (no pthread_condattr_setclock),
+      so the condvar measures deadlines against CLOCK_REALTIME — a
+      monotonic "now + 1s" lies decades in the past and timed out in
+      0ms, handing off zeroed interrogation results: no Kitty graphics
+      detected (images degraded to block blitters), no cell-pixel
+      geometry, no kitty keyboard level, no default fg/bg. The deadline
+      now comes from a new pthread_condmonotonic_gettime() matching the
+      condvar's actual clock per platform. Windows previously "worked"
+      through the same instant timeout; it now genuinely waits (bounded
+      at 1s), improving detection there too.
+
 0.6.2  2026-08-17T02:02:34+01:00
 
     - [2026-08-17] Bump the pinned notcurses fork (042e03f4) and prebuilts
