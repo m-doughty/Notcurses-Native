@@ -1,0 +1,84 @@
+use Test;
+use lib $*PROGRAM.parent.parent.add('lib').Str;
+use Notcurses::Native;
+
+# Every staged name variant of one logical library (libnotcurses-core.dylib,
+# libnotcurses-core.3.dylib, libnotcurses-core.3.0.17.dylib, and the .so
+# equivalents) must resolve to the SAME real file — one real file, the rest
+# relative symlinks. Two separate copies are two separate dyld images on
+# macOS: dyld deduplicates loaded images by real path, not by install-name,
+# so NativeCall's dlopen of the bare name and libnotcurses's LC_LOAD_DYLIB
+# of the `.3` name would each get their own image. Heap state (tinfo) is
+# shared between the images, but per-image globals are not — most fatally
+# `notcurses_blitters`, whose NCBLIT_PIXEL entry set_pixel_blitter() patches
+# during terminal setup in one image while the image actually blitting still
+# holds NULL. The result was a jump-to-address-zero segfault on the first
+# pixel blit in a Kitty terminal, from a source-built stage whose
+# `!find-lib` had materialized the aliases as copies.
+#
+# The prebuilt archives ship the symlink layout natively (tar preserves
+# them); source builds must stage the same shape. Linux ld.so happens to
+# dedupe by SONAME, masking the bug there — the invariant is enforced on
+# every POSIX platform anyway so a macOS regression can't hide behind a
+# green Linux run.
+
+if $*DISTRO.is-win {
+    plan 1;
+    # Windows DLLs use one flat name per library — no version-alias chain
+    # exists to collapse, and NTFS symlinks need elevation we can't assume.
+    pass 'single-image invariant not applicable to Windows DLL naming';
+    exit;
+}
+
+my IO::Path $lib-dir = do {
+    # Same resolution the runtime uses: env override, then the staged dir.
+    my $override = %*ENV<NOTCURSES_NATIVE_LIB_DIR>;
+    ($override && $override.IO.d)
+        ?? $override.IO
+        !! core-lib().IO.parent;   # exported by Notcurses::Native
+};
+
+unless $lib-dir.d {
+    plan 1;
+    flunk "staged lib dir not found: $lib-dir";
+    exit;
+}
+
+# $ext is exported by Notcurses::Native (dylib / dll / so).
+my @libs = <libnotcurses libnotcurses-core libnotcurses-ffi>;
+plan +@libs;
+
+for @libs -> Str $lib {
+    subtest $lib => {
+        # All staged name variants of this logical library. Same
+        # separator discipline as the resolver: only '.' after the name,
+        # so 'libnotcurses' never claims 'libnotcurses-core.*'.
+        my @variants = $lib-dir.dir.grep({
+            my $bn = .basename;
+            $bn eq "$lib.$ext"
+                || ($bn.starts-with("$lib.") && $bn.contains(".$ext"))
+        });
+        ok @variants >= 1, "at least one staged variant of $lib";
+
+        my @real = @variants.grep({ !.l });
+        is +@real, 1,
+            "exactly one real file among {+@variants} variants "
+            ~ "({@variants».basename.sort.join(', ')})";
+
+        # Every variant — symlink or not — must land on that one inode.
+        my @targets = @variants.map({ .resolve.absolute }).unique;
+        is +@targets, 1,
+            "all variants resolve to a single real path ({@targets[0] // '?'})";
+
+        # Symlink aliases must be relative, so the staged dir stays
+        # relocatable (NOTCURSES_NATIVE_DATA_DIR can move between runs).
+        for @variants.grep(*.l) -> $alias {
+            my $shown = run(:out, 'readlink', $alias.absolute)
+                .out.slurp(:close).trim;
+            nok $shown.starts-with('/'),
+                "{$alias.basename} is a relative symlink ($shown)";
+        }
+    };
+}
+
+done-testing;

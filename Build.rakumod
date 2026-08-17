@@ -759,10 +759,11 @@ class Build {
         self!mark-source-build($stage);
     }
 
-    #| For each staged dylib (and its version symlinks copied as real
-    #| files by `!find-lib`), set its install-name to the absolute staged
-    #| path and rewrite every `@rpath/libnotcurses*.dylib` dependency
-    #| reference to the matching absolute staged path. Runs
+    #| For each staged real dylib (version aliases are symlinks staged by
+    #| `!find-lib` and are skipped — rewriting through them would just
+    #| re-edit the same real file), set its install-name to the absolute
+    #| staged path and rewrite every `@rpath/libnotcurses*.dylib`
+    #| dependency reference to the matching absolute staged path. Runs
     #| `install_name_tool` once per file — no-ops for entries that don't
     #| match the rewrite pattern. macOS-only.
     method !rewrite-macos-install-names(IO::Path $stage, Str $build-dir) {
@@ -789,6 +790,7 @@ class Build {
         my @all-files = $stage.dir.grep({
             .basename ~~ /^ 'libnotcurses' \S* '.dylib' $ /
             && .basename !~~ /'_shim'/
+            && !.l      # aliases are symlinks; the real file is enough
         });
 
         # Make sure files are writable; CMake sometimes installs 0444.
@@ -848,6 +850,43 @@ class Build {
     }
 
     method !find-lib(IO::Path $dir, Str $lib, Str $ext, IO::Path $stage) {
+        # Stage the real file(s), then recreate the version aliases as
+        # RELATIVE SYMLINKS — never as extra copies. A copied-out alias
+        # is a separate inode, and macOS dyld deduplicates loaded
+        # images by real path, not by install-name: NativeCall's
+        # dlopen of `libnotcurses-core.dylib` and the full lib's
+        # LC_LOAD_DYLIB of `libnotcurses-core.3.dylib` then load TWO
+        # images of the core library. Heap state (tinfo) is shared
+        # between them, but per-image globals are not — most fatally
+        # `notcurses_blitters`, whose NCBLIT_PIXEL entry is patched by
+        # set_pixel_blitter() during terminal setup in one image while
+        # the image actually blitting still holds NULL → jump-to-zero
+        # segfault on the first pixel blit. One real file plus
+        # symlinks keeps every path the same image (exactly the layout
+        # the prebuilt archives ship). Linux ld.so dedupes by SONAME
+        # so it never hit this, but gets the same layout for hygiene.
+        my %links;      # alias basename => real-file basename
+        self!find-lib-walk($dir, $lib, $ext, $stage, %links);
+        for %links.kv -> Str $alias, Str $target {
+            my IO::Path $dest = $stage.add($alias);
+            # A real file already staged under this name wins (e.g. a
+            # build tree that produced no symlinks in the first place).
+            next if $dest.e && !$dest.l;
+            next unless $stage.add($target).e;
+            try $dest.unlink;
+            # Raku's &symlink absolutizes its target, but the alias
+            # must stay relative so the staged dir remains relocatable.
+            my $ln = run 'ln', '-sfn', $target, $dest.absolute, :out, :err;
+            $ln.out.slurp(:close);
+            my Str $ln-err = $ln.err.slurp(:close);
+            die "❌ Could not symlink $alias -> $target in $stage:\n$ln-err"
+                unless $ln.exitcode == 0;
+            say "  Staged: $alias -> $target (symlink)";
+        }
+    }
+
+    method !find-lib-walk(IO::Path $dir, Str $lib, Str $ext,
+                          IO::Path $stage, %links) {
         # Each platform names the produced library differently:
         #   Linux:   libnotcurses-core.so[.3[.0.17]]
         #   macOS:   libnotcurses-core[.3[.0.17]].dylib
@@ -858,29 +897,47 @@ class Build {
         # name, never `-`, so `libnotcurses` doesn't claim
         # `libnotcurses-ffi.so`.
         #
-        # Stages every matching variant into $stage rather than
-        # stopping at the first hit. macOS dyld follows version
-        # suffixes in install-names (e.g., `libnotcurses-core.3.dylib`)
-        # at load time, so the corresponding files must all be present
-        # at the staged location.
+        # Visits every matching variant rather than stopping at the
+        # first hit. macOS dyld follows version suffixes in
+        # install-names (e.g., `libnotcurses-core.3.dylib`) at load
+        # time, so every name must be present at the staged location —
+        # real files are copied here, symlink aliases are collected
+        # into %links for !find-lib to recreate as symlinks.
         my Str $nolib = $lib.subst(/^ 'lib'/, '');
         my @patterns = ($lib, $nolib);
 
         for $dir.dir -> IO::Path $entry {
             if $entry.d {
-                self!find-lib($entry, $lib, $ext, $stage);
+                self!find-lib-walk($entry, $lib, $ext, $stage, %links);
                 next;
             }
             next unless $entry.f;
             my Str $name = $entry.basename;
             for @patterns -> Str $pat {
+                # contains(".$ext"), not ends-with: Linux reals carry the
+                # version AFTER the extension (libnotcurses-core.so.3.0.17),
+                # macOS before it (libnotcurses-core.3.dylib). An ends-with
+                # match misses the Linux reals, and with aliases now staged
+                # as symlinks (not dereferencing copies) that would leave a
+                # Linux source-build stage empty: every alias would point at
+                # a target that was never staged, and the target-exists
+                # guard below would silently drop it. Same discipline as the
+                # runtime resolver's _find-in.
                 if $name eq "$pat.$ext"
-                   || $name ~~ /^ $pat '.' .* $ext $/ {
+                   || ($name.starts-with("$pat.") && $name.contains(".$ext")) {
+                    if $entry.l {
+                        # One-level-flattened: alias points straight at
+                        # the fully-resolved real file's basename, like
+                        # a `make install` tree.
+                        %links{$name} //= $entry.resolve.basename;
+                        last;
+                    }
                     my IO::Path $dest = $stage.add($name);
                     # Skip if we already staged a copy this run (the
                     # build tree may surface the same file at multiple
-                    # paths via symlinks; first wins).
-                    next if $dest.e && $dest.s == $entry.s;
+                    # paths; first wins).
+                    next if $dest.e && !$dest.l && $dest.s == $entry.s;
+                    try $dest.unlink;
                     copy $entry, $dest;
                     say "  Staged: {$dest.basename} (from $name)";
                     last;
