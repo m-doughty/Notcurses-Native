@@ -16,11 +16,15 @@ use Notcurses::Native;
 # pixel blit in a Kitty terminal, from a source-built stage whose
 # `!find-lib` had materialized the aliases as copies.
 #
-# The prebuilt archives ship the symlink layout natively (tar preserves
-# them); source builds must stage the same shape. Linux ld.so happens to
-# dedupe by SONAME, masking the bug there — the invariant is enforced on
-# every POSIX platform anyway so a macOS regression can't hide behind a
-# green Linux run.
+# Neither staging path is trusted to produce this shape on its own:
+# source builds stage aliases as symlinks in !find-lib, and prebuilt
+# extraction runs Build.normalize-alias-chains afterwards — the r15
+# Linux packs shipped libnotcurses-core.so and .so.3 as two real files,
+# so "tar preserves the archive's symlinks" is only as good as the
+# packing lane. Linux ld.so happens to dedupe by SONAME, masking the
+# dual-image bug there — the invariant is enforced on every POSIX
+# platform anyway so a macOS regression can't hide behind a green
+# Linux run.
 
 if $*DISTRO.is-win {
     plan 1;

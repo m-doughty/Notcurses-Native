@@ -395,6 +395,70 @@ class Build {
             die "❌ Prebuilt archive missing expected lib: $lib.$ext"
                 unless @found;
         }
+
+        self.normalize-alias-chains($dest) unless $*DISTRO.is-win;
+    }
+
+    #| Collapse a staged POSIX lib dir to one real file per logical
+    #| library, every other name variant a RELATIVE symlink to it.
+    #|
+    #| Prebuilt archives are supposed to ship this layout, but a packing
+    #| lane that copies a version alias instead of preserving the link
+    #| materializes it as a second real image — the r15 Linux packs
+    #| shipped libnotcurses-core.so AND libnotcurses-core.so.3 as two
+    #| real files, which t/27 caught on the CI verify runners. Two real
+    #| images of one library is exactly the layout the source-build
+    #| staging was fixed to never produce (macOS dyld dedupes loaded
+    #| images by real path, so twin images split per-image globals like
+    #| notcurses_blitters — see !find-lib), so the extract path enforces
+    #| the invariant itself instead of trusting the archive. Public so
+    #| t/28 can drive it against a scratch stage.
+    method normalize-alias-chains(IO::Path $stage --> Nil) {
+        my Str $ext = $*KERNEL.name.lc ~~ /darwin/ ?? 'dylib' !! 'so';
+        for <libnotcurses libnotcurses-core libnotcurses-ffi> -> Str $lib {
+            # Same separator discipline as the resolver and t/27: only
+            # '.' after the name, so 'libnotcurses' never claims
+            # 'libnotcurses-core.*'.
+            my @variants = $stage.dir.grep({
+                my $bn = .basename;
+                $bn eq "$lib.$ext"
+                    || ($bn.starts-with("$lib.") && $bn.contains(".$ext"))
+            });
+            my @real = @variants.grep({ !.l });
+            next unless @real > 1;
+
+            # Keep the most-versioned name as the real file, matching the
+            # `make install` convention (libX.so.3.0.17 real; libX.so.3
+            # and libX.so aliases). Longest basename is most versioned
+            # under both the Linux (suffix) and macOS (infix) schemes.
+            my IO::Path $canonical =
+                @real.sort({ (.basename.chars, .basename) }).tail;
+            my $canonical-bytes = $canonical.slurp(:bin);
+
+            for @real.grep(* !=== $canonical) -> IO::Path $dup {
+                # Byte-identical or bust: two DIFFERING real files under
+                # one library's name chain means a corrupt or mispacked
+                # archive, and silently discarding one would ship
+                # whichever file the packer happened to duplicate.
+                die "❌ Staged archive has two differing real files for "
+                  ~ "$lib ({$canonical.basename} vs {$dup.basename}); "
+                  ~ "refusing to collapse them."
+                    unless $dup.slurp(:bin) eqv $canonical-bytes;
+                $dup.unlink;
+                # Relative symlink via ln, same as !find-lib: Raku's
+                # &symlink absolutizes its target, which would break
+                # stage relocatability.
+                my $ln = run 'ln', '-sfn', $canonical.basename,
+                    $stage.add($dup.basename).absolute, :out, :err;
+                $ln.out.slurp(:close);
+                my Str $ln-err = $ln.err.slurp(:close);
+                die "❌ Could not symlink {$dup.basename} -> "
+                  ~ "{$canonical.basename} in $stage:\n$ln-err"
+                    unless $ln.exitcode == 0;
+                say "  Normalized: {$dup.basename} -> "
+                  ~ "{$canonical.basename} (symlink)";
+            }
+        }
     }
 
     method !cache-dir(Str $binary-tag --> IO::Path) {

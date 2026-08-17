@@ -2,6 +2,23 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.6.4  2026-08-17T19:44:36+01:00
+
+    - [2026-08-17] Normalize prebuilt stages to one real file per
+      library. The binaries-notcurses-3.0.17-r15 Linux packs shipped
+      libnotcurses-core.so AND libnotcurses-core.so.3 as two separate
+      real files — the packing lane materialized the version alias as a
+      copy — which t/27's single-image invariant caught on the CI
+      verify runners and which failed every fresh Linux install of
+      0.6.3 at test time. Prebuilt extraction now runs the new
+      Build.normalize-alias-chains: for each logical library the
+      most-versioned real file is kept and every other name variant is
+      re-pointed at it as a relative symlink, so the staged layout no
+      longer trusts the archive's internal shape. Duplicates must be
+      byte-identical before one is collapsed; differing "aliases" mean
+      a corrupt archive and abort the install. No binary changes —
+      the r15 packs stay pinned and are repaired at staging time.
+
 0.6.3  2026-08-17T19:27:37+01:00
 
     - [2026-08-17] Source builds now stage version aliases as relative

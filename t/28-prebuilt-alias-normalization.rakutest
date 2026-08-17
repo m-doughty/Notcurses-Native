@@ -1,0 +1,104 @@
+use Test;
+
+# Build.rakumod isn't published in META6's `provides` (it's the
+# `build:` script, not a module), so `use Build;` is rejected by the
+# dist's CompUnit boundary. EVALFILE'd at BEGIN time so the class
+# symbol is in scope for the rest of the file. (Same access pattern as
+# t/16-build-detect-platform.)
+BEGIN EVALFILE $*PROGRAM.parent.parent.child('Build.rakumod').absolute;
+
+# Build.normalize-alias-chains: prebuilt extraction must collapse a
+# lib dir to one real file per logical library, with the other name
+# variants as relative symlinks. Added after the r15 Linux packs
+# shipped libnotcurses-core.so AND libnotcurses-core.so.3 as two real
+# files — t/27 caught it on the CI verify runners, failing every fresh
+# Linux install of 0.6.3.
+
+my $b = Build.new;
+
+sub scratch-stage(--> IO::Path) {
+    my $dir = $*TMPDIR.add("nn-alias-norm-{$*PID}-{(^1_000_000).pick}");
+    $dir.mkdir;
+    $dir;
+}
+
+sub remove-tree(IO::Path:D $path --> Nil) {
+    return unless $path.e || $path.l;
+    if $path.d && !$path.l {
+        remove-tree($_) for $path.dir;
+        $path.rmdir;
+    }
+    else {
+        $path.unlink;
+    }
+}
+
+plan 3;
+
+subtest 'single real file per library is left untouched' => {
+    plan 3;
+    my $stage = scratch-stage;
+    LEAVE remove-tree($stage);
+    $stage.add('libnotcurses.so').spurt('AAAA');
+    $stage.add('libnotcurses-core.so').spurt('BBBB');
+    $stage.add('libnotcurses-ffi.so').spurt('CCCC');
+    lives-ok { $b.normalize-alias-chains($stage) },
+        'normalization is a no-op on an already-flat stage';
+    is $stage.dir.grep({ !.l }).elems, 3, 'all three files still real';
+    is $stage.add('libnotcurses-core.so').slurp, 'BBBB',
+        'contents untouched';
+};
+
+subtest 'two differing real files for one library refuse to collapse' => {
+    plan 2;
+    my $stage = scratch-stage;
+    LEAVE remove-tree($stage);
+    $stage.add('libnotcurses.so').spurt('AAAA');
+    $stage.add('libnotcurses-core.so').spurt('BBBB');
+    $stage.add('libnotcurses-core.so.3').spurt('DIFFERENT');
+    $stage.add('libnotcurses-ffi.so').spurt('CCCC');
+    throws-like { $b.normalize-alias-chains($stage) },
+        Exception, message => /'differing real files'/,
+        'differing duplicates die instead of silently discarding one';
+    ok $stage.add('libnotcurses-core.so').e
+        && $stage.add('libnotcurses-core.so.3').e,
+        'both files survive the refusal';
+};
+
+if $*DISTRO.is-win {
+    # The collapse path never runs on Windows (flat DLL names, no
+    # version-alias chain, and the extract path guards the call) — and
+    # NTFS symlinks need elevation we can't assume. Same reasoning as
+    # t/27's Windows arm.
+    pass 'symlink collapse not applicable to Windows DLL naming';
+}
+else {
+    subtest 'identical duplicate reals collapse to one real + relative symlink' => {
+        plan 6;
+        my $stage = scratch-stage;
+        LEAVE remove-tree($stage);
+        # The r15 Linux pack shape: core shipped as two identical real
+        # files, the other two libraries flat.
+        $stage.add('libnotcurses.so').spurt('AAAA');
+        $stage.add('libnotcurses-core.so').spurt('BBBB');
+        $stage.add('libnotcurses-core.so.3').spurt('BBBB');
+        $stage.add('libnotcurses-ffi.so').spurt('CCCC');
+        lives-ok { $b.normalize-alias-chains($stage) }, 'collapse runs';
+
+        my @variants = $stage.dir.grep(*.basename.starts-with('libnotcurses-core.'));
+        is @variants.grep({ !.l }).elems, 1, 'exactly one real file remains';
+        ok $stage.add('libnotcurses-core.so.3').e
+            && !$stage.add('libnotcurses-core.so.3').l,
+            'the most-versioned name is the real file';
+        ok $stage.add('libnotcurses-core.so').l,
+            'the bare name became a symlink';
+        is @variants.map({ .resolve.absolute }).unique.elems, 1,
+            'both names resolve to the same real path';
+        my $shown = run(:out, 'readlink',
+            $stage.add('libnotcurses-core.so').absolute).out.slurp(:close).trim;
+        nok $shown.starts-with('/'),
+            "the alias is a relative symlink ($shown)";
+    };
+}
+
+done-testing;
