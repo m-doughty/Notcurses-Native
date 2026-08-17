@@ -92,7 +92,7 @@
       "source": {
         "kind": "git",
         "url": "https://github.com/m-doughty/notcurses.git",
-        "ref": "804b8e8ecd44240d884441069dd34d13be9b113c",
+        "ref": "042e03f43a34b7934490943684c0884f4aaad178",
         "attach-to-release": false
       },
       "binaries": {
@@ -125,7 +125,7 @@
     {
       "id": "notcurses-native",
       "name": "Notcurses::Native (this distribution)",
-      "version": "0.6.1",
+      "version": "0.6.2",
       "spdx-license": "Artistic-2.0",
       "license-files": ["Artistic-2.0.txt"],
       "copyright": "Copyright 2025-2026 Matt Doughty",

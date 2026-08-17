@@ -2,6 +2,19 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.6.2  2026-08-17T02:02:34+01:00
+
+    - [2026-08-17] Bump the pinned notcurses fork (042e03f4) and prebuilts
+      to binaries-notcurses-3.0.17-r14: the Windows clear escape is now
+      \e[H\e[2J instead of bare \e[2J. ConPTY's ED(2) erases without
+      homing the cursor, but notcurses' clear_and_home() records the
+      cursor as being at 0,0 after emitting it — so the first row of every
+      notcurses_refresh was written wherever the cursor actually sat,
+      leaving the real top row blank. Visible as TUI top-bar corruption
+      after any Windows terminal resize (a stale leading run where the
+      damage-diff repair agreed with the restriped previous frame).
+      Diagnosed byte-level with a CreatePseudoConsole capture harness.
+
 0.6.1  2026-08-16T22:52:24+01:00
 
     - Stop destroying the process PATH on Windows. The staged library
