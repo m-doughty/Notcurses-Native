@@ -2,6 +2,24 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.6.5  2026-08-17T20:03:10+01:00
+
+    - [2026-08-17] Repair t/28 so the CI verify matrix can pass again.
+      Two defects, both mine and both invisible on Windows (which takes
+      the flat-DLL arm): the scratch stages hardcoded .so filenames, so
+      on macOS normalize-alias-chains looked for .dylib, no-op'd, and
+      the assertions genuinely failed; and the method's `say` progress
+      narration leaked raw stdout into the middle of a subtest's TAP
+      block, which prove6 rejects as "Subtest 3 doesn't have a plan"
+      and fails the whole run even with every assertion passing — that
+      one broke ALL POSIX lanes. The test now builds platform-correct
+      names (suffix aliases on ELF, infix on macOS) and wraps every
+      call in a $*OUT-to-null-device guard. Verified against the real
+      r15 Linux pack end-to-end (zef install + the exact CI prove6
+      invocation) under WSL before this cut. Dist behaviour is
+      unchanged: 0.6.4 installs fine for users (zef gates on exit
+      codes, not TAP framing); the red was CI-only.
+
 0.6.4  2026-08-17T19:44:36+01:00
 
     - [2026-08-17] Normalize prebuilt stages to one real file per

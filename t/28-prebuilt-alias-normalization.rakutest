@@ -13,8 +13,43 @@ BEGIN EVALFILE $*PROGRAM.parent.parent.child('Build.rakumod').absolute;
 # shipped libnotcurses-core.so AND libnotcurses-core.so.3 as two real
 # files — t/27 caught it on the CI verify runners, failing every fresh
 # Linux install of 0.6.3.
+#
+# Two hard-won invariants of THIS file (both broke every POSIX CI lane
+# in the first 0.6.4 cut):
+#
+#   * The method under test narrates progress with `say`. Raw stdout
+#     inside a subtest corrupts the TAP stream — prove6 reports
+#     "Subtest N doesn't have a plan" and fails the whole run even
+#     when every assertion passed — so every call is wrapped in
+#     `silenced`, which routes $*OUT to the null device for the
+#     duration of the call only.
+#
+#   * The method derives its extension and version-alias shape from
+#     the platform (libX.so.3 on Linux, libX.3.dylib on macOS), so
+#     the scratch stages must be built with the same naming or the
+#     method no-ops on macOS and every assertion goes wrong.
 
 my $b = Build.new;
+
+my Bool $darwin = $*KERNEL.name.lc ~~ /darwin/ ?? True !! False;
+my Str  $ext    = $darwin ?? 'dylib' !! 'so';
+
+#| Platform-correct library filename: flat, or with a version alias
+#| component (suffix on Linux/ELF, infix on macOS).
+sub lib-name(Str:D $lib, Str $v = '' --> Str) {
+    $v
+        ?? ($darwin ?? "$lib.$v.$ext" !! "$lib.$ext.$v")
+        !! "$lib.$ext";
+}
+
+#| Run &code with $*OUT pointed at the null device so `say` narration
+#| from Build methods can't leak into the TAP stream.
+sub silenced(&code) {
+    my $devnull = open $*SPEC.devnull, :w;
+    LEAVE $devnull.close;
+    temp $*OUT = $devnull;
+    code();
+}
 
 sub scratch-stage(--> IO::Path) {
     my $dir = $*TMPDIR.add("nn-alias-norm-{$*PID}-{(^1_000_000).pick}");
@@ -39,13 +74,13 @@ subtest 'single real file per library is left untouched' => {
     plan 3;
     my $stage = scratch-stage;
     LEAVE remove-tree($stage);
-    $stage.add('libnotcurses.so').spurt('AAAA');
-    $stage.add('libnotcurses-core.so').spurt('BBBB');
-    $stage.add('libnotcurses-ffi.so').spurt('CCCC');
-    lives-ok { $b.normalize-alias-chains($stage) },
+    $stage.add(lib-name('libnotcurses')).spurt('AAAA');
+    $stage.add(lib-name('libnotcurses-core')).spurt('BBBB');
+    $stage.add(lib-name('libnotcurses-ffi')).spurt('CCCC');
+    lives-ok { silenced { $b.normalize-alias-chains($stage) } },
         'normalization is a no-op on an already-flat stage';
     is $stage.dir.grep({ !.l }).elems, 3, 'all three files still real';
-    is $stage.add('libnotcurses-core.so').slurp, 'BBBB',
+    is $stage.add(lib-name('libnotcurses-core')).slurp, 'BBBB',
         'contents untouched';
 };
 
@@ -53,15 +88,15 @@ subtest 'two differing real files for one library refuse to collapse' => {
     plan 2;
     my $stage = scratch-stage;
     LEAVE remove-tree($stage);
-    $stage.add('libnotcurses.so').spurt('AAAA');
-    $stage.add('libnotcurses-core.so').spurt('BBBB');
-    $stage.add('libnotcurses-core.so.3').spurt('DIFFERENT');
-    $stage.add('libnotcurses-ffi.so').spurt('CCCC');
-    throws-like { $b.normalize-alias-chains($stage) },
+    $stage.add(lib-name('libnotcurses')).spurt('AAAA');
+    $stage.add(lib-name('libnotcurses-core')).spurt('BBBB');
+    $stage.add(lib-name('libnotcurses-core', '3')).spurt('DIFFERENT');
+    $stage.add(lib-name('libnotcurses-ffi')).spurt('CCCC');
+    throws-like { silenced { $b.normalize-alias-chains($stage) } },
         Exception, message => /'differing real files'/,
         'differing duplicates die instead of silently discarding one';
-    ok $stage.add('libnotcurses-core.so').e
-        && $stage.add('libnotcurses-core.so.3').e,
+    ok $stage.add(lib-name('libnotcurses-core')).e
+        && $stage.add(lib-name('libnotcurses-core', '3')).e,
         'both files survive the refusal';
 };
 
@@ -79,26 +114,27 @@ else {
         LEAVE remove-tree($stage);
         # The r15 Linux pack shape: core shipped as two identical real
         # files, the other two libraries flat.
-        $stage.add('libnotcurses.so').spurt('AAAA');
-        $stage.add('libnotcurses-core.so').spurt('BBBB');
-        $stage.add('libnotcurses-core.so.3').spurt('BBBB');
-        $stage.add('libnotcurses-ffi.so').spurt('CCCC');
-        lives-ok { $b.normalize-alias-chains($stage) }, 'collapse runs';
+        $stage.add(lib-name('libnotcurses')).spurt('AAAA');
+        $stage.add(lib-name('libnotcurses-core')).spurt('BBBB');
+        $stage.add(lib-name('libnotcurses-core', '3')).spurt('BBBB');
+        $stage.add(lib-name('libnotcurses-ffi')).spurt('CCCC');
+        lives-ok { silenced { $b.normalize-alias-chains($stage) } },
+            'collapse runs';
 
-        my @variants = $stage.dir.grep(*.basename.starts-with('libnotcurses-core.'));
+        my @variants = $stage.dir.grep(
+            *.basename.starts-with('libnotcurses-core.'));
         is @variants.grep({ !.l }).elems, 1, 'exactly one real file remains';
-        ok $stage.add('libnotcurses-core.so.3').e
-            && !$stage.add('libnotcurses-core.so.3').l,
+        ok $stage.add(lib-name('libnotcurses-core', '3')).e
+            && !$stage.add(lib-name('libnotcurses-core', '3')).l,
             'the most-versioned name is the real file';
-        ok $stage.add('libnotcurses-core.so').l,
+        ok $stage.add(lib-name('libnotcurses-core')).l,
             'the bare name became a symlink';
         is @variants.map({ .resolve.absolute }).unique.elems, 1,
             'both names resolve to the same real path';
         my $shown = run(:out, 'readlink',
-            $stage.add('libnotcurses-core.so').absolute).out.slurp(:close).trim;
+            $stage.add(lib-name('libnotcurses-core')).absolute)
+            .out.slurp(:close).trim;
         nok $shown.starts-with('/'),
             "the alias is a relative symlink ($shown)";
     };
 }
-
-done-testing;
