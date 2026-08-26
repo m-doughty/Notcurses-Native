@@ -1,0 +1,34 @@
+use Test;
+
+# Repo-lint checks over the CI workflow files. These live in xt/ (not
+# t/) because .github/ is not part of the sdist — install-time test
+# runs against the released tarball cannot see the workflow files.
+# The companion checks over the shipped PowerShell probe itself stay
+# in t/20-powershell-syntax.rakutest.
+
+my IO::Path $workflow-dir = $*PROGRAM.parent.parent
+    .child('.github').child('workflows');
+
+for <_verify-windows-x86_64.yml _verify-windows-arm64.yml> -> Str $name {
+    my Str $workflow = $workflow-dir.child($name).slurp;
+    is $workflow.match(
+        / 'verify-windows-loader.ps1 -Mode prebuilt' /,
+        :g,
+    ).elems, 1, "$name selects prebuilt mode exactly once";
+    is $workflow.match(
+        / 'verify-windows-loader.ps1 -Mode source' /,
+        :g,
+    ).elems, 1, "$name selects source mode exactly once";
+    is $workflow.match(
+        / 'cygpath -w "$MINGW_PREFIX/bin"' /,
+        :g,
+    ).elems, 1, "$name captures its active MSYS2 runtime directory";
+    is $workflow.match(
+        / 'NOTCURSES_TEST_MSYS2_BIN=' /,
+        :g,
+    ).elems, 1, "$name persists the captured directory for PowerShell";
+    unlike $workflow.lc, / 'c:\\msys' /,
+        "$name does not hardcode an MSYS2 installation path";
+}
+
+done-testing;

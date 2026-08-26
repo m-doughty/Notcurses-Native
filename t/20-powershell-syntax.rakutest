@@ -2,8 +2,6 @@ use Test;
 
 my IO::Path $script = $*PROGRAM.parent.parent
     .child('scripts').child('ci').child('verify-windows-loader.ps1');
-my IO::Path $workflow-dir = $*PROGRAM.parent.parent
-    .child('.github').child('workflows');
 
 ok $script.e, 'Windows loader verification script exists';
 
@@ -48,26 +46,7 @@ is $source.match(/ '$env:PATH =' /, :g).elems, 2,
 unlike $source.lc, / 'c:\\msys' /,
     'PowerShell probe does not hardcode an MSYS2 installation path';
 
-for <_verify-windows-x86_64.yml _verify-windows-arm64.yml> -> Str $name {
-    my Str $workflow = $workflow-dir.child($name).slurp;
-    is $workflow.match(
-        / 'verify-windows-loader.ps1 -Mode prebuilt' /,
-        :g,
-    ).elems, 1, "$name selects prebuilt mode exactly once";
-    is $workflow.match(
-        / 'verify-windows-loader.ps1 -Mode source' /,
-        :g,
-    ).elems, 1, "$name selects source mode exactly once";
-    is $workflow.match(
-        / 'cygpath -w "$MINGW_PREFIX/bin"' /,
-        :g,
-    ).elems, 1, "$name captures its active MSYS2 runtime directory";
-    is $workflow.match(
-        / 'NOTCURSES_TEST_MSYS2_BIN=' /,
-        :g,
-    ).elems, 1, "$name persists the captured directory for PowerShell";
-    unlike $workflow.lc, / 'c:\\msys' /,
-        "$name does not hardcode an MSYS2 installation path";
-}
+# The workflow-file checks live in xt/20-workflow-syntax.rakutest:
+# .github/ is not part of the sdist, so they cannot run at install time.
 
 done-testing;

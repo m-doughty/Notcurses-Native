@@ -2,6 +2,10 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.6.6  2026-08-26T09:43:42+01:00
+
+    - Fixed a test in t/ referencing path outside of the dist
+
 0.6.5  2026-08-17T20:03:10+01:00
 
     - [2026-08-17] Repair t/28 so the CI verify matrix can pass again.
