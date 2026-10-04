@@ -65,10 +65,14 @@ END {
 }
 
 #| A minimal environment for the CMake runs: PATH (and the compiler
-#| choice) from ours, nothing that could steer a find or a link.
+#| choice) from ours, nothing that could steer a find or a link. Keys are
+#| matched case-insensitively: Windows spells it 'Path' and 'SystemRoot',
+#| and %*ENV keeps the host's spelling.
 sub base-env(--> Hash) {
-    my %env = %*ENV.grep({ .key eq any(<PATH HOME TMPDIR TMP TEMP CC SYSTEMROOT
-                                        MSYSTEM MINGW_PREFIX USERPROFILE LOCALAPPDATA>) });
+    my %env = %*ENV.grep({ .key.uc eq any(<PATH HOME TMPDIR TMP TEMP CC
+                                           SYSTEMROOT WINDIR COMSPEC PATHEXT
+                                           MSYSTEM MINGW_PREFIX USERPROFILE
+                                           LOCALAPPDATA>) });
     %env;
 }
 
@@ -96,10 +100,26 @@ sub install-dep(Str $name, Str $c-source, Str :$kind!, IO::Path :$prefix! --> Ni
 sub cached(IO::Path $build, Str $var --> Str) {
     my IO::Path $cache = $build.add('CMakeCache.txt');
     return Str unless $cache.e;
-    for $cache.lines -> Str $line {
+    # slurp, not .lines: a lazily-read handle stays open on Windows and
+    # would keep the scratch tree from being removed.
+    for $cache.slurp.lines -> Str $line {
         return $line.substr($line.index('=') + 1) if $line.starts-with("$var:");
     }
     Str
+}
+
+#| Whether $path (as CMake recorded it) lies under $prefix. CMake writes
+#| '/' on every host, so both sides go through the host's canonpath first
+#| (and, on Windows, compare case-insensitively); the resolved forms are
+#| tried as well, in case CMake recorded a symlink-free spelling of a
+#| temp dir that is itself reached through a link.
+sub under(Str $path, IO::Path $prefix --> Bool) {
+    return False without $path;
+    my &norm = $is-win ?? { $*SPEC.canonpath($_).fc } !! { $*SPEC.canonpath($_) };
+    for ($path, $prefix.Str), ($path.IO.resolve.Str, $prefix.resolve.Str) -> ($p, $q) {
+        return True if norm($p).starts-with(norm($q));
+    }
+    False
 }
 
 plan 2;
@@ -131,17 +151,17 @@ subtest 'a corrected environment wins only after a fresh configure' => {
 
     # The failed install: the configure finds the wrong library, the link fails.
     nok attempt($wrong), 'first attempt (wrong prefix) fails to link';
-    ok cached($build, 'DEP').starts-with($wrong.Str), 'and has cached the wrong library';
+    ok under(cached($build, 'DEP'), $wrong), 'and has cached the wrong library';
 
     # Control: the environment is fixed, the build dir is not.
     nok attempt($right), 'corrected environment, same build dir: still fails';
-    ok cached($build, 'DEP').starts-with($wrong.Str),
+    ok under(cached($build, 'DEP'), $wrong),
         'because CMake kept the cached find (the bug fresh-cmake-build-dir fixes)';
 
     # The fix.
     $b.fresh-cmake-build-dir($build);
     ok attempt($right), 'after fresh-cmake-build-dir the corrected environment builds';
-    ok cached($build, 'DEP').starts-with($right.Str), 'against the right library';
+    ok under(cached($build, 'DEP'), $right), 'against the right library';
     my IO::Path $exe = $build.add($is-win ?? 'app.exe' !! 'app');
     is capture(($exe.Str,))<exitcode>, 0, 'and the program runs';
 };

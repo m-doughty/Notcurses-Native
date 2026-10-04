@@ -30,6 +30,9 @@ RAKUDO_VERSION="${RAKUDO_VERSION:?RAKUDO_VERSION must be set, e.g. 2026.09}"
 #   * bash, coreutils, findutils, tar, git, curl — script + zef + xt.
 #   * perl, perl-utils — `prove` (Perl 5's harness) for the xt/
 #     pass; matches arm64-mac reference lane.
+#   * python3 — xt/'s PTY terminal-guard test drives a real
+#     pseudo-terminal via a Python 3 driver (pty, termios); without
+#     it that test fails its Python 3 requirement.
 #   * cmake, pkgconf, patchelf — source-build pass needs them.
 #   * gcc, g++, musl-dev, linux-headers, make, build-base —
 #     NativeCall-driven C builds inside the source-build pass.
@@ -39,6 +42,7 @@ RAKUDO_VERSION="${RAKUDO_VERSION:?RAKUDO_VERSION must be set, e.g. 2026.09}"
 apk add --no-cache \
     bash coreutils findutils tar git curl ca-certificates \
     perl perl-utils build-base make \
+    python3 \
     cmake pkgconf patchelf \
     gcc g++ musl-dev linux-headers \
     ffmpeg-dev ncurses-dev libunistring-dev libdeflate-dev

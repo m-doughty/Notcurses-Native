@@ -642,18 +642,25 @@ my Lock $output-lock .= new;
 my Str $out = '';
 my Str $err = '';
 my Bool $overflow = False;
+# A spawn failure (e.g. a missing $python) breaks stdout/stderr's own
+# Supply independently of $completion below. An untapped `quit` there
+# surfaces as an unhandled exception on a scheduler thread and aborts
+# the whole test before fail-requirement ever runs. $completion
+# carries the identical exception via .cause, already used in the
+# fail-requirement message past the start/await below, so these quit
+# handlers just need to absorb it, not report it.
 my $out-tap = $process.stdout.tap(-> $chunk {
     $output-lock.protect: {
         $overflow = True if $out.chars + $chunk.chars > 65536;
         $out ~= $chunk.substr(0, 65536 - $out.chars);
     }
-});
+}, quit => -> $ { });
 my $err-tap = $process.stderr.tap(-> $chunk {
     $output-lock.protect: {
         $overflow = True if $err.chars + $chunk.chars > 8192;
         $err ~= $chunk.substr(0, 8192 - $err.chars);
     }
-});
+}, quit => -> $ { });
 LEAVE {
     try $out-tap.close;
     try $err-tap.close;

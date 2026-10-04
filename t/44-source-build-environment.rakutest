@@ -111,6 +111,15 @@ sub keg-pkgconfig(IO::Path $prefix --> Str) {
     $prefix.add('opt').add('ncurses').add('lib').add('pkgconfig').Str
 }
 
+# The host's PATH-list and directory separators (':' and '/' on POSIX,
+# ';' and '\' on Windows). Expectations are built with these rather than
+# literal ':' / '/', so every assertion means the same on every host: a
+# Windows path carries a ':' after its drive letter, and is joined with
+# '\'. Raku's own notion of the list separator is the oracle here, not
+# Build's, so a Build that picked the wrong one would show up.
+my Str $SEP = $*DISTRO.path-sep;
+my Str $DIR = $*SPEC.dir-sep;
+
 plan 10;
 
 # --- 1. Mach-O header parsing ---------------------------------------
@@ -323,7 +332,7 @@ subtest 'source-build-env: appends a matching keg, never a mismatched one' => {
     %env = $b.source-build-env(%(PKG_CONFIG_PATH => '/deps/lib/pkgconfig'),
                                :os<darwin>, :arch<x86_64>,
                                :brew-prefixes[$arm.Str, $intel.Str], :&notify);
-    is %env<PKG_CONFIG_PATH>, "/deps/lib/pkgconfig:{keg-pkgconfig($intel)}",
+    is %env<PKG_CONFIG_PATH>, "/deps/lib/pkgconfig{$SEP}{keg-pkgconfig($intel)}",
         'darwin, both brews: the x86_64 keg appended after the user\'s path';
     is @notes.elems, 1, 'the arm64 keg it passed over is reported';
 
@@ -333,7 +342,7 @@ subtest 'source-build-env: appends a matching keg, never a mismatched one' => {
     is %env<PKG_CONFIG_PATH>, keg-pkgconfig($intel), 'darwin, keg only: just the keg';
 
     # Already on the user's path: not added twice.
-    my Str $already = "{keg-pkgconfig($intel)}:/deps/lib/pkgconfig";
+    my Str $already = "{keg-pkgconfig($intel)}$SEP/deps/lib/pkgconfig";
     %env = $b.source-build-env(%(PKG_CONFIG_PATH => $already), :os<darwin>,
                                :arch<x86_64>, :brew-prefixes[$intel.Str], :&notify);
     is %env<PKG_CONFIG_PATH>, $already, 'a keg already on PKG_CONFIG_PATH is not duplicated';
@@ -368,37 +377,38 @@ subtest 'build-rpath-dirs: every absolute, existing LIBRARY_PATH dir, once' => {
         'LIBRARY_PATH empty: nothing';
     is-deeply $b.build-rpath-dirs(%(LIBRARY_PATH => $deps.Str), :!windows),
         ($deps.Str,), 'LIBRARY_PATH = the dependency dir: pinned';
-    is-deeply $b.build-rpath-dirs(%(LIBRARY_PATH => "$deps:$other"), :!windows),
+    is-deeply $b.build-rpath-dirs(%(LIBRARY_PATH => "$deps$SEP$other"), :!windows),
         ($deps.Str, $other.Str), 'several dirs: all pinned, in order';
     is-deeply $b.build-rpath-dirs(
-            %(LIBRARY_PATH => "::relative/lib:$deps/:{$root.add('missing')}:$deps"),
+            %(LIBRARY_PATH => ('', '', "relative{$DIR}lib", "$deps$DIR",
+                               $root.add('missing').Str, $deps.Str).join($SEP)),
             :!windows),
         ($deps.Str,),
-        'empty, relative and missing entries dropped; a trailing slash and a repeat collapse';
-    is-deeply $b.build-rpath-dirs(%(LIBRARY_PATH => $deps.Str.subst('/', '//')), :!windows),
-        ($deps.Str,), 'doubled slashes are normalised';
+        'empty, relative and missing entries dropped; a trailing separator and a repeat collapse';
+    is-deeply $b.build-rpath-dirs(
+            %(LIBRARY_PATH => $deps.Str.subst($DIR, $DIR x 2, :g)), :!windows),
+        ($deps.Str,), 'doubled separators are normalised';
     # Relative to wherever the compiler ran, so meaningless as a run
-    # path — dropped even when it happens to resolve from here.
-    my Str $relative = $deps.relative($*CWD);
-    is-deeply $b.build-rpath-dirs(%(LIBRARY_PATH => $relative), :!windows), (),
-        "a relative entry is dropped even when it exists ($relative)";
+    # path — dropped even when it resolves from the current directory.
+    is-deeply indir($root, { $b.build-rpath-dirs(%(LIBRARY_PATH => 'deps-lib'), :!windows) }),
+        (), 'a relative entry is dropped even when it exists';
     is-deeply $b.build-rpath-dirs(%(LIBRARY_PATH => $deps.Str), :windows), (),
         'Windows: no run paths, whatever LIBRARY_PATH says';
-    if $*DISTRO.is-win {
-        pass 'a ";" in a POSIX dir name: not representable on Windows';
-    }
-    else {
-        my IO::Path $semi = $root.add('a;b').&{ .mkdir; $_ };
-        is-deeply $b.build-rpath-dirs(%(LIBRARY_PATH => "$semi:$deps"), :!windows),
-            ($deps.Str,), 'a dir containing the CMake list separator is skipped';
-    }
+    # A ';' is legal in a file name on every filesystem here, and is the
+    # CMake list separator: it must never reach -DCMAKE_BUILD_RPATH=a;b.
+    # On POSIX the entry is skipped whole; on Windows ';' is the list
+    # separator itself, so it splits the entry into a missing absolute
+    # dir and a relative one, and both are dropped. Same answer either way.
+    my IO::Path $semi = $root.add('a;b').&{ .mkdir; $_ };
+    is-deeply $b.build-rpath-dirs(%(LIBRARY_PATH => "$semi$SEP$deps"), :!windows),
+        ($deps.Str,), 'a dir whose name holds the CMake list separator never reaches the list';
 
     my @args = $b.cmake-configure-args('/src', '/src/build',
-        :rpath-dirs($b.build-rpath-dirs(%(LIBRARY_PATH => "$deps:$other"), :!windows)));
+        :rpath-dirs($b.build-rpath-dirs(%(LIBRARY_PATH => "$deps$SEP$other"), :!windows)));
     is @args.grep(*.starts-with('-DCMAKE_BUILD_RPATH=')).elems, 1,
         'wired into the configure line as one argument';
-    ok @args.first(*.starts-with('-DCMAKE_BUILD_RPATH=')) eq "-DCMAKE_BUILD_RPATH=$deps;$other",
-        'naming the dirs as a CMake list';
+    is @args.first(*.starts-with('-DCMAKE_BUILD_RPATH=')), "-DCMAKE_BUILD_RPATH=$deps;$other",
+        'naming the dirs as a CMake list (";" whatever the host)';
 };
 
 subtest 'cmake-configure-args: the release option set, run paths only when needed' => {

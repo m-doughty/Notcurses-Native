@@ -832,10 +832,24 @@ class Build {
             ?? ('/opt/homebrew', '/usr/local')
             !! ('/usr/local', '/opt/homebrew');
         with $homebrew-prefix {
-            my Str $given = .subst(/ '/'+ $ /, '');
-            @prefixes.unshift: $given if $given.starts-with('/');
+            # Trailing separators off, so '/opt/homebrew/' dedupes against
+            # '/opt/homebrew'. Only trailing ones, and only by regex: the
+            # result is compared as a string against the literal defaults
+            # above, which canonpath would rewrite on a Windows host.
+            my Str $given = $*SPEC ~~ IO::Spec::Win32
+                ?? .subst(/ <[\\/]>+ $ /, '')
+                !! .subst(/ '/'+ $ /, '');
+            @prefixes.unshift: $given if $given.chars && $given.IO.is-absolute;
         }
         @prefixes.unique.List
+    }
+
+    #|( The separator of PATH-style lists (PKG_CONFIG_PATH, LIBRARY_PATH)
+        on this host: C<:> on POSIX, C<;> on Windows, where C<:> is part of
+        every drive-letter path. Taken from C<$*SPEC>, as every IO::Path
+        here is, so the two cannot disagree. )
+    method !path-list-sep(--> Str) {
+        $*SPEC ~~ IO::Spec::Win32 ?? ';' !! ':'
     }
 
     #|( Pick the Homebrew ncurses keg the source build may use: the first
@@ -857,7 +871,9 @@ class Build {
     method select-homebrew-ncurses(Str :$arch!, :@prefixes! --> Map) {
         my Str @skipped;
         for @prefixes -> Str $prefix {
-            my IO::Path $lib-dir   = "$prefix/opt/ncurses/lib".IO;
+            # Built with .add throughout, never a '/' join, so the path
+            # comes out in the host's own separators.
+            my IO::Path $lib-dir   = $prefix.IO.add('opt').add('ncurses').add('lib');
             my IO::Path $pkgconfig = $lib-dir.add('pkgconfig');
             next unless $pkgconfig.d;
             my @archs = self.macho-archs($lib-dir.add('libncursesw.dylib'));
@@ -908,10 +924,11 @@ class Build {
         notify "⚠️  Source build: not using $_."
             for %keg<skipped>.list;
 
+        my Str $sep  = self!path-list-sep;
         my Str $path = %env<PKG_CONFIG_PATH> // '';
         with %keg<pkgconfig> -> Str $dir {
-            unless $path.split(':').first(* eq $dir).defined {
-                $path = $path.chars ?? "$path:$dir" !! $dir;
+            unless $path.split($sep).first(* eq $dir).defined {
+                $path = $path.chars ?? "$path$sep$dir" !! $dir;
             }
         }
         %env<PKG_CONFIG_PATH> = $path;
@@ -919,8 +936,9 @@ class Build {
     }
 
     #|( Run-path directories the source build must record explicitly:
-        every absolute, existing directory on LIBRARY_PATH, in order,
-        de-duplicated. Empty on Windows, which has no run path — a
+        every absolute, existing directory on LIBRARY_PATH (split on the
+        host's list separator, see !path-list-sep), in canonical form, in
+        order, de-duplicated. Empty on Windows, which has no run path — a
         source-built DLL finds its dependencies through the DLL search
         path (see the source-build marker), never through anything
         recorded at link time.
@@ -945,15 +963,16 @@ class Build {
     method build-rpath-dirs(%env, Bool :$windows = $*DISTRO.is-win --> List) {
         return () if $windows;
         my Str @dirs;
-        for (%env<LIBRARY_PATH> // '').split(':') -> Str $entry {
+        for (%env<LIBRARY_PATH> // '').split(self!path-list-sep) -> Str $entry {
             # Relative entries are relative to wherever the compiler ran;
             # there is no meaningful run path to record for them.
-            next unless $entry.starts-with('/');
+            next unless $entry.chars && $entry.IO.is-absolute;
             # A CMake list separator inside a path cannot survive the
             # single `-DCMAKE_BUILD_RPATH=a;b` argument.
             next if $entry.contains(';');
-            my Str $dir = $entry.subst(/ '/' ** 2..* /, '/', :g)
-                                .subst(/ '/' $ /, '') || '/';
+            # Repeated and trailing separators collapsed (canonpath leaves
+            # `..` alone, so this never changes which directory is named).
+            my Str $dir = $*SPEC.canonpath($entry);
             next unless $dir.IO.d;
             @dirs.push: $dir unless @dirs.first(* eq $dir).defined;
         }
