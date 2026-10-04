@@ -1,11 +1,40 @@
 # Reusable workflow: verify the macos-x86_64 prebuilt installs +
-# loads on a Rosetta'd x86_64 Rakudo. The macos-14 runner is arm64;
-# we install Rosetta + source-build x86_64 Rakudo under it (no
-# Raku/setup-raku@v1 prebuilt for x86_64 macOS).
+# loads on a Rosetta'd x86_64 Rakudo, then that Build.rakumod's
+# source-build fallback works for an Intel-Mac user. The macos-14
+# runner is arm64; we install Rosetta + source-build x86_64 Rakudo
+# under it (no Raku/setup-raku@v1 prebuilt for x86_64 macOS).
 #
 # Wrapping every Raku/zef invocation in `arch -x86_64` guarantees
 # we're testing the x86_64 prebuilt as a real Intel-Mac user would —
 # the Rakudo process is x86_64, NativeCall loads x86_64 dylibs, etc.
+#
+# No x86_64 Homebrew. This lane used to install one under /usr/local
+# for Rakudo's build tools and for the source-build pass's
+# dependencies. Homebrew 7.0.0 (September 2026) moved Intel macOS to
+# Tier 3, and its installer now refuses to run under Rosetta at all
+# ("Homebrew on macOS is only supported on Apple Silicon
+# processors!"); GitHub's Intel macOS runners were tried before and
+# were too flaky. So, still on the arm64 runner:
+#
+#   * Rakudo builds with Apple's own perl, git and make. They are
+#     universal binaries: under `arch -x86_64` they run their x86_64
+#     slices, and everything they spawn (cc included) inherits that,
+#     so NQP + MoarVM + Rakudo come out x86_64. The one thing to get
+#     right is PATH order — the runner's /opt/homebrew/bin, ahead of
+#     /usr/bin by default, holds arm64-only perl and git.
+#
+#   * The source-build pass gets the toolchain the x86_64 build lane
+#     uses (scripts/ci/build-macos-x86_64-tools.sh: cmake / ninja /
+#     meson from pinned PyPI wheels, pkgconf / nasm / dylibbundler
+#     source-built from pinned tarballs), and its dependencies —
+#     ncurses, libdeflate, libunistring and the ffmpeg chain — from
+#     the very scripts/ci/build-*.sh the build lane ships, built into a
+#     cached prefix. The pass exists to prove "Build.rakumod's
+#     source-build fallback works on Intel macOS given its
+#     dependencies"; a self-built dependency prefix, handed over through
+#     the PKG_CONFIG_PATH / CMAKE_PREFIX_PATH / LIBRARY_PATH an Intel-Mac
+#     user with a non-Homebrew prefix would set, is a faithful stand-in
+#     for one.
 
 name: _verify-macos-x86_64
 
@@ -36,23 +65,6 @@ jobs:
       - name: Install Rosetta
         run: softwareupdate --install-rosetta --agree-to-license || true
 
-      - name: Install x86_64 Homebrew + Rakudo build deps
-        run: |
-          set -euxo pipefail
-          if [[ ! -x /usr/local/bin/brew ]]; then
-            arch -x86_64 /bin/bash -c \
-              "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
-              < /dev/null
-          fi
-          # Rakudo's Configure.pl + the build itself need perl, git,
-          # make. macOS already has perl/git via Xcode CLT but those
-          # are arm64-native; arch -x86_64 on a fat (universal)
-          # binary uses the x86_64 slice automatically. For safety
-          # install x86_64 brew versions too.
-          arch -x86_64 /usr/local/bin/brew install --overwrite python@3.14
-          arch -x86_64 /usr/local/bin/brew install perl git
-          echo "/usr/local/bin" >> "$GITHUB_PATH"
-
       - name: Restore source-built Rakudo
         # restore + save split (not actions/cache@v4) so a downstream
         # test failure doesn't invalidate the ~10-20 min Rakudo build.
@@ -67,6 +79,28 @@ jobs:
 
       - name: Build x86_64 Rakudo under Rosetta (rakubrew)
         run: |
+          set -euo pipefail
+          # rakubrew, NQP's and Rakudo's Configure.pl and the build
+          # itself need perl, git and make. Apple's are universal
+          # binaries, so `arch -x86_64` runs their x86_64 slices and
+          # everything they spawn inherits it. System dirs go FIRST
+          # for this step: the runner's /opt/homebrew/bin, ahead of
+          # /usr/bin by default, holds arm64-only perl and git, and
+          # Configure.pl runs under whichever perl wins. Pinning the
+          # order makes "built by Apple's universal tools" a property
+          # of this step rather than of the runner image, and the loop
+          # makes it loud if one of them ever loses its x86_64 slice.
+          export PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          for tool in perl git make cc; do
+            path=$(command -v "$tool")
+            archs=$(lipo -archs "$path")
+            case " $archs " in
+              *' x86_64 '*) echo "ok: $tool -> $path [$archs]" ;;
+              *)
+                echo "::error::$tool resolves to $path [$archs] — no x86_64 slice"
+                exit 1 ;;
+            esac
+          done
           # arch -x86_64 wraps the whole rakubrew/Configure.pl/make
           # process so NQP+MoarVM+Rakudo all build as x86_64. Even
           # if cache restored, the script's idempotent short-circuit
@@ -128,13 +162,114 @@ jobs:
         # what loads the bundled prebuilt under test.
         run: prove -e 'arch -x86_64 raku -I lib' --verbose xt/*.rakutest
 
-      - name: Install x86_64 brew deps for source-build pass
+      # Everything below is the source-build pass. Toolchain first:
+      # same script, cache key and path as the x86_64 build lane, and
+      # restore/save split + run-on-hit for the same reasons (see
+      # _build-macos.yml). Sharing the key means a toolchain this lane
+      # saves on the default branch is one the release lane's tag runs
+      # can restore (GitHub lets every ref read default-branch caches).
+      - name: Restore x86_64 toolchain
+        id: macos-x86_64-tools
+        uses: actions/cache/restore@v4
+        with:
+          path: _ci-cache/macos-x86_64-tools
+          key: macos-x86_64-tools-${{ hashFiles('scripts/ci/build-macos-x86_64-tools.sh') }}
+
+      - name: Build x86_64 toolchain (pinned PyPI wheels + source builds)
         run: |
-          arch -x86_64 /usr/local/bin/brew install \
-            cmake pkg-config ffmpeg ncurses libunistring libdeflate
+          set -euxo pipefail
+          TOOLS="$GITHUB_WORKSPACE/_ci-cache/macos-x86_64-tools"
+          PREFIX="$TOOLS" arch -x86_64 bash scripts/ci/build-macos-x86_64-tools.sh
+          # Prepended, so it wins over the runner's arm64
+          # /opt/homebrew/bin — for the dependency builds below and for
+          # Build.rakumod's own `cmake` / `pkg-config` lookups.
+          echo "$TOOLS/bin" >> "$GITHUB_PATH"
+
+      - name: Save x86_64 toolchain
+        if: steps.macos-x86_64-tools.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: _ci-cache/macos-x86_64-tools
+          key: ${{ steps.macos-x86_64-tools.outputs.cache-primary-key }}
+
+      - name: Assert x86_64 toolchain wins PATH
+        env:
+          PREFIX: ${{ github.workspace }}/_ci-cache/macos-x86_64-tools
+        run: bash scripts/ci/build-macos-x86_64-tools.sh --check
+
+      # The dependencies Build.rakumod's source build links against,
+      # built by the same scripts and in the same order as the x86_64
+      # build lane's "Source-build libraries" step (ffmpeg probes the
+      # codec libs via pkg-config, so they land first). A separate
+      # prefix and cache from that lane's on purpose: this one only has
+      # to satisfy a source build, and keeping them apart means a
+      # change to either workflow can never quietly feed the other's
+      # release artefact. MACOSX_DEPLOYMENT_TARGET matches the build
+      # lane so the prefix is what an Intel Mac at our floor could
+      # carry. First run pays the same ~30 min under Rosetta the build
+      # lane does (libunistring and ffmpeg dominate); later runs
+      # restore it.
+      - name: Restore source-build dependencies
+        id: macos-x86_64-deps
+        uses: actions/cache/restore@v4
+        with:
+          path: _ci-cache/macos-x86_64-verify-deps
+          key: macos-x86_64-verify-deps-10.15-${{ hashFiles('scripts/ci/build-ffmpeg.sh', 'scripts/ci/build-libdeflate.sh', 'scripts/ci/build-libdav1d.sh', 'scripts/ci/build-libvpx.sh', 'scripts/ci/build-libopus.sh', 'scripts/ci/build-ncurses.sh', 'scripts/ci/build-libunistring.sh') }}
+
+      - name: Source-build dependencies for the source-build pass
+        if: steps.macos-x86_64-deps.outputs.cache-hit != 'true'
+        env:
+          PREFIX: ${{ github.workspace }}/_ci-cache/macos-x86_64-verify-deps
+          MACOSX_DEPLOYMENT_TARGET: '10.15'
+        run: |
+          set -euxo pipefail
+          mkdir -p "$PREFIX"
+          arch -x86_64 bash scripts/ci/build-ncurses.sh
+          arch -x86_64 bash scripts/ci/build-libdeflate.sh
+          arch -x86_64 bash scripts/ci/build-libunistring.sh
+          arch -x86_64 bash scripts/ci/build-libdav1d.sh
+          arch -x86_64 bash scripts/ci/build-libvpx.sh
+          arch -x86_64 bash scripts/ci/build-libopus.sh
+          arch -x86_64 bash scripts/ci/build-ffmpeg.sh
+
+      - name: Save source-build dependencies
+        if: steps.macos-x86_64-deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: _ci-cache/macos-x86_64-verify-deps
+          key: ${{ steps.macos-x86_64-deps.outputs.cache-primary-key }}
 
       - name: zef install (source-build path)
-        env: { NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1' }
+        # Build.rakumod's cmake run inherits this whole environment —
+        # the three variables an Intel-Mac user with dependencies in a
+        # non-Homebrew prefix would set:
+        #   * PKG_CONFIG_PATH   — ncursesw + the libav* .pc files.
+        #   * CMAKE_PREFIX_PATH — find_path(unigbrk.h) +
+        #                         find_library(unistring / deflate).
+        #   * LIBRARY_PATH      — set on purpose, though notcurses passes
+        #                         pkg-config's library dirs as -L itself:
+        #                         it is the regression test for the
+        #                         run-path fix. CMake treats every
+        #                         LIBRARY_PATH dir as implicit and used to
+        #                         leave it out of the build tree's
+        #                         LC_RPATH, so the @rpath install names of
+        #                         our libdeflate and libvpx went
+        #                         unresolved ("Library not loaded:
+        #                         @rpath/libdeflate.0.dylib") until
+        #                         Build.rakumod started pinning those dirs
+        #                         as CMAKE_BUILD_RPATH (build-rpath-dirs).
+        #                         The prove6 step below is what loads them.
+        #
+        # No guard against the runner's arm64 /opt/homebrew either:
+        # Build.rakumod uses a Homebrew ncurses keg only when its library
+        # carries a slice for the running Raku's architecture
+        # (select-homebrew-ncurses), so arm64 ncurses on this image would
+        # be reported and passed over, not linked into this x86_64 build.
+        env:
+          NOTCURSES_NATIVE_BUILD_FROM_SOURCE: '1'
+          PKG_CONFIG_PATH: ${{ github.workspace }}/_ci-cache/macos-x86_64-verify-deps/lib/pkgconfig
+          CMAKE_PREFIX_PATH: ${{ github.workspace }}/_ci-cache/macos-x86_64-verify-deps
+          LIBRARY_PATH: ${{ github.workspace }}/_ci-cache/macos-x86_64-verify-deps/lib
         run: arch -x86_64 zef install --/test --force-install .
 
       - name: prove6 (source-build path)

@@ -13,11 +13,13 @@
 # Build system: meson + ninja. Caller must have both on PATH before
 # invoking this script:
 #   * manylinux_2_28: pip install meson ninja via /opt/python/cp*/bin
-#   * macOS x86_64: brew install meson ninja (via x86_64 brew)
+#   * macOS x86_64: pip-installed meson + ninja (universal2 wheels)
+#     from scripts/ci/build-macos-x86_64-tools.sh
 #   * macOS arm64: brew install meson ninja (native brew)
 #
-# nasm is needed on x86_64 for SIMD acceleration; not used on
-# aarch64 (dav1d uses ARM-native NEON assembly there).
+# nasm is needed on x86_64 for SIMD acceleration (on macOS x86_64 it
+# comes from build-macos-x86_64-tools.sh too); not used on aarch64
+# (dav1d uses ARM-native NEON assembly there).
 set -euxo pipefail
 
 # 1.5.4 — newest release tag upstream has cut (brew is a point

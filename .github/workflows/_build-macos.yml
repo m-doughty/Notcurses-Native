@@ -36,20 +36,39 @@
 #
 # x86_64 lane: Rosetta build on the same arm64 runner. Two complications:
 #
-#   1. Toolchain PATH. /opt/homebrew/bin (arm64) wins PATH search by
-#      default; `arch -x86_64 cmake` then tries to run the arm64
-#      cmake under Rosetta and fails ("Bad CPU type in executable").
-#      Fix: install x86_64 brew under /usr/local + prepend to
-#      $GITHUB_PATH so x86_64 toolchain binaries win.
+#   1. Toolchain. Every compile is dispatched as `arch -x86_64 <tool>`
+#      (see `host-arch` below), and arch(1) refuses an arm64-only
+#      binary outright — "Bad CPU type in executable" — which is what
+#      every tool in the runner's /opt/homebrew/bin is. So this lane
+#      needs its own x86_64-capable cmake, ninja, meson, pkg-config,
+#      nasm and dylibbundler, ahead of /opt/homebrew/bin on PATH.
 #
-#   2. Library deployment target. brew x86_64 bottles currently
-#      target macOS 14+ (brew's Intel CI runners are Sonoma+), so a
-#      brew-installed ncurses would stamp LC_BUILD_VERSION minos=14.0
-#      and fail our 10.15 audit. Fix: install brew x86_64 for *tools
-#      only* (cmake, pkg-config, nasm, dylibbundler — they don't end
-#      up in the bundle) and source-build that library (plus
-#      libdeflate, which both lanes now source-build regardless — see
-#      the arm64 note above) into the same workspace cache dir with
+#      Those used to come from an x86_64 Homebrew installed under
+#      /usr/local next to the arm64 one. Homebrew 7.0.0 (September
+#      2026) moved Intel macOS to Tier 3, and its installer now refuses
+#      to run under Rosetta at all ("Homebrew on macOS is only supported
+#      on Apple Silicon processors!") — that is what failed the r16
+#      release. GitHub's Intel macOS runners are not the way out: this
+#      lane ran on them before and they were too flaky to release from.
+#      Instead, scripts/ci/build-macos-x86_64-tools.sh builds the
+#      toolchain from things we fetch ourselves — cmake, ninja and
+#      meson from pinned, hash-checked PyPI wheels (universal2 binaries)
+#      in a venv made from Apple's universal /usr/bin/python3, and
+#      pkgconf, nasm and dylibbundler compiled under Rosetta from
+#      pinned, SHA-256-checked upstream tarballs. Apple's own tools
+#      (bash, cc, ld, make, lipo, codesign, ...) are universal binaries
+#      already. The toolchain is cached on that script's hash, and
+#      asserted once it is on PATH: every tool must resolve to it, carry
+#      an x86_64 slice, and actually run under `arch -x86_64`.
+#
+#   2. Library deployment target. Every dylib in the bundle must stamp
+#      LC_BUILD_VERSION minos <= 10.15. There is no x86_64 package
+#      manager on this lane to take ncurses from (and when there was,
+#      brew's x86_64 bottles targeted macOS 14+ anyway — brew's Intel
+#      CI runners were Sonoma+), so ncurses — the one library the arm64
+#      lane still takes from brew — is source-built here, along with
+#      libdeflate (which both lanes now source-build regardless — see
+#      the arm64 note above), into the same workspace cache dir with
 #      MACOSX_DEPLOYMENT_TARGET=10.15 in env.
 #
 # The `host-arch` helper emitted below is the single seam between
@@ -110,68 +129,65 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/bin"
           if [[ "${{ inputs.arch }}" == "x86_64" ]]; then
             printf '#!/bin/bash\nexec arch -x86_64 "$@"\n' > "$GITHUB_WORKSPACE/bin/host-arch"
-            # x86_64 brew installs under /usr/local. Prepend so
-            # x86_64 toolchain binaries (cmake, pkg-config, nasm,
-            # dylibbundler) win PATH search over the runner's
-            # default arm64 brew at /opt/homebrew. Without this,
-            # `host-arch cmake` → `arch -x86_64 cmake` tries to
-            # run the arm64 cmake binary under Rosetta and fails
-            # with "arch: posix_spawnp: cmake: Bad CPU type in
-            # executable".
-            echo "/usr/local/bin" >> "$GITHUB_PATH"
+            # Whatever `host-arch` is asked to run must have an x86_64
+            # slice, or arch(1) fails with "arch: posix_spawnp: cmake:
+            # Bad CPU type in executable" — the runner's arm64 brew at
+            # /opt/homebrew/bin otherwise wins PATH search. The x86_64
+            # toolchain's bin dir goes on PATH ahead of it in "Install
+            # build deps" below, and is asserted right after.
           else
             printf '#!/bin/bash\nexec "$@"\n' > "$GITHUB_WORKSPACE/bin/host-arch"
           fi
           chmod +x "$GITHUB_WORKSPACE/bin/host-arch"
           echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
 
-      - name: Install Rosetta + x86_64 Homebrew (x86_64 lane only)
+      - name: Install Rosetta (x86_64 lane only)
         if: inputs.arch == 'x86_64'
         run: |
           set -euxo pipefail
           # Rosetta may already be installed on the runner image —
           # softwareupdate is idempotent and exits 0 if so.
           softwareupdate --install-rosetta --agree-to-license || true
-          # x86_64 brew installs under /usr/local (arm64 brew is at
-          # /opt/homebrew). The two coexist on the same machine.
-          if [[ ! -x /usr/local/bin/brew ]]; then
-            arch -x86_64 /bin/bash -c \
-              "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
-              < /dev/null
-          fi
-          /usr/local/bin/brew --version
+
+      # x86_64 toolchain cache. restore/save split for the same reason
+      # as the library cache below (the save must not depend on the
+      # rest of the job succeeding). Keyed on the one script that
+      # defines the toolchain — every pin lives in it. The script runs
+      # on a hit too: it is idempotent (seconds when everything is
+      # present at its pinned version), and it re-validates what the
+      # cache handed back, rebuilding the venv if the runner image's
+      # default Xcode — and with it the python3 the venv was made
+      # from — has moved since the cache was saved.
+      - name: Restore x86_64 toolchain
+        id: macos-x86_64-tools
+        if: inputs.arch == 'x86_64'
+        uses: actions/cache/restore@v4
+        with:
+          path: _ci-cache/macos-x86_64-tools
+          key: macos-x86_64-tools-${{ hashFiles('scripts/ci/build-macos-x86_64-tools.sh') }}
 
       - name: Install build deps
         run: |
           set -euxo pipefail
           if [[ "${{ inputs.arch }}" == "x86_64" ]]; then
-            # x86_64 lane: install TOOLS ONLY via brew (they don't
-            # end up in the bundle, so their bottle's minos target
-            # doesn't matter). The library deps — ffmpeg + accelerated
-            # codecs (libdav1d, libvpx, libopus), libunistring,
-            # ncurses, libdeflate — are source-built into a workspace cache dir
-            # below with MACOSX_DEPLOYMENT_TARGET baked in via env, so
-            # the produced dylibs stamp minos=10.15 and pass the audit.
-            # meson + ninja are needed by libdav1d's build system.
+            # x86_64 lane: TOOLS ONLY, and no package manager — see the
+            # header and scripts/ci/build-macos-x86_64-tools.sh for why
+            # and how. They don't end up in the bundle. The library
+            # deps — ffmpeg + accelerated codecs (libdav1d, libvpx,
+            # libopus), libunistring, ncurses, libdeflate — are
+            # source-built into a workspace cache dir below with
+            # MACOSX_DEPLOYMENT_TARGET baked in via env, so the
+            # produced dylibs stamp minos=10.15 and pass the audit.
+            # meson + ninja are there for libdav1d's build system,
+            # nasm for the x86 SIMD in dav1d / libvpx / ffmpeg.
             #
-            # Two-step install:
-            #   1. python@3.14 with --overwrite. meson depends on
-            #      python@3.14, and brew's auto-link step on that
-            #      dep would otherwise fail because the runner ships
-            #      with Apple's Python framework already populating
-            #      /usr/local/bin/{idle3,pip3,python3,...} as
-            #      symlinks into /Library/Frameworks. --overwrite
-            #      tells brew to clobber them — but --overwrite only
-            #      applies to the formula being installed, NOT to
-            #      its auto-installed dependencies. So we must
-            #      install python@3.14 EXPLICITLY first.
-            #   2. The rest of the tools. python@3.14 is now
-            #      already installed, so meson's resolution finds
-            #      it satisfied and proceeds without re-linking.
-            arch -x86_64 /usr/local/bin/brew install --overwrite python@3.14
-            arch -x86_64 /usr/local/bin/brew install \
-              cmake pkg-config nasm dylibbundler meson ninja
-            echo "BREW_PREFIX=/usr/local" >> "$GITHUB_ENV"
+            # Its bin dir goes on PATH ahead of the runner's arm64
+            # /opt/homebrew/bin: $GITHUB_PATH entries are prepended.
+            # Nothing reads BREW_PREFIX on this lane, so unlike arm64
+            # it isn't set.
+            TOOLS="$GITHUB_WORKSPACE/_ci-cache/macos-x86_64-tools"
+            PREFIX="$TOOLS" host-arch bash scripts/ci/build-macos-x86_64-tools.sh
+            echo "$TOOLS/bin" >> "$GITHUB_PATH"
           else
             # arm64 lane: brew arm64 bottles target 11.0+, which
             # matches our deployment-target floor, so ncurses can
@@ -199,6 +215,26 @@ jobs:
               dylibbundler meson ninja
             echo "BREW_PREFIX=$(brew --prefix)" >> "$GITHUB_ENV"
           fi
+
+      - name: Save x86_64 toolchain
+        if: inputs.arch == 'x86_64' && steps.macos-x86_64-tools.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: _ci-cache/macos-x86_64-tools
+          key: ${{ steps.macos-x86_64-tools.outputs.cache-primary-key }}
+
+      # Its own step because a $GITHUB_PATH entry only takes effect in
+      # the steps after the one that wrote it — this checks the PATH
+      # every later `host-arch` call will actually see. The install run
+      # above already proved the binaries themselves; this proves the
+      # runner's arm64 cmake / ninja / pkg-config at /opt/homebrew/bin
+      # no longer win the lookup, which is exactly the "Bad CPU type in
+      # executable" failure mode.
+      - name: Assert x86_64 toolchain wins PATH
+        if: inputs.arch == 'x86_64'
+        env:
+          PREFIX: ${{ github.workspace }}/_ci-cache/macos-x86_64-tools
+        run: bash scripts/ci/build-macos-x86_64-tools.sh --check
 
       # Both lanes: cache + source-build libraries into a per-arch
       # workspace prefix dir with MACOSX_DEPLOYMENT_TARGET in env, so
@@ -245,14 +281,15 @@ jobs:
           # Rosetta) reads MACOSX_DEPLOYMENT_TARGET from env and
           # stamps every dylib's LC_BUILD_VERSION minos accordingly.
           if [[ "${{ inputs.arch }}" == "x86_64" ]]; then
-            # x86_64 only: brew's x86_64 bottle of ncurses targets
-            # macOS 14+, so it'd fail the 10.15 audit. arm64 takes it
-            # from brew instead.
+            # x86_64 only: this lane has no x86_64 package manager to
+            # take ncurses from — and back when it had one, brew's
+            # x86_64 ncurses bottle targeted macOS 14+ and failed the
+            # 10.15 audit. arm64 takes it from brew instead.
             host-arch bash scripts/ci/build-ncurses.sh
           fi
           # libdeflate — BOTH lanes now, but for two different
-          # reasons. x86_64 needs it for the same deployment-target
-          # reason as ncurses above. arm64 needs it because the cache-
+          # reasons. x86_64 needs it for the same reason as ncurses
+          # above: no x86_64 package manager. arm64 needs it because the cache-
           # rooted env block below (PKG_CONFIG_PATH / CMAKE_PREFIX_PATH
           # / CPATH, all pointed at $PREFIX = the workspace cache) no
           # longer exposes brew's include path at all, so notcurses'

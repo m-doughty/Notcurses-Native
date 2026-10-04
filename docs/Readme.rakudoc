@@ -401,7 +401,7 @@ if $pixels {
 
 Notcurses is vendored and built from source. You need:
 
-=item CMake 3.14+
+=item CMake 3.21+ (what the pinned notcurses source requires)
 =item A C compiler (gcc, clang, or mingw-w64 under MSYS2)
 =item C<ncurses>, C<libunistring>, C<libdeflate> development headers
 =item FFmpeg for image/video support (Linux, macOS, and Windows)
@@ -443,6 +443,16 @@ itself doesn't link them directly.
 =head2 macOS (Homebrew)
 
     brew install cmake pkg-config ffmpeg ncurses libunistring libdeflate
+
+Homebrew's C<ncurses> is keg-only, so the build adds its C<pkgconfig>
+directory itself — after any C<PKG_CONFIG_PATH> you set, so yours wins —
+looking under C<$HOMEBREW_PREFIX>, C</opt/homebrew> and C</usr/local>.
+The libraries have to match the architecture Raku runs as: an x86_64
+Rakudo under Rosetta on Apple Silicon needs x86_64 dependencies (an
+x86_64 Homebrew under C</usr/local>, or a prefix of your own), not the
+arm64 ones in C</opt/homebrew>. The build checks the ncurses keg's
+architecture and passes over one that doesn't match, with a note saying
+so, rather than linking it.
 
 =head2 Windows (MSYS2 UCRT64)
 
@@ -601,6 +611,18 @@ C<NOTCURSES_NATIVE_BUILD_FROM_SOURCE=1>, Notcurses::Native compiles
 notcurses from source via CMake. That path needs the system packages
 listed in B<BUILD REQUIREMENTS>. The source build takes 5–15 minutes
 depending on the machine; the prebuilt download path is seconds.
+
+Dependencies in a prefix of your own are found through the usual
+variables, which the build passes on to CMake:
+C<PKG_CONFIG_PATH> (ffmpeg, ncurses), C<CMAKE_PREFIX_PATH>
+(libunistring, libdeflate) and, if you use it, C<LIBRARY_PATH> — whose
+directories the build also records as run paths, so the installed
+libraries find the dependencies they link without it at run time (on
+Linux, those dependencies' own dependencies still need the loader's
+usual search path, as for any program). Every install
+configures from scratch, so after a failed attempt, correcting the
+environment and installing again is enough; nothing CMake found the first
+time is reused.
 
 On Windows, explicitly add the active MSYS2 target C<bin> directory (UCRT64
 on x86_64, CLANGARM64 on arm64) to C<PATH> when running an application against

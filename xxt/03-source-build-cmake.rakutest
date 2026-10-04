@@ -1,0 +1,218 @@
+use Test;
+
+# Build.rakumod isn't published in META6's `provides`; EVALFILE'd at
+# BEGIN time, as in t/16, t/28 and t/44.
+BEGIN EVALFILE $*PROGRAM.parent.parent.child('Build.rakumod').absolute;
+
+# What t/44 pins as pure logic, proven against a real CMake and C
+# compiler with two throwaway projects:
+#
+#   1. Stale configure state. A configure that finds the wrong library
+#      and then fails to link leaves that find in CMakeCache.txt; the
+#      next configure in the same build dir keeps it even with the
+#      environment corrected — until fresh-cmake-build-dir runs.
+#   2. Run paths. A shared library linked against a dependency whose
+#      prefix is on LIBRARY_PATH gets no run path for it, and fails to
+#      load — until build-rpath-dirs' directories go in as
+#      CMAKE_BUILD_RPATH (cmake-configure-args).
+#
+# Each part checks the broken behaviour first (the control), so a CMake
+# that ever stops behaving that way shows up here rather than letting
+# the fix look like it still matters.
+#
+# xxt/ is the tier for tests that need tooling outside the Raku
+# ecosystem. This one needs, and FAILS without (it never skips): cmake
+# (3.21+) and a C compiler on PATH ($CC, else `cc`). On Windows run it
+# from an MSYS2 UCRT64 shell; part 2 does not apply there (no run paths
+# — see build-rpath-dirs) and asserts exactly that.
+#
+# Run it: prove6 -I lib xxt/
+
+my $b = Build.new;
+my Bool $is-win = $*DISTRO.is-win;
+my Bool $is-mac = $*KERNEL.name.lc eq 'darwin';
+
+sub requirement-failed(Str:D $message) {
+    plan 1;
+    flunk $message;
+    done-testing;
+    exit 1;
+}
+
+#| Run a command; Map of exit code + both streams.
+sub capture(@cmd, :%env = %*ENV, IO::Path :$cwd = $*CWD --> Map) {
+    my $proc = run |@cmd, :out, :err, :%env, :$cwd;
+    my Str $out = $proc.out.slurp(:close);
+    my Str $err = $proc.err.slurp(:close);
+    (:exitcode($proc.exitcode), :$out, :$err).Map
+}
+
+for 'cmake', (%*ENV<CC> // 'cc') -> Str $tool {
+    my $probe = try capture(($tool, '--version'));
+    requirement-failed "$tool is required (not runnable from PATH)"
+        unless $probe.defined && $probe<exitcode> == 0;
+}
+
+my IO::Path $root = $*TMPDIR.add("nn-xxt-cmake-{$*PID}-{(^1_000_000).pick}").cleanup;
+$root.mkdir;
+END {
+    sub remove-tree(IO::Path:D $path) {
+        return unless $path.e || $path.l;
+        if $path.d && !$path.l { remove-tree($_) for $path.dir; $path.rmdir }
+        else { $path.unlink }
+    }
+    remove-tree($root) if $root.defined;
+}
+
+#| A minimal environment for the CMake runs: PATH (and the compiler
+#| choice) from ours, nothing that could steer a find or a link.
+sub base-env(--> Hash) {
+    my %env = %*ENV.grep({ .key eq any(<PATH HOME TMPDIR TMP TEMP CC SYSTEMROOT
+                                        MSYSTEM MINGW_PREFIX USERPROFILE LOCALAPPDATA>) });
+    %env;
+}
+
+#| Write a one-file C library project and install it into $prefix.
+sub install-dep(Str $name, Str $c-source, Str :$kind!, IO::Path :$prefix! --> Nil) {
+    my IO::Path $src = $root.add("{$name}-src").&{ .mkdir; $_ };
+    $src.add('CMakeLists.txt').spurt: qq:to/CMAKE/;
+        cmake_minimum_required(VERSION 3.21)
+        project(dep C)
+        add_library(dep $kind dep.c)
+        install(TARGETS dep ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
+        CMAKE
+    $src.add('dep.c').spurt($c-source);
+    my IO::Path $build = $root.add("{$name}-build");
+    for ('cmake', '-S', $src.Str, '-B', $build.Str, "-DCMAKE_INSTALL_PREFIX=$prefix"),
+        ('cmake', '--build', $build.Str),
+        ('cmake', '--install', $build.Str) -> @cmd {
+        my %r = capture(@cmd, :env(base-env));
+        die "building the $name fixture failed: {@cmd.join(' ')}\n%r<err>"
+            unless %r<exitcode> == 0;
+    }
+}
+
+#| The FILEPATH CMake cached for a variable in $build.
+sub cached(IO::Path $build, Str $var --> Str) {
+    my IO::Path $cache = $build.add('CMakeCache.txt');
+    return Str unless $cache.e;
+    for $cache.lines -> Str $line {
+        return $line.substr($line.index('=') + 1) if $line.starts-with("$var:");
+    }
+    Str
+}
+
+plan 2;
+
+subtest 'a corrected environment wins only after a fresh configure' => {
+    plan 7;
+    my IO::Path $wrong = $root.add('prefix-wrong');
+    my IO::Path $right = $root.add('prefix-right');
+    install-dep('wrong', "int dep_other(void) \{ return 1; }\n", :kind<STATIC>, :prefix($wrong));
+    install-dep('right', "int dep_value(void) \{ return 42; }\n", :kind<STATIC>, :prefix($right));
+
+    my IO::Path $app = $root.add('app-src').&{ .mkdir; $_ };
+    $app.add('CMakeLists.txt').spurt: q:to/CMAKE/;
+        cmake_minimum_required(VERSION 3.21)
+        project(app C)
+        find_library(DEP dep REQUIRED)
+        add_executable(app app.c)
+        target_link_libraries(app PRIVATE ${DEP})
+        CMAKE
+    $app.add('app.c').spurt: "int dep_value(void);\nint main(void) \{ return dep_value() == 42 ? 0 : 1; }\n";
+    my IO::Path $build = $root.add('app-build');
+
+    sub attempt(IO::Path $prefix --> Bool) {
+        my %env = base-env;
+        %env<CMAKE_PREFIX_PATH> = $prefix.Str;
+        capture(('cmake', '-S', $app.Str, '-B', $build.Str), :%env)<exitcode> == 0
+            && capture(('cmake', '--build', $build.Str), :%env)<exitcode> == 0
+    }
+
+    # The failed install: the configure finds the wrong library, the link fails.
+    nok attempt($wrong), 'first attempt (wrong prefix) fails to link';
+    ok cached($build, 'DEP').starts-with($wrong.Str), 'and has cached the wrong library';
+
+    # Control: the environment is fixed, the build dir is not.
+    nok attempt($right), 'corrected environment, same build dir: still fails';
+    ok cached($build, 'DEP').starts-with($wrong.Str),
+        'because CMake kept the cached find (the bug fresh-cmake-build-dir fixes)';
+
+    # The fix.
+    $b.fresh-cmake-build-dir($build);
+    ok attempt($right), 'after fresh-cmake-build-dir the corrected environment builds';
+    ok cached($build, 'DEP').starts-with($right.Str), 'against the right library';
+    my IO::Path $exe = $build.add($is-win ?? 'app.exe' !! 'app');
+    is capture(($exe.Str,))<exitcode>, 0, 'and the program runs';
+};
+
+subtest 'LIBRARY_PATH no longer costs the dependency its run path' => {
+    if $is-win {
+        plan 1;
+        # No run paths on Windows: a DLL's dependencies are found through
+        # the DLL search path, so there is nothing to record.
+        is-deeply $b.build-rpath-dirs(%(LIBRARY_PATH => $root.Str)), (),
+            'Windows: build-rpath-dirs pins nothing';
+        return;
+    }
+    plan 6;
+
+    my IO::Path $prefix = $root.add('prefix-shared');
+    install-dep('shared', "int dep_value(void) \{ return 42; }\n", :kind<SHARED>, :$prefix);
+    my IO::Path $libdir = $prefix.add('lib');
+
+    my IO::Path $p = $root.add('p-src').&{ .mkdir; $_ };
+    $p.add('CMakeLists.txt').spurt: q:to/CMAKE/;
+        cmake_minimum_required(VERSION 3.21)
+        project(p C)
+        find_library(DEP dep REQUIRED)
+        add_library(p SHARED p.c)
+        target_link_libraries(p PRIVATE ${DEP})
+        CMAKE
+    $p.add('p.c').spurt: "int dep_value(void);\nint p_value(void) \{ return dep_value(); }\n";
+
+    #| Configure + build p in its own dir; the built library's path.
+    sub build-p(Str $tag, %env, *@extra --> IO::Path) {
+        my IO::Path $build = $root.add("p-build-$tag");
+        for ('cmake', '-S', $p.Str, '-B', $build.Str, |@extra),
+            ('cmake', '--build', $build.Str) -> @cmd {
+            my %r = capture(@cmd, :%env);
+            die "build $tag: {@cmd.join(' ')} failed:\n%r<err>" unless %r<exitcode> == 0;
+        }
+        $build.add($is-mac ?? 'libp.dylib' !! 'libp.so');
+    }
+
+    #| Load the library in a fresh process, with no loader variables
+    #| set — only what the library itself records can find dep. Its
+    #| p_value() result, or the loader's complaint.
+    sub load(IO::Path $lib --> Str) {
+        my %env = base-env;
+        %env<NN_XXT_LIB> = $lib.Str;
+        my %r = capture(($*EXECUTABLE.absolute, '-e',
+            'use NativeCall; sub p_value(--> int32) is native(%*ENV<NN_XXT_LIB>) {*}; print p_value()'),
+            :%env);
+        %r<exitcode> == 0 ?? %r<out> !! "load failed: %r<err>"
+    }
+
+    my %env = base-env;
+    %env<CMAKE_PREFIX_PATH> = $prefix.Str;
+
+    # Sanity: CMake's own run path works when nothing interferes.
+    is load(build-p('plain', %env)), '42', 'without LIBRARY_PATH the library loads';
+
+    # Control: LIBRARY_PATH names the prefix; CMake drops it as implicit.
+    %env<LIBRARY_PATH> = $libdir.Str;
+    my Str $broken = load(build-p('library-path', %env));
+    like $broken, /^ 'load failed' /,
+        'with LIBRARY_PATH set, CMake alone leaves no run path for dep (the bug)';
+    like $broken, / 'libdep' /, 'and it is dep the loader cannot find';
+
+    # The fix: the configure line Build.rakumod now produces.
+    my @rpath = $b.build-rpath-dirs(%env);
+    is-deeply @rpath.List, ($libdir.Str,), 'build-rpath-dirs pins the LIBRARY_PATH prefix';
+    my @args = $b.cmake-configure-args($p.Str, 'unused', :rpath-dirs(@rpath));
+    my Str $rpath-arg = @args.first(*.starts-with('-DCMAKE_BUILD_RPATH='));
+    ok $rpath-arg.defined, 'cmake-configure-args carries it';
+    is load(build-p('pinned', %env, $rpath-arg)), '42',
+        'with LIBRARY_PATH set and the pinned run path, the library loads';
+};

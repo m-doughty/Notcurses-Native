@@ -11,14 +11,16 @@ description: >-
       written by scripts/ci/fetch-notcurses-source.sh into
       $GITHUB_ENV)
     - `bundle/` writable (empty is fine; action creates it if absent)
-    - dylibbundler on PATH (from brew)
+    - dylibbundler on PATH (arm64: brew; x86_64: built by
+      scripts/ci/build-macos-x86_64-tools.sh)
 
 inputs:
   audit-min-macos:
     description: >-
       If set, every shipped dylib's LC_BUILD_VERSION minos is verified
-      to be <= this value (e.g. '10.15' for the x86_64 lane to catch
-      a brew bottle that slipped through targeting 12.0+). Empty =
+      to be <= this value (e.g. '10.15' for the x86_64 lane, to catch
+      any dylib that was not built with MACOSX_DEPLOYMENT_TARGET in
+      env — historically a brew bottle targeting 12.0+). Empty =
       skip the audit (arm64 lane stays on 11.0 implicitly).
     required: false
     default: ''
@@ -26,9 +28,10 @@ inputs:
     description: >-
       Additional `-s` search path for dylibbundler. Both macOS lanes
       source-build their ffmpeg chain (libdav1d / libvpx / libopus /
-      ffmpeg) plus libunistring into a per-arch workspace cache dir —
-      x86_64 adds ncurses / libdeflate on top, since brew's x86_64
-      bottles target macOS 14+ and the bundle must load on 10.15.
+      ffmpeg) plus libunistring and libdeflate into a per-arch
+      workspace cache dir — x86_64 adds ncurses on top, since that
+      lane has no x86_64 package manager and the bundle must load on
+      10.15.
       Those .dylibs carry @rpath install_names, so dylibbundler has
       to be told where they live in addition to
       $NOTCURSES_SRC_DIR/build. Empty default = search only the
@@ -85,10 +88,11 @@ runs:
         # -s flags:
         #   * $NOTCURSES_SRC_DIR/build — for libnotcurses-core.3.dylib
         #     (cmake leaves it as a SONAME symlink in the build dir).
-        #   * EXTRA_SEARCH_PATH (x86_64 lane only): the lib dir of
+        #   * EXTRA_SEARCH_PATH (both lanes): the lib dir of
         #     our workspace cache, where source-built ffmpeg /
-        #     ncurses / libunistring / libdeflate live. dylibbundler
-        #     resolves their @rpath references via this -s.
+        #     libunistring / libdeflate (plus ncurses, on x86_64)
+        #     live. dylibbundler resolves their @rpath references via
+        #     this -s.
         bundler_paths=( -s "$NOTCURSES_SRC_DIR/build" )
         if [[ -n "${EXTRA_SEARCH_PATH:-}" ]]; then
             bundler_paths+=( -s "$EXTRA_SEARCH_PATH" )
@@ -188,9 +192,10 @@ runs:
         done
         if (( fail != 0 )); then
           echo "❌ One or more dylibs have minos > $target."
-          echo "   Likely a brew bottle targeting newer macOS slipped through."
-          echo "   Either downgrade the dep (brew install --build-from-source)"
-          echo "   or rebuild it with MACOSX_DEPLOYMENT_TARGET=$target."
+          echo "   A dependency was built without MACOSX_DEPLOYMENT_TARGET=$target"
+          echo "   in env, or a prebuilt binary slipped into the bundle. Source-"
+          echo "   build it with that target set (see the \"Source-build"
+          echo "   libraries\" step in _build-macos.yml)."
           exit 1
         fi
         echo "✅ All bundled dylibs target macOS $target or older."

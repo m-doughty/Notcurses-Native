@@ -2,9 +2,10 @@
 # Build + install libdeflate. Two callers:
 #   * Linux manylinux_2_28 container (RHEL 8 baseline) — RHEL 8's
 #     repos don't ship libdeflate, source-build is required.
-#   * macOS x86_64 Rosetta build — brew bottles target macOS 14+,
-#     which fails our 10.15 deployment-target floor, so we
-#     source-build with MACOSX_DEPLOYMENT_TARGET=10.15 in env.
+#   * macOS x86_64 Rosetta build — that lane has no x86_64 package
+#     manager (and brew's x86_64 bottles targeted macOS 14+ anyway,
+#     failing our 10.15 deployment-target floor), so we source-build
+#     with MACOSX_DEPLOYMENT_TARGET=10.15 in env.
 #
 # Honours $PREFIX (default /usr/local) so the install can target a
 # workspace-relative cache dir, letting actions/cache persist the

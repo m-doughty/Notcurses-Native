@@ -53,6 +53,35 @@
 #|                                         No SHA verification — caller
 #|                                         is responsible for the tree.
 #|
+#| What the source build takes from the ordinary environment:
+#|
+#|   PKG_CONFIG_PATH, CMAKE_PREFIX_PATH    where CMake finds ffmpeg / ncurses
+#|                                         / libunistring / libdeflate when
+#|                                         they live outside the default
+#|                                         prefixes. Passed through (a
+#|                                         Homebrew ncurses keg may be
+#|                                         appended to PKG_CONFIG_PATH,
+#|                                         see below).
+#|   LIBRARY_PATH                          honoured as well; its directories
+#|                                         are also recorded as run paths
+#|                                         (build-rpath-dirs), so the staged
+#|                                         libraries load without it.
+#|   HOMEBREW_PREFIX (macOS)               first prefix searched for a keg-
+#|                                         only Homebrew ncurses. A keg —
+#|                                         from here, /opt/homebrew or
+#|                                         /usr/local — is used only when
+#|                                         its library matches the running
+#|                                         Raku's architecture, so an x86_64
+#|                                         Raku under Rosetta never links
+#|                                         arm64 ncurses (select-homebrew-
+#|                                         ncurses), and it is appended
+#|                                         after any PKG_CONFIG_PATH the
+#|                                         user set.
+#|
+#|   Every install configures from scratch (fresh-cmake-build-dir): a
+#|   corrected environment is never shadowed by find results CMake
+#|   cached during an earlier, failed attempt.
+#|
 #| Linux prebuilts:
 #|
 #|   * glibc lanes are built in manylinux_2_28 containers
@@ -694,23 +723,250 @@ class Build {
         $out;
     }
 
-    #| Build notcurses from source via CMake. Matches the
-    #| per-platform build recipe used by the CI workflow. Requires
-    #| cmake + git + a C toolchain + system ffmpeg / ncurses /
-    #| libunistring / libdeflate dev headers (see docs/Readme.rakudoc
-    #| for distro-specific install commands).
-    method !compile-from-source($dist-path, IO::Path $stage) {
-        self!check-toolchain;
+    # --- Source-build environment ---------------------------------------
+    #
+    # The decisions !compile-from-source makes before it runs CMake —
+    # which Homebrew ncurses keg it may use, which run paths the build has
+    # to record, what the configure command line is, and how the build dir
+    # is reset — as public methods with injectable inputs, so
+    # t/44-source-build-environment can drive them against scratch
+    # directories and synthetic binaries instead of a real Homebrew, a
+    # real toolchain or whatever machine the tests happen to run on.
 
-        my IO::Path $vendor-io = self!ensure-notcurses-source($dist-path);
-        my Str $vendor = $vendor-io.Str;
-        my Str $build-dir = "$vendor/build";
-        my Str $os = $*KERNEL.name.lc;
-        my Str $ext = $os ~~ /darwin/ ?? 'dylib'
-                   !! $*DISTRO.is-win ?? 'dll'
-                   !! 'so';
+    #|( The CPU architectures a Mach-O file carries, read from its header
+        in Raku — no lipo, file(1) or Xcode needed. A thin binary yields
+        one name, a universal ("fat") binary one per slice: C<x86_64>,
+        C<x86_64h>, C<arm64>, C<arm64e>, C<arm64_32>, C<i386>, C<arm>,
+        C<ppc>, C<ppc64>, or C<cpu-0x…> for anything else. Symlinks are
+        followed. A file that is missing, unreadable, truncated or not
+        Mach-O at all yields the empty list, which callers treat as
+        "cannot be shown to match". )
+    method macho-archs(IO::Path $file --> List) {
+        return () unless $file.f;
+        my $fh = try $file.open(:bin);
+        return () without $fh;
+        my Blob $head = $fh.read(4096);
+        $fh.close;
+        self.macho-archs-of-header($head)
+    }
 
-        my @cmake-args = (
+    #| The header-parsing half of macho-archs, given a file's first bytes.
+    method macho-archs-of-header(Blob $head --> List) {
+        return () if $head.elems < 8;
+        my UInt $be = $head.read-uint32(0, BigEndian);
+        if $be == 0xCAFEBABE || $be == 0xCAFEBABF {
+            # Universal binary: a big-endian header listing the slices,
+            # 20 bytes each (32 in the 64-bit-offset variant). 0xCAFEBABE
+            # is also the Java class-file magic, where the next four bytes
+            # hold the class-file version (major >= 45) rather than a
+            # slice count; the same < 20 bound file(1) uses tells the two
+            # apart.
+            my Int $count  = $head.read-uint32(4, BigEndian);
+            my Int $stride = $be == 0xCAFEBABF ?? 32 !! 20;
+            return () unless 0 < $count < 20
+                && $head.elems >= 8 + $count * $stride;
+            return (^$count).map(-> Int $i {
+                my Int $at = 8 + $i * $stride;
+                self!macho-arch-name($head.read-uint32($at, BigEndian),
+                                     $head.read-uint32($at + 4, BigEndian))
+            }).List;
+        }
+        # Thin binary: the magic is in the file's own byte order, which is
+        # little-endian for everything Apple has shipped since PowerPC.
+        return () if $head.elems < 12;
+        my UInt $le = $head.read-uint32(0, LittleEndian);
+        if $le == 0xFEEDFACF || $le == 0xFEEDFACE {
+            return (self!macho-arch-name($head.read-uint32(4, LittleEndian),
+                                         $head.read-uint32(8, LittleEndian)),);
+        }
+        if $be == 0xFEEDFACF || $be == 0xFEEDFACE {
+            return (self!macho-arch-name($head.read-uint32(4, BigEndian),
+                                         $head.read-uint32(8, BigEndian)),);
+        }
+        ()
+    }
+
+    method !macho-arch-name(Int $cputype, Int $cpusubtype --> Str) {
+        # The top byte of cpusubtype holds capability flags, not the
+        # subtype (arm64e binaries set pointer-authentication ABI bits
+        # there).
+        my Int $subtype = $cpusubtype +& 0x00FFFFFF;
+        given $cputype {
+            when 0x01000007 { $subtype == 8 ?? 'x86_64h' !! 'x86_64' }
+            when 0x0100000C { $subtype == 2 ?? 'arm64e'  !! 'arm64'  }
+            when 0x0200000C { 'arm64_32' }
+            when 7          { 'i386' }
+            when 12         { 'arm' }
+            when 18         { 'ppc' }
+            when 0x01000012 { 'ppc64' }
+            default         { sprintf('cpu-0x%08x', $cputype) }
+        }
+    }
+
+    #|( Homebrew prefixes to look for an ncurses keg in, most likely
+        first: C<$HOMEBREW_PREFIX> when the user's shell exports one (as
+        C<brew shellenv> does), then the prefix Homebrew installs to for
+        the running architecture (C</opt/homebrew> on arm64,
+        C</usr/local> on x86_64 — natively on an Intel Mac, or under
+        Rosetta on Apple Silicon), then the other one. The order only
+        breaks ties: select-homebrew-ncurses checks every candidate's
+        library against the architecture regardless, which is what makes
+        it safe for an x86_64 Raku launched from an arm64 shell to see
+        that shell's HOMEBREW_PREFIX.
+
+        C<:arch> defaults to C<$*KERNEL.hardware>: the machine field of
+        uname(3), read in-process by MoarVM. For a process running under
+        Rosetta the kernel reports the architecture the process runs as
+        (x86_64, with C<sysctl.proc_translated> = 1), not the machine's —
+        which is the question here, since NativeCall can only load
+        libraries of the running process's own architecture. (C<hw.machine>
+        style probes of the hardware would answer arm64 there, and a
+        C<uname -m> subprocess resolved through PATH could be any build
+        of uname at all.) )
+    method homebrew-prefixes(
+        Str :$arch = $*KERNEL.hardware.lc,
+        Str :$homebrew-prefix = %*ENV<HOMEBREW_PREFIX> // Str,
+        --> List
+    ) {
+        my Str @prefixes = $arch eq 'arm64'
+            ?? ('/opt/homebrew', '/usr/local')
+            !! ('/usr/local', '/opt/homebrew');
+        with $homebrew-prefix {
+            my Str $given = .subst(/ '/'+ $ /, '');
+            @prefixes.unshift: $given if $given.starts-with('/');
+        }
+        @prefixes.unique.List
+    }
+
+    #|( Pick the Homebrew ncurses keg the source build may use: the first
+        of @prefixes whose C<opt/ncurses> keg has a C<lib/pkgconfig> dir
+        AND a C<lib/libncursesw.dylib> carrying a slice for $arch.
+        Returns a Map: C<pkgconfig> — that keg's pkgconfig dir, or a
+        C<Str> type object when no keg qualifies — and C<skipped>, one
+        line per keg that is present but refused, so the caller can say
+        why it is not being used.
+
+        The architecture check is the point. On Apple Silicon Homebrew
+        keeps one prefix per architecture, and a keg is only usable by a
+        build of the same architecture: an x86_64 Raku under Rosetta
+        handed the arm64 keg fails to link — "ld: warning: ignoring file
+        …/libncursesw.dylib: found architecture 'arm64', required
+        architecture 'x86_64'", then every terminfo symbol undefined —
+        which is what the old "use /opt/homebrew whenever it exists" rule
+        did to every such install. )
+    method select-homebrew-ncurses(Str :$arch!, :@prefixes! --> Map) {
+        my Str @skipped;
+        for @prefixes -> Str $prefix {
+            my IO::Path $lib-dir   = "$prefix/opt/ncurses/lib".IO;
+            my IO::Path $pkgconfig = $lib-dir.add('pkgconfig');
+            next unless $pkgconfig.d;
+            my @archs = self.macho-archs($lib-dir.add('libncursesw.dylib'));
+            if @archs.first(* eq $arch).defined {
+                return (:pkgconfig($pkgconfig.Str), :skipped(@skipped.List)).Map;
+            }
+            @skipped.push: @archs
+                ?? "the Homebrew ncurses in $prefix ({@archs.join('/')}): "
+                   ~ "this Raku runs as $arch"
+                !! "the Homebrew ncurses in $prefix: it has no readable "
+                   ~ "lib/libncursesw.dylib to check the architecture of";
+        }
+        (:pkgconfig(Str), :skipped(@skipped.List)).Map
+    }
+
+    #|( The environment the source build's CMake configure and build run
+        with: %base (normally C<%*ENV>) plus, on macOS, the Homebrew
+        ncurses keg select-homebrew-ncurses accepts, APPENDED to
+        PKG_CONFIG_PATH. Homebrew's ncurses is keg-only, so nothing puts
+        it on pkg-config's path otherwise. Appended rather than prepended
+        so a PKG_CONFIG_PATH the user set still wins: a prefix they built
+        their dependencies into must not have its ncurses overridden by an
+        unrelated keg.
+
+        On macOS PKG_CONFIG_PATH always comes back DEFINED, if need be
+        empty. notcurses' CMakeLists.txt falls back to
+        C</usr/local/opt/ncurses/lib/pkgconfig> whenever it is undefined,
+        with no architecture check — exactly the keg
+        select-homebrew-ncurses may just have refused for an arm64 build.
+        Defined-but-empty means "no extra directories" to pkg-config and
+        switches that fallback off.
+
+        Refused kegs are reported through C<&notify> (default C<note>).
+        %base itself is never modified. )
+    method source-build-env(
+        %base,
+        Str :$os   = $*KERNEL.name.lc,
+        Str :$arch = $*KERNEL.hardware.lc,
+        :@brew-prefixes = self.homebrew-prefixes(
+            :$arch, :homebrew-prefix(%base<HOMEBREW_PREFIX> // Str)),
+        :&notify = &note,
+        --> Hash
+    ) {
+        my %env = %base;
+        return %env unless $os eq 'darwin';
+
+        my %keg = self.select-homebrew-ncurses(:$arch, :prefixes(@brew-prefixes));
+        notify "⚠️  Source build: not using $_."
+            for %keg<skipped>.list;
+
+        my Str $path = %env<PKG_CONFIG_PATH> // '';
+        with %keg<pkgconfig> -> Str $dir {
+            unless $path.split(':').first(* eq $dir).defined {
+                $path = $path.chars ?? "$path:$dir" !! $dir;
+            }
+        }
+        %env<PKG_CONFIG_PATH> = $path;
+        %env
+    }
+
+    #|( Run-path directories the source build must record explicitly:
+        every absolute, existing directory on LIBRARY_PATH, in order,
+        de-duplicated. Empty on Windows, which has no run path — a
+        source-built DLL finds its dependencies through the DLL search
+        path (see the source-build marker), never through anything
+        recorded at link time.
+
+        Why LIBRARY_PATH: CMake records a build-tree run path for the
+        directory of every library it links by full path, EXCEPT
+        directories it considers implicit to the toolchain — and it learns
+        those from the compiler's own link line, where clang and gcc put
+        every LIBRARY_PATH entry. So a user who points LIBRARY_PATH at the
+        prefix holding the dependencies loses that prefix's run path, and
+        a dependency that can only be found through it no longer loads
+        from the staged libraries: on macOS every C<@rpath/…> install name
+        (anything CMake- or meson-built, e.g. libdeflate), failing with
+        "Library not loaded: @rpath/libdeflate.0.dylib"; on Linux every
+        DT_NEEDED outside the loader's default directories. Entries in
+        CMAKE_BUILD_RPATH are recorded verbatim, so naming LIBRARY_PATH's
+        directories there puts back exactly what that filter removed.
+        (On Linux the run path is a DT_RUNPATH, which covers the staged
+        libraries' own dependencies, not those dependencies' dependencies
+        — those still need the loader's default path, ld.so.conf or
+        LD_LIBRARY_PATH, as for any program.) )
+    method build-rpath-dirs(%env, Bool :$windows = $*DISTRO.is-win --> List) {
+        return () if $windows;
+        my Str @dirs;
+        for (%env<LIBRARY_PATH> // '').split(':') -> Str $entry {
+            # Relative entries are relative to wherever the compiler ran;
+            # there is no meaningful run path to record for them.
+            next unless $entry.starts-with('/');
+            # A CMake list separator inside a path cannot survive the
+            # single `-DCMAKE_BUILD_RPATH=a;b` argument.
+            next if $entry.contains(';');
+            my Str $dir = $entry.subst(/ '/' ** 2..* /, '/', :g)
+                                .subst(/ '/' $ /, '') || '/';
+            next unless $dir.IO.d;
+            @dirs.push: $dir unless @dirs.first(* eq $dir).defined;
+        }
+        @dirs.List
+    }
+
+    #|( The CMake configure command line for the source build: the
+        option set the CI release lanes build with, plus
+        C<-DCMAKE_BUILD_RPATH=…> (one argument, C<;>-separated as CMake
+        lists are) when build-rpath-dirs found directories to pin. )
+    method cmake-configure-args(Str $vendor, Str $build-dir,
+                                :@rpath-dirs --> List) {
+        my @args = (
             'cmake', '-B', $build-dir, '-S', $vendor,
             '-DUSE_MULTIMEDIA=ffmpeg',
             '-DBUILD_FFI_LIBRARY=ON',
@@ -722,19 +978,66 @@ class Build {
             '-DUSE_STATIC=OFF',
             '-DCMAKE_BUILD_TYPE=Release',
         );
+        @args.push: "-DCMAKE_BUILD_RPATH={@rpath-dirs.join(';')}" if @rpath-dirs;
+        @args.List
+    }
 
-        # macOS: Homebrew's ncurses isn't in default pkg-config path.
-        my %env = %*ENV;
-        if $os ~~ /darwin/ {
-            my Str $brew-prefix = '/opt/homebrew';
-            $brew-prefix = '/usr/local' unless $brew-prefix.IO.d;
-            my Str $nc-pkgconfig = "$brew-prefix/opt/ncurses/lib/pkgconfig";
-            if $nc-pkgconfig.IO.d {
-                %env<PKG_CONFIG_PATH> =
-                    "$nc-pkgconfig:{%env<PKG_CONFIG_PATH> // ''}";
-            }
+    #|( Make the next configure of $build-dir a fresh one: remove
+        C<CMakeCache.txt> and C<CMakeFiles/>, which is exactly what
+        C<cmake --fresh> does — done by hand because that flag needs
+        CMake 3.24 and notcurses configures with 3.21. Everything else in
+        the dir (generated headers, built libraries) is left for the
+        configure and build to overwrite. Links are removed as links,
+        never followed; absent entries, or an absent build dir, are fine.
+
+        Without this a cached result outlived the environment that
+        produced it. CMake caches every find_library / find_path hit and
+        every pkg-config module it found, and only searches again when
+        the cached entry is missing; the build dir sits in the per-SHA
+        source cache, which survives between installs. So after a failed
+        install — a configure that found the wrong ncurses, then a link
+        that failed — correcting PKG_CONFIG_PATH and installing again
+        still configured against the cached, wrong answer, until someone
+        knew to delete the cache. The price is a full recompile on every
+        install (the object files live in CMakeFiles/ too), a minute or
+        two; keeping them would mean trusting a cache whose inputs —
+        every variable and file pkg-config, the compiler and CMake's
+        find_* consult — can't all be fingerprinted. )
+    method fresh-cmake-build-dir(IO::Path $build-dir --> Nil) {
+        for <CMakeCache.txt CMakeFiles> -> Str $name {
+            my IO::Path $entry = $build-dir.add($name);
+            self!remove-stage-entry($entry) if $entry.e || $entry.l;
         }
+    }
 
+    #| Build notcurses from source via CMake. Matches the
+    #| per-platform build recipe used by the CI workflow. Requires
+    #| cmake + git + a C toolchain + system ffmpeg / ncurses /
+    #| libunistring / libdeflate dev headers (see docs/Readme.rakudoc
+    #| for distro-specific install commands). The environment, the
+    #| configure command line and the fresh-configure reset come from
+    #| the public helpers above.
+    method !compile-from-source($dist-path, IO::Path $stage) {
+        self!check-toolchain;
+
+        my IO::Path $vendor-io = self!ensure-notcurses-source($dist-path);
+        my Str $vendor = $vendor-io.Str;
+        my Str $build-dir = "$vendor/build";
+        my Str $os = $*KERNEL.name.lc;
+        my Str $ext = $os ~~ /darwin/ ?? 'dylib'
+                   !! $*DISTRO.is-win ?? 'dll'
+                   !! 'so';
+
+        # Both the configure and the build run with this environment: a
+        # build re-runs the configure step on its own whenever CMake's
+        # glob or CMakeLists checks ask it to, and that run must see what
+        # the first one saw.
+        my %env = self.source-build-env(%*ENV);
+        my @cmake-args = self.cmake-configure-args(
+            $vendor, $build-dir, :rpath-dirs(self.build-rpath-dirs(%env)));
+
+        # Every configure starts fresh — see fresh-cmake-build-dir.
+        self.fresh-cmake-build-dir($build-dir.IO);
         say "Configuring notcurses via CMake...";
         my $configure = run |@cmake-args, :out, :err, :%env;
         my $cfg-out = $configure.out.slurp(:close);
@@ -743,9 +1046,9 @@ class Build {
             say $cfg-out;
             say $cfg-err;
             # A core-only build is a silently degraded product: image and
-            # video support vanish, Cantina's avatar flow stops working, and
-            # nothing downstream can tell the difference until a user hits it
-            # at runtime. Every shipped binary is expected to carry the
+            # video support vanish, a consumer app's image features stop
+            # working, and nothing downstream can tell the difference until
+            # a user hits it at runtime. Every shipped binary is expected to carry the
             # multimedia backend, so this is a hard failure by default and
             # only ever a deliberate, opted-into choice.
             unless (%*ENV<NOTCURSES_NATIVE_ALLOW_NO_MULTIMEDIA> // '') eq '1' {
@@ -768,7 +1071,12 @@ class Build {
             }
             note "⚠️  NOTCURSES_NATIVE_ALLOW_NO_MULTIMEDIA=1 — building "
                ~ "core-only (no image/video support).";
-            @cmake-args[5] = '-DUSE_MULTIMEDIA=none';
+            @cmake-args = @cmake-args.map({
+                $_ eq '-DUSE_MULTIMEDIA=ffmpeg' ?? '-DUSE_MULTIMEDIA=none' !! $_
+            });
+            # The failed attempt left its find results in the cache; the
+            # retry must not inherit them any more than a fresh install may.
+            self.fresh-cmake-build-dir($build-dir.IO);
             $configure = run |@cmake-args, :out, :err, :%env;
             $cfg-out = $configure.out.slurp(:close);
             $cfg-err = $configure.err.slurp(:close);
@@ -787,7 +1095,7 @@ class Build {
             }
         };
         my $build = run 'cmake', '--build', $build-dir, '-j', $ncpu,
-                        :out, :err;
+                        :out, :err, :%env;
         my $build-out = $build.out.slurp(:close);
         my $build-err = $build.err.slurp(:close);
         unless $build.exitcode == 0 {

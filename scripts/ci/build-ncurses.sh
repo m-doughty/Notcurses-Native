@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Build + install ncurses for the macOS x86_64 prebuilt lane.
 # macOS ships ncurses 5.7 in /usr/lib (very old — predates notcurses'
-# terminfo extension usage). Homebrew x86_64 ncurses bottles target
-# macOS 14+ which fails our 10.15 deployment-target floor, so we
-# source-build with MACOSX_DEPLOYMENT_TARGET=10.15 in env.
+# terminfo extension usage). The x86_64 lane has no x86_64 package
+# manager to take a newer one from — and Homebrew's x86_64 ncurses
+# bottles targeted macOS 14+ anyway, failing our 10.15
+# deployment-target floor — so we source-build with
+# MACOSX_DEPLOYMENT_TARGET=10.15 in env.
 #
 # Currently macOS-only. Linux manylinux_2_28 has ncurses-devel in dnf
 # (the build-linux-glibc.sh path installs that directly).

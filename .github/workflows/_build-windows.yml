@@ -498,6 +498,45 @@ jobs:
 
           ninja -C build
 
+          # The link line, which ninja's .rsp files would otherwise hide
+          # (they are deleted after the build), and what pkg-config fed
+          # into it from ncursesw.pc.
+          grep -E '^TERMINFO_(LIBRARIES|LIBRARY_DIRS):' build/CMakeCache.txt || true
+          grep -n 'LINK_LIBRARIES' build/build.ninja || true
+
+          # No notcurses DLL may import GNU gettext's libintl (see the
+          # bundle gate below for why it cannot ship). Caught here, at
+          # the link, so the failure names the DLL and the exact symbols
+          # rather than surfacing later as an extra DLL in the pack.
+          # r16 hit this: gettext >= 1.0's libintl-8.dll exports
+          # unprefixed uc_width/uc_tolower, and MSYS2's ncursesw.pc put
+          # -lintl on the link line ahead of libunistring.
+          bad=0
+          dlls=$(find build -maxdepth 2 -name 'libnotcurses*.dll' -type f)
+          if [[ -z "$dlls" ]]; then
+            echo "❌ No libnotcurses*.dll under build/ to check."
+            exit 1
+          fi
+          for dll in $dlls; do
+            if ! imports=$(objdump -p "$dll" 2>&1); then
+              echo "::error file=$dll::objdump could not read this DLL — imports unverifiable"
+              exit 1
+            fi
+            if ! printf '%s\n' "$imports" | awk -v d="$dll" '
+                /DLL Name:/ { f = (tolower($3) ~ /^libintl/) }
+                f { print d ": " $0; b = 1 }
+                END { exit b }'; then
+              bad=1
+            fi
+          done
+          if (( bad != 0 )); then
+            echo "::error::a notcurses DLL imports libintl (symbols above). Keep"
+            echo "  -lintl off notcurses' link line (the fork's CMakeLists filters"
+            echo "  TERMINFO_LIBRARIES on WIN32) rather than shipping libintl."
+            exit 1
+          fi
+          echo "ok: no notcurses DLL imports libintl"
+
       - name: Bundle + sweep sibling DLLs
         uses: ./.github/actions/bundle-dll
         with:
@@ -588,9 +627,14 @@ jobs:
           # "not covered by any component" — whose stock advice is
           # "add a component entry", which is the wrong fix here.
           # libintl was dropped in r11 as LGPL with no pinnable
-          # corresponding source, and the only way it comes back
-          # imported is a configure that lost its --disable-nls
-          # (build-libiconv.sh's, most likely). That is what to fix.
+          # corresponding source. It has come back two ways: a
+          # configure that lost its --disable-nls (build-libiconv.sh's,
+          # most likely), and -lintl reaching notcurses' own link line
+          # from MSYS2's ncursesw.pc (r16: gettext >= 1.0 exports
+          # unprefixed uc_width/uc_tolower, which then bound to libintl
+          # ahead of libunistring). The post-build check in the build
+          # step catches the second at the link; this one is the
+          # backstop for both. Fix whichever it is at the source.
           if [[ -f bundle/libintl-8.dll ]]; then
             echo "::error file=bundle/libintl-8.dll::GNU gettext's libintl is"
             echo "  back in the pack. Find what imports it (objdump -p on each"

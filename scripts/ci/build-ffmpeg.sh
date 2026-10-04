@@ -2,8 +2,9 @@
 # Build + install ffmpeg. Four callers:
 #   * Linux manylinux_2_28 container (RHEL 8 baseline) — RHEL 8's
 #     repos don't ship ffmpeg, source-build is required.
-#   * macOS x86_64 Rosetta build — brew bottles target macOS 14+,
-#     which fails our 10.15 deployment-target floor, so we
+#   * macOS x86_64 Rosetta build — that lane has no x86_64 package
+#     manager, and brew's x86_64 bottles targeted macOS 14+ anyway,
+#     which fails our 10.15 deployment-target floor; so we
 #     source-build with MACOSX_DEPLOYMENT_TARGET=10.15 in env. clang
 #     reads $MACOSX_DEPLOYMENT_TARGET and stamps LC_BUILD_VERSION
 #     minos on every produced dylib.
@@ -119,7 +120,9 @@ JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 #   * manylinux_2_28 x86_64: build-linux-glibc.sh `dnf install nasm`
 #     in its system-deps step.
 #   * macOS x86_64: _build-macos.yml's "Install build deps" step
-#     runs `arch -x86_64 /usr/local/bin/brew install nasm`.
+#     (and _verify-macos-x86_64.yml) source-build it via
+#     scripts/ci/build-macos-x86_64-tools.sh — there is no x86_64
+#     Homebrew to install it from.
 #   * Windows UCRT64: _build-windows.yml's pacman list carries
 #     mingw-w64-ucrt-x86_64-nasm.
 # Bail out loudly if an x86 caller skipped that step.
@@ -152,7 +155,8 @@ case "$BUILD_ARCH" in
             echo "❌ nasm not on PATH (required for x86 SIMD)." >&2
             echo "   Caller must install nasm before invoking build-ffmpeg.sh:" >&2
             echo "     * manylinux: dnf install -y nasm" >&2
-            echo "     * macOS: arch -x86_64 /usr/local/bin/brew install nasm" >&2
+            echo "     * macOS x86_64: scripts/ci/build-macos-x86_64-tools.sh" >&2
+            echo "       (then its \$PREFIX/bin first on PATH)" >&2
             echo "     * MSYS2:  pacman -S mingw-w64-ucrt-x86_64-nasm" >&2
             exit 1
         fi
@@ -207,14 +211,17 @@ cd "FFmpeg-${TAG}"
 # all auto-enabled by ffmpeg's configure if their .pc files are
 # visible via pkg-config. Our PKG_CONFIG_PATH prepends $PREFIX/
 # lib/pkgconfig but doesn't block the default fallback paths
-# (/usr/local/lib/pkgconfig on Intel-mac brew, /usr/lib/pkgconfig
-# on Linux), so on a runner with brew xz installed, ffmpeg would
-# transparently link against /usr/local/Cellar/xz/.../liblzma.5.dylib
-# — a brew bottle targeting macOS 14+, which fails our 10.15
-# deployment-target audit. Explicitly disable to force ffmpeg to
-# ignore these even when found. We don't need any of them for the
-# image/video formats notcurses cares about: lzma is for rare
-# matroska variants, bzip2 for similarly rare cases, libxml2 for
+# (Homebrew's prefix on a brew-equipped Mac, /usr/lib/pkgconfig on
+# Linux). The macOS x86_64 lane hit exactly this while it still
+# used an x86_64 Homebrew: with brew's xz installed, ffmpeg
+# transparently linked /usr/local/Cellar/xz/.../liblzma.5.dylib — a
+# brew bottle targeting macOS 14+, failing our 10.15
+# deployment-target audit. (That lane's pkgconf now searches nothing
+# outside its own prefix by default, but the arm64 lane's brew
+# pkgconf and the Linux lanes' still do.) Explicitly disable to
+# force ffmpeg to ignore these even when found. We don't need any of
+# them for the image/video formats notcurses cares about: lzma is for
+# rare matroska variants, bzip2 for similarly rare cases, libxml2 for
 # DASH/manifest demuxers.
 #
 # --disable-xlib / --disable-libxcb / --disable-sdl2 /

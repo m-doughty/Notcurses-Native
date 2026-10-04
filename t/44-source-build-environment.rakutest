@@ -1,0 +1,514 @@
+use Test;
+
+# Build.rakumod isn't published in META6's `provides` (it's the
+# `build:` script, not a module), so `use Build;` is rejected by the
+# dist's CompUnit boundary. EVALFILE'd at BEGIN time so the class
+# symbol is in scope for the rest of the file. (Same access pattern as
+# t/16-build-detect-platform and t/28-prebuilt-alias-normalization.)
+BEGIN EVALFILE $*PROGRAM.parent.parent.child('Build.rakumod').absolute;
+
+# The source-build path's environment decisions, each fixed after it
+# broke a real install:
+#
+#   1. Homebrew ncurses keg selection (macho-archs, homebrew-prefixes,
+#      select-homebrew-ncurses, source-build-env). The build used to
+#      prepend /opt/homebrew's ncurses keg whenever /opt/homebrew
+#      existed, with no architecture check, so an x86_64 Raku under
+#      Rosetta on an Apple Silicon Mac linked arm64 ncurses — "found
+#      architecture 'arm64', required architecture 'x86_64'", then every
+#      terminfo symbol undefined.
+#   2. Run paths (build-rpath-dirs, cmake-configure-args). With
+#      LIBRARY_PATH pointing at the dependencies' prefix, CMake counted
+#      that prefix as implicit and left it out of the build tree's run
+#      path, so the staged libraries died with "Library not loaded:
+#      @rpath/libdeflate.0.dylib".
+#   3. Stale CMake state (fresh-cmake-build-dir). The build dir lives in
+#      the per-SHA source cache; its CMakeCache.txt kept a failed
+#      attempt's find results, so a corrected environment was ignored on
+#      the next install.
+#
+# Everything here is hermetic: synthetic Mach-O headers, fake Homebrew
+# kegs and fake build dirs under $*TMPDIR, explicit :arch / :os /
+# :windows arguments. No Homebrew, CMake or compiler is consulted, so
+# the file means the same on every platform it runs on. The real-CMake
+# behaviour behind fixes 2 and 3 is pinned by
+# xxt/03-source-build-cmake.rakutest.
+
+my $b = Build.new;
+
+# --- Fixtures --------------------------------------------------------
+
+#| Big-/little-endian 32-bit words, for hand-built Mach-O headers.
+sub be32(UInt $n --> Blob) { my $buf = buf8.new; $buf.write-uint32(0, $n, BigEndian);    $buf }
+sub le32(UInt $n --> Blob) { my $buf = buf8.new; $buf.write-uint32(0, $n, LittleEndian); $buf }
+
+constant CPU-X86_64 = 0x01000007;
+constant CPU-ARM64  = 0x0100000C;
+
+#| A thin 64-bit Mach-O header (little-endian, as Apple ships them),
+#| padded so it looks like the start of a real file.
+sub thin(UInt $cputype, UInt $subtype = 0 --> Blob) {
+    le32(0xFEEDFACF) ~ le32($cputype) ~ le32($subtype) ~ buf8.new(0 xx 20)
+}
+
+#| A universal binary's header; slices are (cputype, subtype) pairs.
+sub fat(**@slices, Bool :$fat64 --> Blob) {
+    my $head = be32($fat64 ?? 0xCAFEBABF !! 0xCAFEBABE) ~ be32(+@slices);
+    for @slices -> ($cputype, $subtype) {
+        $head ~= be32($cputype) ~ be32($subtype);
+        # offset, size, align (+ reserved): zero is fine for a header read.
+        $head ~= buf8.new(0 xx ($fat64 ?? 24 !! 12));
+    }
+    $head ~ buf8.new(0 xx 16)
+}
+
+sub scratch-dir(Str $tag --> IO::Path) {
+    # cleanup: build-rpath-dirs normalises slashes, so the expected
+    # values must not carry a doubled one from a trailing-slash TMPDIR.
+    my $dir = $*TMPDIR.add("nn-src-env-$tag-{$*PID}-{(^1_000_000).pick}").cleanup;
+    $dir.mkdir;
+    $dir;
+}
+
+sub remove-tree(IO::Path:D $path --> Nil) {
+    return unless $path.e || $path.l;
+    if $path.d && !$path.l {
+        remove-tree($_) for $path.dir;
+        $path.rmdir;
+    }
+    else {
+        $path.unlink;
+    }
+}
+
+#| A Homebrew-shaped prefix holding an ncurses keg whose library has
+#| the given header. :!pkgconfig leaves out lib/pkgconfig; :!lib leaves
+#| out the library. Off Windows the library is reached the way Homebrew
+#| lays it out — libncursesw.dylib a symlink to libncursesw.6.dylib — so
+#| the header read is shown to follow links.
+sub make-keg(IO::Path $prefix, Blob $header, Bool :$pkgconfig = True,
+             Bool :$lib = True --> IO::Path) {
+    my IO::Path $libdir = $prefix.add('opt').add('ncurses').add('lib');
+    $libdir.mkdir;
+    if $pkgconfig {
+        $libdir.add('pkgconfig').mkdir;
+        $libdir.add('pkgconfig').add('ncursesw.pc').spurt("Name: ncursesw\n");
+    }
+    if $lib {
+        if $*DISTRO.is-win {
+            $libdir.add('libncursesw.dylib').spurt($header);
+        }
+        else {
+            $libdir.add('libncursesw.6.dylib').spurt($header);
+            $libdir.add('libncursesw.6.dylib')
+                .symlink($libdir.add('libncursesw.dylib'));
+        }
+    }
+    $prefix;
+}
+
+sub keg-pkgconfig(IO::Path $prefix --> Str) {
+    $prefix.add('opt').add('ncurses').add('lib').add('pkgconfig').Str
+}
+
+plan 10;
+
+# --- 1. Mach-O header parsing ---------------------------------------
+
+subtest 'macho-archs-of-header names every slice and nothing else' => {
+    plan 15;
+    is-deeply $b.macho-archs-of-header(thin(CPU-X86_64, 3)), ('x86_64',),
+        'thin x86_64';
+    is-deeply $b.macho-archs-of-header(thin(CPU-ARM64)), ('arm64',),
+        'thin arm64';
+    is-deeply $b.macho-archs-of-header(thin(CPU-ARM64, 0x80000002)), ('arm64e',),
+        'thin arm64e: subtype 2, capability bits in the top byte ignored';
+    is-deeply $b.macho-archs-of-header(thin(CPU-X86_64, 8)), ('x86_64h',),
+        'thin x86_64h (Haswell) is its own name, not x86_64';
+    is-deeply $b.macho-archs-of-header(
+            le32(0xFEEDFACE) ~ le32(7) ~ le32(3) ~ buf8.new(0 xx 20)),
+        ('i386',), 'thin 32-bit Mach-O';
+    is-deeply $b.macho-archs-of-header(
+            be32(0xFEEDFACE) ~ be32(18) ~ be32(0) ~ buf8.new(0 xx 20)),
+        ('ppc',), 'big-endian thin Mach-O';
+    is-deeply $b.macho-archs-of-header(thin(0xABCD)), ('cpu-0x0000abcd',),
+        'an unknown cputype is reported, not dropped';
+    is-deeply $b.macho-archs-of-header(fat((CPU-X86_64, 3), (CPU-ARM64, 0))),
+        ('x86_64', 'arm64'), 'universal binary: one name per slice, in order';
+    is-deeply $b.macho-archs-of-header(
+            fat((CPU-X86_64, 3), (CPU-ARM64, 0), :fat64)),
+        ('x86_64', 'arm64'), 'universal binary with 64-bit offsets';
+    # Long enough to hold 61 "slices", so only the count bound can say no.
+    is-deeply $b.macho-archs-of-header(
+            be32(0xCAFEBABE) ~ be32(0x0000003D) ~ buf8.new(0 xx 2048)),
+        (), 'a Java class file (same magic, version where the count goes) is not Mach-O';
+    my Blob $truncated = fat((CPU-X86_64, 3), (CPU-ARM64, 0)).subbuf(0, 8 + 20 + 4);
+    is-deeply $b.macho-archs-of-header($truncated), (),
+        'a universal header cut short of its slice table yields nothing';
+    is-deeply $b.macho-archs-of-header(be32(0xCAFEBABE) ~ be32(0) ~ buf8.new(0 xx 8)),
+        (), 'a universal header with no slices yields nothing';
+    is-deeply $b.macho-archs-of-header(le32(0xFEEDFACF)), (),
+        'four bytes are not a header';
+    is-deeply $b.macho-archs-of-header(
+            buf8.new(0x7F, 0x45, 0x4C, 0x46, 2, 1, 1, 0) ~ buf8.new(0 xx 24)),
+        (), 'an ELF file is not Mach-O';
+    is-deeply $b.macho-archs-of-header(buf8.new), (), 'empty input';
+};
+
+subtest 'macho-archs reads files, follows links, and refuses non-files' => {
+    plan 7;
+    my $dir = scratch-dir('macho');
+    LEAVE remove-tree($dir);
+    $dir.add('x86.dylib').spurt(thin(CPU-X86_64, 3));
+    is-deeply $b.macho-archs($dir.add('x86.dylib')), ('x86_64',),
+        'reads the header from disk';
+    if $*DISTRO.is-win {
+        pass 'symlink following: NTFS links need elevation (see make-keg)';
+    }
+    else {
+        $dir.add('x86.dylib').symlink($dir.add('alias.dylib'));
+        is-deeply $b.macho-archs($dir.add('alias.dylib')), ('x86_64',),
+            'follows a symlink to the real file';
+    }
+    is-deeply $b.macho-archs($dir.add('missing.dylib')), (), 'missing file';
+    is-deeply $b.macho-archs($dir), (), 'a directory';
+    $dir.add('empty.dylib').spurt('');
+    is-deeply $b.macho-archs($dir.add('empty.dylib')), (), 'an empty file';
+
+    # The running VM itself: on macOS its executable must carry a slice
+    # for the architecture $*KERNEL.hardware reports — the premise the
+    # keg check is built on (uname(3) answers for the running process,
+    # translated or not). Anywhere else the executable is ELF or PE and
+    # is correctly not Mach-O.
+    my @own = $b.macho-archs($*EXECUTABLE.IO);
+    if $*KERNEL.name.lc eq 'darwin' {
+        ok @own.first(* eq $*KERNEL.hardware.lc).defined,
+            "the running executable carries the {$*KERNEL.hardware} slice "
+            ~ "\$*KERNEL.hardware reports ({@own.join('/')})";
+        ok @own.elems >= 1, 'and is read as Mach-O';
+    }
+    else {
+        is-deeply @own.List, (), 'a non-macOS executable is not Mach-O';
+        pass 'nothing further to check off macOS';
+    }
+};
+
+# --- 2. Homebrew prefix candidates ----------------------------------
+
+subtest 'homebrew-prefixes: running architecture first, HOMEBREW_PREFIX ahead of both' => {
+    plan 7;
+    is-deeply $b.homebrew-prefixes(:arch<arm64>, :homebrew-prefix(Str)),
+        ('/opt/homebrew', '/usr/local'), 'arm64: /opt/homebrew first';
+    is-deeply $b.homebrew-prefixes(:arch<x86_64>, :homebrew-prefix(Str)),
+        ('/usr/local', '/opt/homebrew'), 'x86_64 (Intel, or Rosetta): /usr/local first';
+    is-deeply $b.homebrew-prefixes(:arch<x86_64>, :homebrew-prefix</opt/brew-custom>),
+        ('/opt/brew-custom', '/usr/local', '/opt/homebrew'),
+        'a custom HOMEBREW_PREFIX is tried before the standard prefixes';
+    is-deeply $b.homebrew-prefixes(:arch<x86_64>, :homebrew-prefix</opt/homebrew>),
+        ('/opt/homebrew', '/usr/local'),
+        'an arm64 shell\'s HOMEBREW_PREFIX seen by an x86_64 Raku is tried first, without duplicates';
+    is-deeply $b.homebrew-prefixes(:arch<arm64>, :homebrew-prefix</opt/homebrew//>),
+        ('/opt/homebrew', '/usr/local'), 'trailing slashes are normalised away';
+    is-deeply $b.homebrew-prefixes(:arch<arm64>, :homebrew-prefix('')),
+        ('/opt/homebrew', '/usr/local'), 'an empty HOMEBREW_PREFIX is ignored';
+    is-deeply $b.homebrew-prefixes(:arch<arm64>, :homebrew-prefix<relative/brew>),
+        ('/opt/homebrew', '/usr/local'), 'a relative HOMEBREW_PREFIX is ignored';
+};
+
+# --- 3. Keg selection -----------------------------------------------
+
+subtest 'select-homebrew-ncurses only accepts a keg of the running architecture' => {
+    plan 20;
+    my $root = scratch-dir('kegs');
+    LEAVE remove-tree($root);
+    my IO::Path $arm   = make-keg($root.add('arm64-brew').&{ .mkdir; $_ }, thin(CPU-ARM64));
+    my IO::Path $intel = make-keg($root.add('x86-brew').&{ .mkdir; $_ }, thin(CPU-X86_64, 3));
+    my IO::Path $fat   = make-keg($root.add('fat-brew').&{ .mkdir; $_ },
+                                  fat((CPU-X86_64, 3), (CPU-ARM64, 0)));
+    my IO::Path $arme  = make-keg($root.add('arm64e-brew').&{ .mkdir; $_ },
+                                  thin(CPU-ARM64, 2));
+    my IO::Path $nolib = make-keg($root.add('nolib-brew').&{ .mkdir; $_ },
+                                  thin(CPU-ARM64), :!lib);
+    my IO::Path $nopc  = make-keg($root.add('nopc-brew').&{ .mkdir; $_ },
+                                  thin(CPU-ARM64), :!pkgconfig);
+    my IO::Path $none  = $root.add('no-brew-here');
+
+    # No Homebrew at all.
+    my %r = $b.select-homebrew-ncurses(:arch<x86_64>, :prefixes[$none.Str]);
+    nok %r<pkgconfig>.defined, 'no brew: nothing selected';
+    is %r<skipped>.elems, 0, 'no brew: nothing to report';
+
+    # Only a keg of the other architecture — the Rosetta failure.
+    %r = $b.select-homebrew-ncurses(:arch<x86_64>, :prefixes[$arm.Str]);
+    nok %r<pkgconfig>.defined, 'arm64 keg, x86_64 Raku: refused';
+    is %r<skipped>.elems, 1, 'and reported once';
+    like %r<skipped>[0], / 'arm64' .* 'x86_64' /,
+        'the report names both architectures';
+    like %r<skipped>[0], / $($arm.Str) /, 'and the prefix';
+
+    # Only a keg of the right architecture.
+    %r = $b.select-homebrew-ncurses(:arch<x86_64>, :prefixes[$intel.Str]);
+    is %r<pkgconfig>, keg-pkgconfig($intel), 'x86_64 keg, x86_64 Raku: selected';
+    is %r<skipped>.elems, 0, 'nothing reported';
+
+    # Both brews, wrong one first (an arm64 shell's HOMEBREW_PREFIX).
+    %r = $b.select-homebrew-ncurses(:arch<x86_64>, :prefixes[$arm.Str, $intel.Str]);
+    is %r<pkgconfig>, keg-pkgconfig($intel),
+        'both brews, x86_64 Raku: the x86_64 keg, though listed second';
+    is %r<skipped>.elems, 1, 'the arm64 keg is reported as skipped';
+    %r = $b.select-homebrew-ncurses(:arch<arm64>, :prefixes[$arm.Str, $intel.Str]);
+    is %r<pkgconfig>, keg-pkgconfig($arm), 'both brews, arm64 Raku: the arm64 keg';
+    is %r<skipped>.elems, 0, 'found first, nothing skipped';
+    %r = $b.select-homebrew-ncurses(:arch<arm64>, :prefixes[$intel.Str, $arm.Str]);
+    is %r<pkgconfig>, keg-pkgconfig($arm), 'both brews, arm64 Raku, x86_64 listed first';
+
+    # A universal keg serves either architecture.
+    is $b.select-homebrew-ncurses(:arch<x86_64>, :prefixes[$fat.Str])<pkgconfig>,
+        keg-pkgconfig($fat), 'universal keg: usable by x86_64';
+    is $b.select-homebrew-ncurses(:arch<arm64>, :prefixes[$fat.Str])<pkgconfig>,
+        keg-pkgconfig($fat), 'universal keg: usable by arm64';
+
+    # Exact slices only: an arm64 process cannot load arm64e-only code.
+    nok $b.select-homebrew-ncurses(:arch<arm64>, :prefixes[$arme.Str])<pkgconfig>.defined,
+        'an arm64e-only keg is not taken for an arm64 Raku';
+
+    # A keg whose architecture can't be read is not trusted.
+    %r = $b.select-homebrew-ncurses(:arch<arm64>, :prefixes[$nolib.Str]);
+    nok %r<pkgconfig>.defined, 'pkgconfig but no library: refused';
+    like %r<skipped>[0], / 'no readable' /, 'reported as unverifiable';
+
+    # No pkgconfig dir: not a keg pkg-config could use — silently ignored.
+    %r = $b.select-homebrew-ncurses(:arch<arm64>, :prefixes[$nopc.Str, $arm.Str]);
+    is %r<pkgconfig>, keg-pkgconfig($arm), 'a keg without pkgconfig is passed over';
+    is %r<skipped>.elems, 0, 'without being reported';
+};
+
+# --- 4. The environment CMake runs with -----------------------------
+
+subtest 'source-build-env: appends a matching keg, never a mismatched one' => {
+    plan 14;
+    my $root = scratch-dir('env');
+    LEAVE remove-tree($root);
+    my IO::Path $arm   = make-keg($root.add('arm64-brew').&{ .mkdir; $_ }, thin(CPU-ARM64));
+    my IO::Path $intel = make-keg($root.add('x86-brew').&{ .mkdir; $_ }, thin(CPU-X86_64, 3));
+    my @notes;
+    my &notify = -> $msg { @notes.push: $msg };
+
+    # Not macOS: passed through untouched.
+    my %base = PATH => '/bin', LIBRARY_PATH => '/deps/lib';
+    my %env = $b.source-build-env(%base, :os<linux>, :arch<x86_64>,
+                                  :brew-prefixes[$intel.Str], :&notify);
+    is-deeply %env, %base, 'linux: the environment is passed through as-is';
+    nok %env<PKG_CONFIG_PATH>:exists, 'linux: PKG_CONFIG_PATH not invented';
+
+    # macOS, no usable keg, nothing set: PKG_CONFIG_PATH defined but empty,
+    # which switches off notcurses' own arch-blind /usr/local fallback.
+    %env = $b.source-build-env(%(PATH => '/bin'), :os<darwin>, :arch<x86_64>,
+                               :brew-prefixes[$root.add('none').Str], :&notify);
+    ok %env<PKG_CONFIG_PATH>:exists, 'darwin, no keg: PKG_CONFIG_PATH is defined';
+    is %env<PKG_CONFIG_PATH>, '', 'and empty';
+
+    # macOS, mismatched keg only: the Rosetta case.
+    @notes = ();
+    %env = $b.source-build-env(%(PKG_CONFIG_PATH => '/deps/lib/pkgconfig'),
+                               :os<darwin>, :arch<x86_64>,
+                               :brew-prefixes[$arm.Str], :&notify);
+    is %env<PKG_CONFIG_PATH>, '/deps/lib/pkgconfig',
+        'darwin, arm64 keg, x86_64 Raku: PKG_CONFIG_PATH left as the user set it';
+    is @notes.elems, 1, 'and the refusal is reported once';
+    like @notes[0], / 'not using' .* 'arm64' .* 'x86_64' /, 'saying why';
+
+    # macOS, matching keg, user path set: appended after the user's dirs.
+    @notes = ();
+    %env = $b.source-build-env(%(PKG_CONFIG_PATH => '/deps/lib/pkgconfig'),
+                               :os<darwin>, :arch<x86_64>,
+                               :brew-prefixes[$arm.Str, $intel.Str], :&notify);
+    is %env<PKG_CONFIG_PATH>, "/deps/lib/pkgconfig:{keg-pkgconfig($intel)}",
+        'darwin, both brews: the x86_64 keg appended after the user\'s path';
+    is @notes.elems, 1, 'the arm64 keg it passed over is reported';
+
+    # Matching keg, nothing set: the keg alone.
+    %env = $b.source-build-env(%(), :os<darwin>, :arch<x86_64>,
+                               :brew-prefixes[$intel.Str], :&notify);
+    is %env<PKG_CONFIG_PATH>, keg-pkgconfig($intel), 'darwin, keg only: just the keg';
+
+    # Already on the user's path: not added twice.
+    my Str $already = "{keg-pkgconfig($intel)}:/deps/lib/pkgconfig";
+    %env = $b.source-build-env(%(PKG_CONFIG_PATH => $already), :os<darwin>,
+                               :arch<x86_64>, :brew-prefixes[$intel.Str], :&notify);
+    is %env<PKG_CONFIG_PATH>, $already, 'a keg already on PKG_CONFIG_PATH is not duplicated';
+
+    # The caller's hash is never written to.
+    my %mine = PKG_CONFIG_PATH => '/deps/lib/pkgconfig';
+    $b.source-build-env(%mine, :os<darwin>, :arch<x86_64>,
+                        :brew-prefixes[$intel.Str], :&notify);
+    is-deeply %mine, %(PKG_CONFIG_PATH => '/deps/lib/pkgconfig'),
+        'the base environment is not modified';
+
+    # HOMEBREW_PREFIX comes from the environment being built, not %*ENV.
+    %env = $b.source-build-env(%(HOMEBREW_PREFIX => $intel.Str), :os<darwin>,
+                               :arch<x86_64>, :&notify);
+    is %env<PKG_CONFIG_PATH>, keg-pkgconfig($intel),
+        'the default candidate list starts with the base environment\'s HOMEBREW_PREFIX';
+    nok %*ENV<PKG_CONFIG_PATH>.defined && %*ENV<PKG_CONFIG_PATH>.contains($intel.Str),
+        'and %*ENV is untouched';
+};
+
+# --- 5. Run paths -----------------------------------------------------
+
+subtest 'build-rpath-dirs: every absolute, existing LIBRARY_PATH dir, once' => {
+    plan 11;
+    my $root = scratch-dir('rpath');
+    LEAVE remove-tree($root);
+    my IO::Path $deps  = $root.add('deps-lib').&{ .mkdir; $_ };
+    my IO::Path $other = $root.add('other-lib').&{ .mkdir; $_ };
+
+    is-deeply $b.build-rpath-dirs(%(), :!windows), (), 'LIBRARY_PATH unset: nothing';
+    is-deeply $b.build-rpath-dirs(%(LIBRARY_PATH => ''), :!windows), (),
+        'LIBRARY_PATH empty: nothing';
+    is-deeply $b.build-rpath-dirs(%(LIBRARY_PATH => $deps.Str), :!windows),
+        ($deps.Str,), 'LIBRARY_PATH = the dependency dir: pinned';
+    is-deeply $b.build-rpath-dirs(%(LIBRARY_PATH => "$deps:$other"), :!windows),
+        ($deps.Str, $other.Str), 'several dirs: all pinned, in order';
+    is-deeply $b.build-rpath-dirs(
+            %(LIBRARY_PATH => "::relative/lib:$deps/:{$root.add('missing')}:$deps"),
+            :!windows),
+        ($deps.Str,),
+        'empty, relative and missing entries dropped; a trailing slash and a repeat collapse';
+    is-deeply $b.build-rpath-dirs(%(LIBRARY_PATH => $deps.Str.subst('/', '//')), :!windows),
+        ($deps.Str,), 'doubled slashes are normalised';
+    # Relative to wherever the compiler ran, so meaningless as a run
+    # path — dropped even when it happens to resolve from here.
+    my Str $relative = $deps.relative($*CWD);
+    is-deeply $b.build-rpath-dirs(%(LIBRARY_PATH => $relative), :!windows), (),
+        "a relative entry is dropped even when it exists ($relative)";
+    is-deeply $b.build-rpath-dirs(%(LIBRARY_PATH => $deps.Str), :windows), (),
+        'Windows: no run paths, whatever LIBRARY_PATH says';
+    if $*DISTRO.is-win {
+        pass 'a ";" in a POSIX dir name: not representable on Windows';
+    }
+    else {
+        my IO::Path $semi = $root.add('a;b').&{ .mkdir; $_ };
+        is-deeply $b.build-rpath-dirs(%(LIBRARY_PATH => "$semi:$deps"), :!windows),
+            ($deps.Str,), 'a dir containing the CMake list separator is skipped';
+    }
+
+    my @args = $b.cmake-configure-args('/src', '/src/build',
+        :rpath-dirs($b.build-rpath-dirs(%(LIBRARY_PATH => "$deps:$other"), :!windows)));
+    is @args.grep(*.starts-with('-DCMAKE_BUILD_RPATH=')).elems, 1,
+        'wired into the configure line as one argument';
+    ok @args.first(*.starts-with('-DCMAKE_BUILD_RPATH=')) eq "-DCMAKE_BUILD_RPATH=$deps;$other",
+        'naming the dirs as a CMake list';
+};
+
+subtest 'cmake-configure-args: the release option set, run paths only when needed' => {
+    plan 6;
+    my @args = $b.cmake-configure-args('/src/nc', '/src/nc/build');
+    is-deeply @args[^5], ('cmake', '-B', '/src/nc/build', '-S', '/src/nc'),
+        'build and source dirs';
+    ok @args.first('-DUSE_MULTIMEDIA=ffmpeg').defined, 'multimedia is asked for';
+    ok @args.first('-DCMAKE_BUILD_TYPE=Release').defined, 'release build';
+    nok @args.first(*.starts-with('-DCMAKE_BUILD_RPATH')).defined,
+        'no run-path argument when there is nothing to pin';
+    @args = $b.cmake-configure-args('/src/nc', '/src/nc/build', :rpath-dirs('/a',));
+    is @args.tail, '-DCMAKE_BUILD_RPATH=/a', 'a single dir';
+    is @args.grep(*.starts-with('-DUSE_MULTIMEDIA')).elems, 1,
+        'adding run paths leaves the multimedia option alone';
+};
+
+# --- 6. Fresh configure ----------------------------------------------
+
+subtest 'fresh-cmake-build-dir removes exactly what cmake --fresh does' => {
+    plan 12;
+    my $root = scratch-dir('fresh');
+    LEAVE remove-tree($root);
+    my IO::Path $build = $root.add('build').&{ .mkdir; $_ };
+    # The stale state a failed install leaves behind…
+    $build.add('CMakeCache.txt').spurt("unistring:FILEPATH=/opt/homebrew/lib/libunistring.dylib\n");
+    $build.add('CMakeFiles').mkdir;
+    $build.add('CMakeFiles').add('notcurses-core.dir').mkdir;
+    $build.add('CMakeFiles').add('notcurses-core.dir').add('notcurses.c.o').spurt('obj');
+    $build.add('CMakeFiles').add('CMakeOutput.log').spurt('log');
+    # …next to things a configure + build simply overwrite.
+    $build.add('Makefile').spurt('all:');
+    $build.add('include').mkdir;
+    $build.add('include').add('version.h').spurt('#define V 1');
+    $build.add('libnotcurses-core.3.0.17.dylib').spurt('lib');
+
+    lives-ok { $b.fresh-cmake-build-dir($build) }, 'runs';
+    nok $build.add('CMakeCache.txt').e, 'CMakeCache.txt — the cached find results — is gone';
+    nok $build.add('CMakeFiles').e, 'CMakeFiles/ is gone';
+    ok $build.add('Makefile').e, 'the generated Makefile is left for CMake to rewrite';
+    ok $build.add('include').add('version.h').e, 'generated headers are left';
+    ok $build.add('libnotcurses-core.3.0.17.dylib').e, 'built libraries are left';
+    lives-ok { $b.fresh-cmake-build-dir($build) }, 'a second call is a no-op';
+
+    my IO::Path $absent = $root.add('never-configured');
+    lives-ok { $b.fresh-cmake-build-dir($absent) }, 'an absent build dir is fine';
+    nok $absent.e, 'and is not created';
+
+    if $*DISTRO.is-win {
+        pass 'links: NTFS symlinks need elevation (see make-keg)' for ^3;
+    }
+    else {
+        # Removed as links, never followed out of the build dir.
+        my IO::Path $outside = $root.add('outside').&{ .mkdir; $_ };
+        $outside.add('keep-me').spurt('precious');
+        my IO::Path $linked = $root.add('linked-build').&{ .mkdir; $_ };
+        $outside.symlink($linked.add('CMakeFiles'));
+        $root.add('nowhere').symlink($linked.add('CMakeCache.txt'));
+        $b.fresh-cmake-build-dir($linked);
+        nok $linked.add('CMakeFiles').l, 'a CMakeFiles symlink is removed';
+        ok $outside.add('keep-me').e, 'without touching what it pointed at';
+        nok $linked.add('CMakeCache.txt').l, 'a dangling CMakeCache.txt link is removed';
+    }
+};
+
+# --- 7. Wiring ---------------------------------------------------------
+#
+# !compile-from-source itself needs a toolchain and a notcurses checkout,
+# so — like t/25 — its use of the helpers above is pinned as a source
+# contract. xxt/03-source-build-cmake.rakutest proves the helpers'
+# effect on a real CMake.
+
+subtest 'compile-from-source uses the helpers on every configure and build' => {
+    plan 7;
+    my Str $src  = $*PROGRAM.parent.parent.child('Build.rakumod').slurp;
+    my Int $from = $src.index('method !compile-from-source');
+    my Int $to   = $src.index('method !rewrite-macos-install-names');
+    ok $from.defined && $to.defined && $from < $to, 'found compile-from-source';
+    my Str $body = $src.substr($from, $to - $from);
+
+    ok $body.contains('self.source-build-env(%*ENV)'),
+        'the environment comes from source-build-env';
+    ok $body.contains('self.build-rpath-dirs(%env)'),
+        'run paths are derived from that same environment';
+
+    # Each configure run — the first and the core-only retry — must be the
+    # first thing after a fresh reset, so neither can inherit cached finds.
+    my @runs = $body.indices('run |@cmake-args');
+    is @runs.elems, 2, 'two configure runs (first attempt, opted-in retry)';
+    my Int $prev = 0;
+    my Bool $each-fresh = True;
+    for @runs -> Int $at {
+        $each-fresh = False
+            unless $body.substr($prev, $at - $prev).contains('self.fresh-cmake-build-dir(');
+        $prev = $at;
+    }
+    ok $each-fresh, 'each is preceded by fresh-cmake-build-dir since the previous one';
+    ok $body.indices('run |@cmake-args, :out, :err, :%env').elems == 2,
+        'both configure with the computed environment';
+    ok $body ~~ / "run 'cmake', '--build'" <-[;]>* ':%env' /,
+        'and so does the build, which may re-run the configure step';
+};
+
+# --- 8. The behaviour the old rule had -------------------------------
+
+subtest 'the old "/opt/homebrew whenever it exists" rule is gone' => {
+    plan 2;
+    my Str $src = $*PROGRAM.parent.parent.child('Build.rakumod').slurp;
+    nok $src.contains("\$brew-prefix = '/usr/local' unless"),
+        'no prefix is chosen by existence alone';
+    nok $src ~~ / '"$nc-pkgconfig:' /,
+        'no keg is prepended ahead of the user\'s PKG_CONFIG_PATH';
+};
