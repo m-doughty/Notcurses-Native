@@ -263,8 +263,12 @@ def build_child():
         except OSError as exc:
             raise RuntimeError("POSIX terminal-guard test requires C compiler %r: %s"
                                % (compiler, exc)) from exc
+        # Building the child is setup, not the contract under test, so its
+        # bound only has to catch a compiler that hangs. 30s was not
+        # enough on a fresh macOS runner under Rosetta: the first x86_64
+        # clang run there includes translating the compiler itself.
         try:
-            code = process.wait(timeout=30)
+            code = process.wait(timeout=300)
         finally:
             if process.poll() is None:
                 process.kill()
