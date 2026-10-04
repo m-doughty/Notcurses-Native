@@ -1,7 +1,6 @@
 use Test;
 use lib 'lib';
-use lib 't/lib';
-use TestHelper;
+use Notcurses::Native::Test::Helper;
 use NativeCall;
 use Notcurses::Native;
 use Notcurses::Native::Types;
@@ -107,7 +106,10 @@ subtest 'notcurses_at_yx reads back rendered content' => {
 subtest 'Stats alloc, query, and reset' => {
 	plan 6;
 
+	# The raw allocator, paired with its free: notcurses_stats_alloc
+	# hands back malloc'd memory nothing else will release.
 	my $stats = notcurses_stats_alloc($nc);
+	LEAVE notcurses-stats-free($stats);
 	ok $stats.defined, 'Stats struct allocated';
 
 	# Do a render to ensure there is at least one
@@ -117,16 +119,16 @@ subtest 'Stats alloc, query, and reset' => {
 	ok $stats.renders >= 1, "After render: renders >= 1 (got {$stats.renders})";
 	ok $stats.planes > 0, "Planes count > 0 (got {$stats.planes})";
 
-	# Reset and verify the cumulative counters are cleared
-	my $stats2 = notcurses_stats_alloc($nc);
-	notcurses_stats_reset($nc, $stats2);
+	# Reset into a Raku-owned struct (it receives the pre-reset values),
+	# then read the cleared counters back through the safe snapshot.
+	my $before-reset = Ncstats.new;
+	notcurses_stats_reset($nc, $before-reset);
 
 	# After reset, a fresh stats query should show renders reset to 0
-	my $stats3 = notcurses_stats_alloc($nc);
-	notcurses_stats($nc, $stats3);
-	ok $stats3.defined, 'Stats after reset are defined';
-	ok $stats3.renders == 0, "Renders reset to 0 after stats_reset (got {$stats3.renders})";
-	ok $stats3.planes > 0, "Planes still > 0 after reset (got {$stats3.planes})";
+	my $after = notcurses-stats-snapshot($nc);
+	ok $after.defined, 'Stats after reset are defined';
+	ok $after.renders == 0, "Renders reset to 0 after stats_reset (got {$after.renders})";
+	ok $after.planes > 0, "Planes still > 0 after reset (got {$after.planes})";
 };
 
 subtest 'Default colors query' => {

@@ -281,7 +281,7 @@ sub _configure-runtime-env() {
 }
 _configure-runtime-env();
 
-# Library-path resolvers. State-cached subs rather than `constant`
+# Library-path resolvers. Memoised subs rather than `constant`
 # bindings because `constant X = _resolve-lib(...)` evaluates at
 # compile time and bakes the resolved path into the precompiled
 # bytecode — and Rakudo doesn't track `resources/BINARY_TAG` as a
@@ -289,35 +289,153 @@ _configure-runtime-env();
 # libs to a new versioned directory and may garbage-collect the
 # previous one) doesn't invalidate the precomp, so a freshly
 # installed package can still try to load libs from the *old* path.
-# Doing the lookup inside a `state $r = _resolve-lib(...)` sub
-# defers it to first call in each process — fresh every time, but
-# still O(1) after the first invocation. Pair each binding with the
-# resolver for the library that exports it (for example,
-# `is native(&core-lib)`) so NativeCall invokes the resolver lazily.
-sub nc-lib   is export { state $r = _resolve-and-prepare-lib('libnotcurses');      $r }
-sub ffi-lib  is export { state $r = _resolve-and-prepare-lib('libnotcurses-ffi');  $r }
-sub core-lib is export { state $r = _resolve-and-prepare-lib('libnotcurses-core'); $r }
+# Doing the lookup inside the sub defers it to first call in each
+# process — fresh every time, but still O(1) after the first
+# invocation. Pair each binding with the resolver for the library
+# that exports it (for example, `is native(&core-lib)`) so
+# NativeCall invokes the resolver lazily.
+#
+# The memo is lock-guarded, and it has to be. These were bare
+# `state $r = _resolve-and-prepare-lib(...)` one-liners until 0.6.7,
+# and a `state` initialiser gives no atomicity: the slot is marked
+# initialised independently of the value landing in it, so a thread
+# arriving mid-initialisation reads `Any`. The initialiser is a
+# directory walk (and, on Windows, a LoadLibraryExW), so the window
+# is milliseconds wide on a cold page cache — and a TUI's startup is
+# precisely a burst of threads binding native subs for the first
+# time. Measured on an unfixed tree: 64 threads released together
+# saw ~180 of 448 resolver calls answer `Any`, on 25 of 25 launches.
+# What a consumer sees is a `Str` type object reaching dlopen as a
+# library name, i.e. a binding that fails for no reason on some runs
+# and not others.
+#
+# So: resolve under $lib-resolve-lock, and prime every resolver from
+# the unit mainline (see _prime-lib-resolvers below) so the first
+# touch happens on the loading thread. After priming the lock is
+# uncontended.
+#
+# The lock is built here in the mainline AND defensively `//=`'d at
+# the use site: a unit's INIT phasers run before its own mainline, so
+# a dependent unit's INIT could in principle call a resolver before
+# the assignment below has happened.
+#
+# The `--> Str` on each is load-bearing rather than decorative: it is
+# the tripwire that turns a future memo regression into a loud type
+# check failure instead of a silent dlopen of a type object.
+my Lock $lib-resolve-lock = Lock.new;
+my %lib-memo;
+
+#| Run C<&compute> at most once per C<$key> per process and hand back
+#| the memoised result, thread-safely. Keyed on C<:exists> so a
+#| legitimately undefined answer is still only computed once.
+my sub _memoise(Str:D $key, &compute) {
+    ($lib-resolve-lock //= Lock.new).protect: {
+        %lib-memo{$key} = compute() unless %lib-memo{$key}:exists;
+        %lib-memo{$key};
+    }
+}
+
+sub nc-lib(--> Str) is export {
+    _memoise 'libnotcurses', { _resolve-and-prepare-lib('libnotcurses') }
+}
+sub ffi-lib(--> Str) is export {
+    _memoise 'libnotcurses-ffi',
+             { _resolve-and-prepare-lib('libnotcurses-ffi') }
+}
+sub core-lib(--> Str) is export {
+    _memoise 'libnotcurses-core',
+             { _resolve-and-prepare-lib('libnotcurses-core') }
+}
 
 #|( Resolved path to the perf shim that lives alongside the staged
     libnotcurses libs (see src/notcurses_native_shim.c +
-    Build.rakumod's !try-compile-shim). Contains hot loops that
-    are unaffordable to express call-per-cell over Raku's NativeCall
-    boundary — currently just C<notcurses_native_copy_cells>, used
-    by Selkie::Widget::ViewportedCardList.
+    Build.rakumod's !try-compile-shim). Holds the primitives that
+    cannot live in Raku: C<notcurses_native_copy_cells>, a hot loop
+    unaffordable to express call-per-cell over NativeCall and used by
+    Selkie::Widget::ViewportedCardList, plus
+    C<notcurses_native_arm_terminal_guard> /
+    C<notcurses_native_disarm_terminal_guard>, an C<atexit(3)>-based
+    terminal restore that still fires when the VM exits without
+    running any Raku (a MoarVM panic, for one), and the ABI table
+    (C<notcurses_native_abi_count>, C<_key>, C<_value>): the struct
+    layouts and constant values the bindings mirror, as the compiler
+    sees them in the notcurses headers, which the test suite holds the
+    bindings to.
 
     May resolve to a non-existent path if the shim wasn't compiled
     (no toolchain at install time AND prebuilt didn't include it);
     NativeCall will surface the missing-library error at first
-    invocation. Selkie's binding tolerates this and falls back to
-    the per-cell Raku loop.
+    invocation. Every binding above is written to be tolerated when
+    absent — the copy falls back to the per-cell Raku loop, and the
+    guard simply isn't armed.
 
-    State-cached sub (not a `constant`) for the same precomp-staleness
-    reason as nc-lib / ffi-lib / core-lib — see those for the full
-    rationale. )
-sub shim-lib is export {
-    state $r = _resolve-and-prepare-lib('libnotcurses_native_shim');
-    $r;
+    Memoised sub (not a `constant`) for the same precomp-staleness
+    reason as nc-lib / ffi-lib / core-lib, and lock-guarded for the
+    same thread-safety reason — see those for the full rationale. )
+sub shim-lib(--> Str) is export {
+    _memoise 'libnotcurses_native_shim',
+             { _resolve-and-prepare-lib('libnotcurses_native_shim') }
 }
+
+#|( Make the shim loadable, and answer whether it now is. Call this
+    before the first C<is native(&shim-lib)> sub in a process, and
+    handle a C<False> by not calling that sub at all.
+
+    Why a shim binding can need this: on macOS the shim is built with
+    C<-undefined dynamic_lookup>, so its notcurses references are
+    left to the flat namespace and dyld resolves them when the shim
+    is loaded — eagerly, since lazy binding was retired in dyld4. A
+    process that has not yet loaded libnotcurses therefore fails the
+    C<dlopen> of the shim outright, with "symbol not found in flat
+    namespace". NativeCall binds one sub at a time on first call, so
+    "has not yet loaded libnotcurses" is the ordinary state of a
+    young process: a consumer whose first shim call comes before its
+    first notcurses call (arming the terminal guard before
+    C<notcurses_init>, say) hits it every time. Touching any
+    core-lib sub first puts libnotcurses in the process and the shim
+    loads. The Linux and Windows builds link the core library
+    properly and never needed this; calling it there costs one
+    version read.
+
+    Memoised, thread-safe and non-throwing, like the resolvers above.
+    C<False> means libnotcurses itself would not load, in which case
+    nothing else in this module works either. )
+sub ensure-shim-loadable(--> Bool) is export {
+    _memoise 'shim-prerequisites', {
+        # notcurses_version reads a static string out of the library:
+        # the cheapest call in the ABI that proves it is mapped.
+        ((try { notcurses_version(); True }) // False);
+    }
+}
+
+#| Resolve all four library paths once, here, on whichever thread is
+#| loading this unit — so no consumer thread ever meets a cold memo.
+#|
+#| Deliberately a mainline call rather than an INIT phaser. A unit's
+#| INIT phasers run *before* that same unit's mainline, and this
+#| unit's mainline includes C<_configure-runtime-env()>, which on
+#| Windows puts the staged library directory on PATH — which is
+#| exactly what a source build's DLLs need in order to resolve their
+#| own dependencies when C<_prepare-windows-lib> loads them with
+#| LOAD_WITH_ALTERED_SEARCH_PATH. Priming from INIT would invert that
+#| order and break the Windows source-build lane. The mainline tail
+#| gives the same "before any consumer, on one thread" guarantee with
+#| the ordering intact.
+#|
+#| Each resolver is primed inside its own C<try> so priming can never
+#| turn a lazy failure into a load-time one: on Windows resolution
+#| also performs the LoadLibraryExW, which C<_prepare-windows-lib>
+#| turns into a die when the DLL is present but unloadable. A failed
+#| prime simply leaves that memo unset, and the same die resurfaces
+#| at the first real use, exactly as before — which is what lets a
+#| consumer keep tolerating an unloadable optional shim.
+sub _prime-lib-resolvers() {
+    try nc-lib();
+    try ffi-lib();
+    try core-lib();
+    try shim-lib();
+}
+_prime-lib-resolvers();
 
 # === Version ===
 

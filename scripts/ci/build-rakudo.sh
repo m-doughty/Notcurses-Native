@@ -12,7 +12,7 @@
 #   * Windows arm64 (no ARM64 prebuilt in setup-raku).
 #
 # Honours:
-#   $RAKUDO_VERSION  — defaults to 2026.03. Pin in workflow env
+#   $RAKUDO_VERSION  — required, no default. Set in workflow env
 #                      for cache-key stability.
 #   $RAKUBREW_HOME   — defaults to $HOME/.rakubrew. actions/cache
 #                      can persist this directory between runs so
@@ -35,7 +35,7 @@
 # built (cache hit OR previous failed-step rerun).
 set -euxo pipefail
 
-RAKUDO_VERSION="${RAKUDO_VERSION:-2026.03}"
+RAKUDO_VERSION="${RAKUDO_VERSION:?RAKUDO_VERSION must be set, e.g. 2026.09}"
 export RAKUBREW_HOME="${RAKUBREW_HOME:-$HOME/.rakubrew}"
 SHIM_DIR="$RAKUBREW_HOME/shims"
 

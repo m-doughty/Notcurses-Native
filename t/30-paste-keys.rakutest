@@ -1,0 +1,22 @@
+use Test;
+use lib 'lib';
+use Notcurses::Native::Types;
+use Notcurses::Native::Input;
+
+# The bracketed-paste keys the m-doughty/notcurses fork delivers around a
+# paste (binaries r16+). They are constants, so nothing here needs the
+# newer library: the values must simply be the ones the fork emits, sit in
+# the synthesized range like every other NCKEY, and be distinct from the
+# keys already there.
+plan 7;
+
+is NCKEY_PASTE_BEGIN, 1115300, 'NCKEY_PASTE_BEGIN is preterunicode(300)';
+is NCKEY_PASTE_END,   1115301, 'NCKEY_PASTE_END is preterunicode(301)';
+
+ok nckey_synthesized_p(NCKEY_PASTE_BEGIN), 'paste begin is a synthesized key';
+ok nckey_synthesized_p(NCKEY_PASTE_END),   'paste end is a synthesized key';
+nok nckey_mouse_p(NCKEY_PASTE_BEGIN), 'paste begin is not a mouse event';
+
+ok NCKEY_PASTE_BEGIN > NCKEY_BUTTON11 && NCKEY_PASTE_END < NCKEY_SIGNAL,
+    'the pair sits in the gap between the mouse buttons and NCKEY_SIGNAL';
+isnt NCKEY_PASTE_BEGIN, NCKEY_PASTE_END, 'begin and end differ';

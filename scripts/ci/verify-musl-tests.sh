@@ -23,6 +23,9 @@
 
 set -euxo pipefail
 
+# Fail fast if the caller didn't pin a version — no silent default.
+RAKUDO_VERSION="${RAKUDO_VERSION:?RAKUDO_VERSION must be set, e.g. 2026.09}"
+
 # Test-phase deps:
 #   * bash, coreutils, findutils, tar, git, curl — script + zef + xt.
 #   * perl, perl-utils — `prove` (Perl 5's harness) for the xt/
@@ -54,7 +57,6 @@ bash scripts/ci/install-zef.sh
 #     after each `zef install` so binaries installed later in
 #     this script aren't shimmed; adding site-bin to PATH
 #     directly sidesteps the rehash dance.
-RAKUDO_VERSION="${RAKUDO_VERSION:-2026.03}"
 RAKUBREW_HOME="${RAKUBREW_HOME:-$HOME/.rakubrew}"
 export PATH="$RAKUBREW_HOME/shims:$RAKUBREW_HOME/versions/moar-$RAKUDO_VERSION/install/share/perl6/site/bin:$PATH"
 raku --version
@@ -66,11 +68,11 @@ zef --version
 # stages to ~/.local/share/Notcurses-Native/<tag>/.
 zef install --/test .
 zef install --/test App::Prove6
-prove6 --verbose -I lib -I t/lib t
-prove -e 'raku -I lib -I t/lib' --verbose xt/*.rakutest
+prove6 --verbose -I lib t
+prove -e 'raku -I lib' --verbose xt/*.rakutest
 
 # Source-build path — refuse the prebuilt and exercise the CMake
 # fallback. apk-installed ffmpeg/ncurses/libunistring/libdeflate
 # satisfy notcurses' build deps.
 NOTCURSES_NATIVE_BUILD_FROM_SOURCE=1 zef install --/test --force-install .
-prove6 --verbose -I lib -I t/lib t
+prove6 --verbose -I lib t

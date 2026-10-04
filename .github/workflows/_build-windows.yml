@@ -744,6 +744,16 @@ jobs:
       # libnotcurses-core.dll by basename; Notcurses::Native loads the
       # shim with the archive directory explicitly enabled for dependency
       # resolution (Windows does not infer that from the shim's location).
+      #
+      # -lkernel32 is named explicitly rather than left to MinGW's
+      # default library set. The terminal-restore guard's Win32 branch
+      # calls GetStdHandle / GetConsoleMode / SetConsoleMode /
+      # WriteConsoleA / WriteFile, all of which live there, so the link
+      # currently succeeds by the spec-file's grace rather than by
+      # intent — and a toolchain that trims its defaults (a bare
+      # -nostdlib-ish clang cross-build, a future MSVC lane) would
+      # break the guard and nothing else, which is precisely the
+      # failure that is hardest to notice.
       - name: Compile perf shim
         run: |
           set -euxo pipefail
@@ -758,7 +768,8 @@ jobs:
             -I "$NOTCURSES_SRC_DIR/include" \
             -o bundle/libnotcurses_native_shim.dll \
             src/notcurses_native_shim.c \
-            "$import_lib"
+            "$import_lib" \
+            -lkernel32
           # No `strip` on the shim — matches Vips-Native's Windows
           # pattern. `strip --strip-unneeded` removes PE's COFF
           # symbol table; `nm -g` reads from there too, not from
@@ -774,10 +785,46 @@ jobs:
           # -p check parsed the export-table-name table format,
           # which differs across binutils versions and silently
           # failed to match even when the export was present.
-          nm -g --defined-only bundle/libnotcurses_native_shim.dll \
-            | grep -E 'T (_)?notcurses_native_' \
-            || { echo "❌ shim DLL missing notcurses_native_* exports"; \
-                 exit 1; }
+          # Named one by one rather than by the notcurses_native_
+          # prefix: the prefix form is satisfied by copy_cells alone,
+          # so a terminal guard that failed to compile in would pass.
+          # The verify lanes cannot catch that either — Build.rakumod
+          # recompiles the shim locally wherever a C toolchain exists,
+          # so their NOTCURSES_NATIVE_REQUIRE_SHIM check inspects the
+          # freshly-compiled copy, not the archive's. This step is the
+          # ONLY place the bundle's own contents are tested.
+          shim_syms=$(nm -g --defined-only \
+                        bundle/libnotcurses_native_shim.dll)
+          printf '%s\n' "$shim_syms"
+          missing=0
+          for sym in notcurses_native_copy_cells \
+                     notcurses_native_reserve_terminal_guard \
+                     notcurses_native_arm_terminal_guard_owned \
+                     notcurses_native_disarm_terminal_guard_owned \
+                     notcurses_native_release_terminal_guard \
+                     notcurses_native_arm_terminal_guard \
+                     notcurses_native_disarm_terminal_guard \
+                     notcurses_native_abi_count \
+                     notcurses_native_abi_key \
+                     notcurses_native_abi_value; do
+            # Here-string, not `printf | grep -q`: grep -q exits on
+            # first match and closes the pipe, which SIGPIPEs the
+            # producer, and `set -o pipefail` would turn that into a
+            # spurious "symbol missing". Small outputs hide it; the
+            # construct should not depend on that.
+            if ! grep -qE "T _?${sym}\$" <<< "$shim_syms"; then
+              echo "::error::shim DLL does not export $sym"
+              missing=1
+            fi
+          done
+          if (( missing != 0 )); then
+            echo "❌ The packed shim is missing exports the binding"
+            echo "   calls. A user installing this prebuilt would get"
+            echo "   the slow per-cell path, no terminal-restore"
+            echo "   guard, or no ABI table for t/42 to hold the"
+            echo "   bindings to."
+            exit 1
+          fi
           # Sidecar for Build.rakumod's content-based freshness
           # check: the SHA-256 of the shim source this shim was
           # compiled from. Prebuilt-only Windows installs can't

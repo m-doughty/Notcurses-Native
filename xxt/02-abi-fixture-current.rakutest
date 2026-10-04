@@ -1,0 +1,27 @@
+use Test;
+
+# The committed ABI fixture (t/fixtures/abi-table.tsv) is what t/42-abi-guard
+# holds the bindings to whenever no installed shim carries the ABI table.
+# t/42 already cross-checks the fixture against a live shim; this compiles
+# the table straight from src/notcurses_native_shim.c and the pinned
+# notcurses headers (scripts/abi/abi-probe.c) and requires the fixture to
+# match it exactly — so a stale fixture is caught even on a machine whose
+# installed shim is an older prebuilt one.
+#
+# xxt/ is the tier for tests that need tooling outside the Raku ecosystem.
+# This one needs, and FAILS without (it never skips): a C compiler ($CC,
+# else `cc`) and the pinned notcurses headers ($NOTCURSES_NATIVE_VENDOR_DIR
+# /include, else the source cache Build.rakumod fills). No libnotcurses.
+#
+# Run it: prove6 -I lib xxt/
+
+plan 1;
+
+my IO::Path $root = $*PROGRAM.parent.parent;
+my $proc = run $*EXECUTABLE.absolute, $root.add('scripts/abi/regenerate-fixture.raku').absolute,
+    '--check', :out, :err;
+my Str $out = $proc.out.slurp(:close);
+my Str $err = $proc.err.slurp(:close);
+ok $proc.exitcode == 0 && $proc.signal == 0,
+    't/fixtures/abi-table.tsv matches the table compiled from the shim source'
+    or diag "$out$err";

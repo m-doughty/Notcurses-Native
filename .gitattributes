@@ -1,3 +1,15 @@
+# Default for every file: LF in the repository and in every working
+# tree. `text=auto` keeps git's own text-or-binary detection; `eol=lf`
+# checks text files out with LF on every platform, whatever
+# `core.autocrlf` says locally. Batch files are the one exception,
+# because cmd.exe mis-parses an LF-only one. Takes effect from the next
+# `git add`; a one-off `git add --renormalize .` covers files already
+# in the index. The pins below predate this default and stay as the
+# record of what each one protects.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
 # Force LF line endings for files parsed by both Raku
 # (Build.rakumod) and POSIX shell scripts (scripts/ci/fetch-notcurses-
 # source.sh). Windows checkouts with core.autocrlf=true would otherwise
@@ -37,3 +49,34 @@ BINARY_TAG        text eol=lf
 # and Linux lanes were unaffected only because their runners check out LF.
 *.c               text eol=lf
 *.h               text eol=lf
+
+# Never converted, never diffed as text.
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.bmp    binary
+*.webp   binary
+*.xcf    binary
+*.ico    binary
+*.gz     binary
+*.tgz    binary
+*.zip    binary
+*.tar    binary
+*.onnx   binary
+*.db     binary
+*.sqlite binary
+*.dll    binary
+*.so     binary
+*.dylib  binary
+*.a      binary
+*.lib    binary
+*.exe    binary
+*.mov    binary
+*.mp4    binary
+*.wav    binary
+*.ttf    binary
+*.otf    binary
+*.woff   binary
+*.woff2  binary
+*.pdf    binary

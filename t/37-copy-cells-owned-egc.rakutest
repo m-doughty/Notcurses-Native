@@ -1,0 +1,315 @@
+use Test;
+use lib $*PROGRAM.parent.parent.add('lib').Str;
+use Notcurses::Native;
+use Notcurses::Native::Test::Headless;
+
+# notcurses_native_copy_cells (src/notcurses_native_shim.c) must never
+# read a grapheme cluster through a pointer into a plane's egcpool after
+# anything could have moved that pool. Clusters longer than the four
+# bytes a cell stores inline live in the pool, the pool is a realloc'd
+# buffer, and copy_cells stashes into the source pool on every cell it
+# reads (ncplane_at_yx_cell duplicates the cell). Two historic reads of
+# freed memory, both confirmed under AddressSanitizer:
+#
+#   B2  the source's base cell cluster was held as a pool pointer for
+#       the whole copy; a cell duplicate that grew the pool left it
+#       dangling, and the next empty cell wrote the base from it.
+#   B1  with src == dst, each cell was written straight from its pool
+#       pointer; the write stashes into the same pool, and
+#       ncplane_putstr_yx re-reads the string after that stash.
+#
+# The pool grows once less than 10% of it is free, starting from BUFSIZ
+# bytes (512 on MinGW, 1024 on macOS, 8192 on glibc). Each scenario
+# sweeps the number of long clusters already in the pool, k, over
+# 0..1700, so for every one of those BUFSIZ values exactly one k puts
+# the growth at the dangerous moment — no knowledge of notcurses's
+# internal layout needed. Freed-memory scribbling (MallocScribble on
+# macOS, MALLOC_PERTURB_ on glibc) is switched on in the child, so when
+# the allocator moves the pool a stale read shows up as a wrong glyph.
+# An allocator that grows the block in place leaves the old bytes
+# readable and hides the bug entirely (macOS usually does, for these
+# sizes), so this file pins behaviour and catches the moving case; the
+# exact proof is the AddressSanitizer driver, xxt/01-asan-copy-cells.
+#
+# Every other check pins the behaviour copy_cells had before the fix:
+# the cell's styles and channels travel with it, empty cells take the
+# source's base cell, wide glyphs keep their continuation, out-of-bounds
+# source cells are skipped, and clusters too long for the shim's inline
+# buffer (>127 bytes) round-trip through its heap spill.
+#
+# Shim-optional exactly like t/15 and t/31: without a staged shim this
+# skips, unless NOTCURSES_NATIVE_REQUIRE_SHIM=1 (set by every CI verify
+# lane) makes a missing shim a failure.
+
+my Bool $require-shim = (%*ENV<NOTCURSES_NATIVE_REQUIRE_SHIM> // '').chars > 0;
+my Str  $resolved     = shim-lib() // '';
+
+unless $resolved.chars && $resolved.IO.e {
+    if $require-shim {
+        plan 1;
+        flunk "perf shim not staged at '$resolved' — "
+            ~ "NOTCURSES_NATIVE_REQUIRE_SHIM=1 enforced, so copy_cells "
+            ~ "cannot be exercised.";
+        done-testing;
+        exit 0;
+    }
+    plan 1;
+    skip "perf shim not present at '$resolved' — copy_cells has nothing to "
+       ~ "bind to; install with a C toolchain or set "
+       ~ "NOTCURSES_NATIVE_REQUIRE_SHIM=1 to enforce", 1;
+    done-testing;
+    exit 0;
+}
+
+# Shared by every child: headless notcurses, the shim made loadable, a
+# UTF-8 locale confirmed (every scenario writes multi-byte clusters), and
+# helpers to read a cell back and to describe a mismatch.
+my Str $prelude = q:to/RAKU/;
+    use NativeCall;
+    use Notcurses::Native;
+    use Notcurses::Native::Types;
+    use Notcurses::Native::Plane;
+    use Notcurses::Native::Test::Headless;
+
+    my $nc  = headless-notcurses();
+    my $std = notcurses_stdplane($nc);
+    die "the perf shim is staged but will not load"
+        unless ensure-shim-loadable();
+    unless notcurses_canutf8($nc) {
+        report 'utf8', 'no';
+        notcurses_stop($nc);
+        exit 0;
+    }
+    report 'utf8', 'yes';
+
+    # 5-byte clusters: a letter with two combining marks that have no
+    # precomposed form, so NFC leaves them 5 bytes and the pool holds them.
+    my constant FILL = "x\x[301]\x[302]";
+    my constant BASE = "q\x[300]\x[303]";
+    my constant FILL-CHANNELS = 0x40FF8000_40102030;
+    my constant BASE-CHANNELS = 0x400A0B0C_40C0B0A0;
+
+    sub plane(UInt $cols, UInt $rows = 1) {
+        ncplane_create($std, NcplaneOptions.new(:$rows, :$cols))
+            // die "ncplane_create failed for {$rows}x$cols";
+    }
+    sub cell(NcplaneHandle $n, Int $y, Int $x --> List) {
+        my uint16 $styles = 0;
+        my uint64 $channels = 0;
+        my $egc = ncplane_at_yx($n, $y, $x, $styles, $channels);
+        ($egc // '(null)', $styles, $channels)
+    }
+    sub show(Str $s --> Str) { $s.raku }
+    RAKU
+
+sub clean-exit(Map $run, Str $what) {
+    ok !$run<timed-out> && $run<exitcode> == 0 && $run<signal> == 0,
+        "$what: child exits cleanly ({describe-exit($run)})"
+        or diag "child stderr:\n{$run<err>}";
+}
+
+sub utf8-ready(Map $run) {
+    is $run<results><utf8>, 'yes',
+        'the headless child runs notcurses in a UTF-8 locale'
+        or diag 'notcurses could not switch the child to a UTF-8 locale '
+            ~ '(LANG/LC_ALL name a non-UTF-8 locale and C.UTF-8 is '
+            ~ 'unavailable); the copy_cells scenarios need one.';
+}
+
+# Scribble freed memory in the child, so a stale read shows as garbage.
+my %scribble = MallocScribble => '1', MALLOC_PERTURB_ => '165';
+
+plan 5;
+
+subtest 'B2: a long base cluster survives source-pool growth (src != dst)' => {
+    plan 6;
+    my $run = run-headless-script(:env(%scribble), $prelude ~ q:to/RAKU/);
+        my ($bad, $first-bad, $rcs) = 0, '', 0;
+        for 0..1700 -> $k {
+            my $src = plane($k + 4);
+            my $dst = plane(8);
+            ncplane_set_base($src, BASE, NCSTYLE_ITALIC, BASE-CHANNELS);
+            ncplane_set_styles($src, NCSTYLE_BOLD);
+            ncplane_set_channels($src, FILL-CHANNELS);
+            ncplane_putstr_yx($src, 0, 0, FILL x $k) if $k;
+            # Cell k-1 holds a long cluster (its duplicate may grow the
+            # pool); cell k is empty and takes the base cluster.
+            my $from = $k ?? $k - 1 !! 0;
+            $rcs++ if notcurses_native_copy_cells($src, $dst, 0, $from, 0, 0, 1, 2) != 0;
+            my @want = $k
+                ?? ((FILL, NCSTYLE_BOLD, FILL-CHANNELS), (BASE, NCSTYLE_ITALIC, BASE-CHANNELS))
+                !! ((BASE, NCSTYLE_ITALIC, BASE-CHANNELS), (BASE, NCSTYLE_ITALIC, BASE-CHANNELS));
+            my @got = cell($dst, 0, 0), cell($dst, 0, 1);
+            unless @got[0] eqv @want[0].List && @got[1] eqv @want[1].List {
+                $bad++;
+                $first-bad ||= "k=$k got {show(@got[0][0])}/{show(@got[1][0])} "
+                    ~ "styles {@got[0][1]}/{@got[1][1]} "
+                    ~ "channels {@got[0][2].base(16)}/{@got[1][2].base(16)}";
+            }
+            ncplane_destroy($dst);
+            ncplane_destroy($src);
+        }
+        report 'nonzero-rc', $rcs;
+        report 'mismatches', $bad;
+        report 'first-mismatch', $first-bad || 'none';
+        report 'stop', notcurses_stop($nc);
+        RAKU
+    clean-exit($run, 'k = 0..1700 base-cluster copies');
+    utf8-ready($run);
+    my %r = $run<results>;
+    is %r<nonzero-rc>, '0', 'copy_cells answered 0 every time';
+    is %r<mismatches>, '0',
+        'every copied cell and every base substitution kept glyph, styles and channels'
+        or diag "first mismatch: {%r<first-mismatch>}";
+    is %r<first-mismatch>, 'none', 'no mismatch at any k';
+    is %r<stop>, '0', 'notcurses_stop succeeds afterwards';
+};
+
+subtest 'B1: copying within one plane survives its own pool growth (src == dst)' => {
+    plan 6;
+    my $run = run-headless-script(:env(%scribble), $prelude ~ q:to/RAKU/);
+        my ($bad, $first-bad, $rcs) = 0, '', 0;
+        for 0..1700 -> $k {
+            my $n = plane($k + 12);
+            ncplane_set_styles($n, NCSTYLE_UNDERLINE);
+            ncplane_set_channels($n, FILL-CHANNELS);
+            ncplane_putstr_yx($n, 0, 0, FILL x $k) if $k;
+            my $from   = $k ?? $k - 1 !! 0;
+            my $target = $k + 5;
+            $rcs++ if notcurses_native_copy_cells($n, $n, 0, $from, 0, $target, 1, 1) != 0;
+            # The target holds the copy; the neighbours on either side
+            # stay empty (a stale re-read would spill garbage rightwards);
+            # the source cell is untouched.
+            my @want = (^($k + 12)).map(-> $x {
+                $x < $k           ?? (FILL, NCSTYLE_UNDERLINE, FILL-CHANNELS)
+                !! $x == $target && $k ?? (FILL, NCSTYLE_UNDERLINE, FILL-CHANNELS)
+                !! ('', 0, 0)
+            });
+            for ($k ?? $k - 1 !! 0) ..^ ($k + 12) -> $x {
+                my @got = cell($n, 0, $x);
+                my @exp = @want[$x].List;
+                # an empty cell's channels are whatever the plane wrote
+                # there before; only its glyph is meaningful
+                my $ok = @exp[0] eq ''
+                    ?? @got[0] eq ''
+                    !! @got eqv @exp;
+                unless $ok {
+                    $bad++;
+                    $first-bad ||= "k=$k x=$x got {show(@got[0])} want {show(@exp[0])}";
+                }
+            }
+            ncplane_destroy($n);
+        }
+        report 'nonzero-rc', $rcs;
+        report 'mismatches', $bad;
+        report 'first-mismatch', $first-bad || 'none';
+        report 'stop', notcurses_stop($nc);
+        RAKU
+    clean-exit($run, 'k = 0..1700 same-plane copies');
+    utf8-ready($run);
+    my %r = $run<results>;
+    is %r<nonzero-rc>, '0', 'copy_cells answered 0 every time';
+    is %r<mismatches>, '0',
+        'the target got the cluster, its neighbours stayed empty, the source kept it'
+        or diag "first mismatch: {%r<first-mismatch>}";
+    is %r<first-mismatch>, 'none', 'no mismatch at any k';
+    is %r<stop>, '0', 'notcurses_stop succeeds afterwards';
+};
+
+subtest 'clusters beyond the inline buffer round-trip through the heap spill' => {
+    plan 8;
+    my $run = run-headless-script(:env(%scribble), $prelude ~ q:to/RAKU/);
+        # 1 + 70 * 2 = 141 bytes: over the shim's 127-byte inline limit.
+        my $huge-cell = 'y' ~ ("\x[301]\x[302]" x 35);
+        my $huge-base = 'z' ~ ("\x[300]\x[303]" x 35);
+        report 'cell-bytes', $huge-cell.encode.bytes;
+        report 'base-bytes', $huge-base.encode.bytes;
+
+        my $src = plane(6);
+        my $dst = plane(6);
+        ncplane_set_base($src, $huge-base, 0, BASE-CHANNELS);
+        ncplane_set_channels($src, FILL-CHANNELS);
+        ncplane_putstr_yx($src, 0, 0, $huge-cell);
+        ncplane_putstr_yx($src, 0, 2, $huge-cell ~ 'a');
+        report 'rc-cross', notcurses_native_copy_cells($src, $dst, 0, 0, 0, 0, 1, 4);
+        report 'cross', (^4).map({ cell($dst, 0, $_)[0] eq ($huge-cell, $huge-base, $huge-cell, 'a')[$_] })
+            .all ?? 'yes' !! 'no';
+
+        report 'rc-same', notcurses_native_copy_cells($src, $src, 0, 0, 0, 4, 1, 2);
+        report 'same', (cell($src, 0, 4)[0] eq $huge-cell
+            && cell($src, 0, 5)[0] eq $huge-base) ?? 'yes' !! 'no';
+        report 'stop', notcurses_stop($nc);
+        RAKU
+    clean-exit($run, 'oversized cluster copies');
+    utf8-ready($run);
+    my %r = $run<results>;
+    ok %r<cell-bytes> > 127 && %r<base-bytes> > 127,
+        "both clusters exceed the inline buffer ({%r<cell-bytes> // '?'} "
+          ~ "and {%r<base-bytes> // '?'} bytes)";
+    is %r<rc-cross>, '0', 'cross-plane copy answers 0';
+    is %r<cross>, 'yes', 'cross-plane: long cells, a long base substitution and ASCII all arrive';
+    is %r<rc-same>, '0', 'same-plane copy answers 0';
+    is %r<same>, 'yes', 'same-plane: the long cell and the long base both arrive';
+    is %r<stop>, '0', 'notcurses_stop succeeds afterwards';
+};
+
+subtest 'wide glyphs, ZWJ sequences and out-of-bounds cells behave as before' => {
+    plan 9;
+    my $run = run-headless-script($prelude ~ q:to/RAKU/);
+        # Wide glyphs: a CJK ideograph (inline) and a ZWJ emoji sequence
+        # (11 bytes, pooled). How many columns notcurses gives them is
+        # the platform's business — MinGW builds count every glyph as
+        # one — so rather than hard-code widths, every column of the
+        # copy is compared with the source's: glyph, styles and
+        # channels, continuation cells included. With an empty base
+        # nothing is written over a continuation, so a wide glyph keeps
+        # its right half wherever it has one.
+        my $src = plane(5);
+        my $dst = plane(5);
+        ncplane_set_styles($src, NCSTYLE_BOLD);
+        ncplane_set_channels($src, FILL-CHANNELS);
+        ncplane_putstr_yx($src, 0, 0, "\x[6F22]");
+        ncplane_putstr_yx($src, 0, 2, "\x[1F469]\x[200D]\x[1F4BB]");
+        ncplane_putstr_yx($src, 0, 4, 'b');
+        report 'rc-wide', notcurses_native_copy_cells($src, $dst, 0, 0, 0, 0, 1, 5);
+        my @from = (^5).map({ cell($src, 0, $_) });
+        my @to   = (^5).map({ cell($dst, 0, $_) });
+        report 'wide-src', @from.map({ .[0].raku }).join('|');
+        report 'wide-dst', @to.map({ .[0].raku }).join('|');
+        report 'wide-same', (@from eqv @to) ?? 'yes' !! 'no';
+        report 'wide-first', @to[0][0].raku;
+        report 'wide-last', @to[4][0].raku;
+
+        # A request running off the source's right edge: the missing
+        # cells are skipped and the destination keeps what it had.
+        my $small = plane(2);
+        my $wide  = plane(5);
+        ncplane_putstr_yx($small, 0, 0, 'ab');
+        ncplane_putstr_yx($wide, 0, 0, 'ZZZZZ');
+        report 'rc-oob', notcurses_native_copy_cells($small, $wide, 0, 0, 0, 0, 1, 5);
+        report 'oob', (^5).map({ cell($wide, 0, $_)[0] }).join('|');
+        report 'stop', notcurses_stop($nc);
+        RAKU
+    clean-exit($run, 'wide and out-of-bounds copies');
+    utf8-ready($run);
+    my %r = $run<results>;
+    is %r<rc-wide>, '0', 'copying wide glyphs answers 0';
+    is %r<wide-same>, 'yes',
+        'every column of the copy matches the source, continuation cells included'
+        or diag "source {%r<wide-src> // '?'}\ncopy   {%r<wide-dst> // '?'}";
+    is %r<wide-first>, "\x[6F22]".raku, 'the ideograph arrives in the first column';
+    is %r<wide-last>, 'b'.raku, 'the narrow glyph after the wide ones lands in its column';
+    is %r<rc-oob>, '0', 'an out-of-bounds tail answers 0';
+    is %r<oob>, 'a|b|Z|Z|Z', 'in-bounds cells copy, out-of-bounds ones are skipped';
+    is %r<stop>, '0', 'notcurses_stop succeeds afterwards';
+};
+
+subtest 'the binding keeps its exported signature' => {
+    plan 2;
+    use Notcurses::Native::Plane;
+    my $sig = &notcurses_native_copy_cells.signature;
+    is $sig.params.elems, 8, 'eight parameters';
+    is $sig.returns.^name, 'int32', 'answers int32';
+};
+
+done-testing;

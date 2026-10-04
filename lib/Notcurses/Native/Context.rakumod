@@ -1,11 +1,18 @@
 use NativeCall;
 use Notcurses::Native::Types;
 use Notcurses::Native;
-use Notcurses::Native::Str;
+use Notcurses::Native::Str :DEFAULT, :INTERNAL;
 
 unit module Notcurses::Native::Context;
 
-# 55 bindings — context, pile, palette, capabilities, stats, fade, metric, utility
+# Owner/render thread only. No repaint and no wait for terminal replies.
+# Returns 0 with latest known geometry, -1 with outputs unchanged on failure.
+# Requires the fork's runtime geometry API; missing symbols are not suppressed.
+sub notcurses_poll_geometry(NotcursesHandle $nc, uint32 $rows is rw,
+    uint32 $cols is rw, uint32 $cell-y is rw, uint32 $cell-x is rw --> int32)
+    is native(&core-lib) is export { * }
+
+# Context, pile, palette, capabilities, stats, fade, metric, utility bindings
 
 # === String/Unicode utilities ===
 
@@ -64,31 +71,77 @@ sub ncpile_render(NcplaneHandle $n --> int32)
 sub ncpile_rasterize(NcplaneHandle $n --> int32)
 	is native(&core-lib) is export { * }
 
-# buf is char** (output), buflen is size_t* (output). The buffer written
-# into *buf is malloc'd by notcurses and the caller MUST free(3) it. Raw
-# binding kept exported for callers who want to manage the lifecycle
-# themselves; prefer `ncpile-render-to-string` below for a wrapper that
-# decodes and frees in one step.
+#|( Raw binding. Renders and rasterizes the pile containing C<$p> into
+    memory instead of the terminal, then writes a pointer to the frame
+    into C<$buf[0]> and its length in bytes into C<$buflen[0]>. Returns
+    0 on success, -1 on failure.
+
+    BORROWED — the caller MUST NOT free C<$buf[0]>. notcurses.h says
+    "the returned buffer must be freed by the caller", but the
+    implementation lends out its own output buffer (C<nc-E<gt>rstate.f>),
+    keeps writing into it on later frames and frees it itself in
+    C<notcurses_stop>; on Linux it is not even a C<malloc> allocation
+    but an C<mmap>. Freeing it is a use-after-free on the next frame and
+    a double free at stop. The pointer and bytes are valid only until
+    the next C<notcurses_render>, C<ncpile_render_to_buffer>,
+    C<ncpile_rasterize>, C<notcurses_refresh> or C<notcurses_stop> on
+    the same notcurses instance.
+
+    The frame is exactly C<$buflen[0]> bytes and is NOT NUL-terminated,
+    so C<nativecast(Str, $buf[0])> reads past it into whatever an
+    earlier, longer frame left in the buffer. Copy exactly C<$buflen[0]>
+    bytes (C<borrowed-buf-from-pointer>), or use
+    C<ncpile-render-to-blob> / C<ncpile-render-to-string>, which do. )
 sub ncpile_render_to_buffer(NcplaneHandle $p, CArray[Pointer] $buf, CArray[size_t] $buflen --> int32)
 	is native(&core-lib) is export { * }
 
-#|( Render a pile to an in-memory string and own the buffer lifecycle.
-    Returns the rendered escape-sequence string, or C<Str> (type
-    object) on render failure. Frees the malloc'd buffer before
-    returning; the caller does not need to free anything. )
-sub ncpile-render-to-string(NcplaneHandle $p --> Str) is export {
+#|( Render the pile containing C<$p> into memory and answer the frame as
+    a Raku-owned C<buf8> holding exactly the bytes notcurses produced —
+    the escape sequences and glyphs it would have written to the
+    terminal. Answers the type object C<buf8> when rendering fails.
+
+    The copy is taken before this returns, so the C<buf8> stays valid
+    across later frames and after C<notcurses_stop>; nothing is freed
+    here, because the buffer belongs to notcurses (see
+    C<ncpile_render_to_buffer>). A frame with nothing to draw is an
+    empty C<buf8>, not a failure.
+
+    Prefer this over C<ncpile-render-to-string> when the bytes matter
+    as bytes: diffing frames, hashing them, or replaying them to a
+    terminal. Decoding into a C<Str> normalises text (NFC, and C<\r\n>
+    becomes one grapheme), so C<.encode> of the string is not
+    guaranteed to reproduce the frame byte for byte. See MEMORY
+    OWNERSHIP in the README for a worked example. )
+sub ncpile-render-to-blob(NcplaneHandle $p --> buf8) is export {
 	my $buf-out = CArray[Pointer].new(Pointer);
 	my $len-out = CArray[size_t].new(0);
-	my $rv = ncpile_render_to_buffer($p, $buf-out, $len-out);
-	return Str if $rv < 0;
+	return buf8 if ncpile_render_to_buffer($p, $buf-out, $len-out) < 0;
+	# Copy exactly the reported length out of notcurses's own buffer.
+	# Never free it: notcurses reuses it for the next frame and frees it
+	# in notcurses_stop.
+	borrowed-buf-from-pointer($buf-out[0], $len-out[0])
+}
 
-	my $ptr = $buf-out[0];
-	return Str unless $ptr.defined && +$ptr;
+#|( Render the pile containing C<$p> into memory and answer the frame
+    decoded as UTF-8: the escape sequences and glyphs notcurses would
+    have written to the terminal. Answers the type object C<Str> when
+    rendering fails, and C<''> for a frame with nothing to draw.
 
-	# nativecast copies the C string into a Raku-owned Str. After this
-	# point the malloc'd buffer is safe to free.
-	LEAVE { c-free($ptr) }
-	nativecast(Str, $ptr)
+    The result is a Raku-owned copy and the caller has nothing to free.
+    Earlier versions freed notcurses's output buffer here — a
+    use-after-free on the next frame and a double free at
+    C<notcurses_stop>, because the buffer belongs to the library — and
+    read it as a NUL-terminated string although it carries no
+    terminator, so a short frame came back with the tail of an earlier,
+    longer one attached. Both are fixed: the frame is exactly the bytes
+    notcurses reported.
+
+    Decoding is strict: a frame that is not valid UTF-8 dies rather than
+    being repaired. Use C<ncpile-render-to-blob> for byte-exact output. )
+sub ncpile-render-to-string(NcplaneHandle $p --> Str) is export {
+	my buf8 $frame = ncpile-render-to-blob($p);
+	return Str without $frame;
+	$frame.decode('utf8')
 }
 
 # fp is FILE*
@@ -182,8 +235,56 @@ sub notcurses_canoctant(NotcursesHandle $nc --> bool)
 
 # === Statistics ===
 
+#|( Raw binding. Allocates an uninitialised C<ncstats> with C<malloc(3)>
+    — notcurses wants callers to use this rather than sizing the struct
+    themselves, because later versions may enlarge it. CALLER FREES: the
+    returned C<Ncstats> wraps C memory that nothing on the Raku side
+    will ever release, so pair every call with C<notcurses-stats-free>.
+    The contents are garbage until C<notcurses_stats> fills them. Most
+    callers want C<notcurses-stats-snapshot> instead, which does the
+    whole allocate/fill/copy/free dance and returns a Raku-owned
+    struct. Answers the C<Ncstats> type object if the allocation fails. )
 sub notcurses_stats_alloc(NotcursesHandle $nc --> Ncstats)
 	is native(&core-lib) is export { * }
+
+#|( Release an C<Ncstats> obtained from C<notcurses_stats_alloc>. Only
+    ever pass structs that came from C<notcurses_stats_alloc>: one made
+    with C<Ncstats.new> belongs to the VM, and handing it to C<free(3)>
+    corrupts the process heap. Using the struct after this call is a
+    use-after-free. A type object (the failed-allocation result) is
+    accepted and ignored, so the call can sit unconditionally in a
+    C<LEAVE>. )
+sub notcurses-stats-free(Ncstats $stats --> Nil) is export {
+	return without $stats;
+	c-free(nativecast(Pointer, $stats));
+	Nil
+}
+
+#|( Answer the notcurses instance's current statistics as a Raku-owned
+    C<Ncstats>, with nothing left for the caller to free.
+
+    It allocates through C<notcurses_stats_alloc> (so notcurses sizes the
+    struct, even if a future version enlarges it), fills it with
+    C<notcurses_stats>, copies the fields this binding knows into the
+    result, and frees the C allocation before returning.
+
+    Pass C<:into> to reuse one C<Ncstats> across calls — worth doing on a
+    per-frame path, because MoarVM never releases the C body behind an
+    C<Ncstats.new>, so each fresh struct costs its size for the life of
+    the process. Without C<:into> a new struct is created per call.
+    Dies if notcurses cannot allocate the temporary struct. )
+sub notcurses-stats-snapshot(NotcursesHandle $nc, Ncstats :$into --> Ncstats) is export {
+	my Ncstats $target = $into // Ncstats.new;
+	my Ncstats $scratch = notcurses_stats_alloc($nc);
+	die 'notcurses-stats-snapshot: notcurses_stats_alloc could not '
+	  ~ 'allocate a stats struct'
+		without $scratch;
+	LEAVE notcurses-stats-free($scratch);
+	notcurses_stats($nc, $scratch);
+	copy-native-between(nativecast(Pointer, $target),
+		nativecast(Pointer, $scratch), nativesizeof(Ncstats));
+	$target
+}
 
 sub notcurses_stats(NotcursesHandle $nc, Ncstats $stats)
 	is native(&core-lib) is export { * }

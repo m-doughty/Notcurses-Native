@@ -1,7 +1,6 @@
 use Test;
 use lib 'lib';
-use lib 't/lib';
-use TestHelper;
+use Notcurses::Native::Test::Helper;
 use NativeCall;
 use Notcurses::Native;
 use Notcurses::Native::Types;
@@ -136,10 +135,23 @@ subtest 'Fade context' => {
 	plan 2;
 	my $child = ncplane_create($std, NcplaneOptions.new(:rows(3), :cols(10)));
 	my $fctx = ncfadectx_setup($child);
-	ok $fctx.defined, 'Fade context created';
-	my $iters = ncfadectx_iterations($fctx);
-	ok $iters >= 0, "Fade iterations = $iters";
-	ncfadectx_free($fctx);
+	# notcurses can only fade a terminal with RGB or palette-changing
+	# support (fade.c's own test: caps.rgb || caps.can_change_colors),
+	# and answers NULL otherwise — an 8-colour xterm with no terminal
+	# attached, say. Handing that NULL on to ncfadectx_iterations
+	# dereferences it, which is how this subtest used to crash on
+	# headless Linux.
+	my $caps = notcurses_capabilities($nc);
+	if $caps.rgb || $caps.can_change_colors {
+		ok $fctx.defined, 'Fade context created on a terminal that can fade';
+		my $iters = ncfadectx_iterations($fctx);
+		ok $iters >= 0, "Fade iterations = $iters";
+		ncfadectx_free($fctx);
+	}
+	else {
+		nok $fctx.defined, 'no fade context on a terminal that cannot fade (NULL)';
+		lives-ok { ncfadectx_free(NcfadectxHandle) }, 'freeing NULL is a no-op';
+	}
 	ncplane_destroy($child);
 };
 
@@ -156,9 +168,11 @@ subtest 'Capabilities struct' => {
 
 subtest 'Stats struct' => {
 	plan 4;
-	my $stats = notcurses_stats_alloc($nc);
-	ok $stats.defined, 'Stats allocated';
-	notcurses_stats($nc, $stats);
+	# notcurses-stats-snapshot allocates through notcurses_stats_alloc,
+	# copies into a Raku-owned struct and frees the C one — the raw
+	# allocator on its own would leak the struct.
+	my $stats = notcurses-stats-snapshot($nc);
+	ok $stats.defined, 'Stats snapshot taken';
 	ok $stats.renders >= 0, "Renders = {$stats.renders}";
 	ok $stats.planes > 0, "Planes = {$stats.planes}";
 	ok $stats.fbbytes >= 0, "FB bytes = {$stats.fbbytes}";

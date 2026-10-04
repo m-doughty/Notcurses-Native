@@ -31,4 +31,24 @@ for <_verify-windows-x86_64.yml _verify-windows-arm64.yml> -> Str $name {
         "$name does not hardcode an MSYS2 installation path";
 }
 
+# The build lanes are the only place a packed shim's own exports are
+# tested (the verify lanes recompile the shim locally), so each lane's
+# list of symbols to assert must name exactly the functions the shim
+# source exports. t/15 reads the same set from the source.
+{
+    my IO::Path $root = $*PROGRAM.parent.parent;
+    my @exports = $root.add('src/notcurses_native_shim.c').lines.map({
+        ~$0 if / ^ <!before 'static'> [ <[\w]>+ <[\s*]>+ ]+ ('notcurses_native_' \w+) \s* '(' /
+    }).unique.sort;
+    ok @exports >= 10, "the shim source exports {+@exports} functions";
+    for '.github/workflows/_build-macos.yml', '.github/workflows/_build-windows.yml',
+        'scripts/ci/build-linux-glibc.sh', 'scripts/ci/build-linux-musl.sh' -> Str $lane {
+        my Str $text = $root.add($lane).slurp;
+        my $list = $text ~~ / 'for sym in' (<-[;]>+) ';' \s* 'do' /;
+        my @listed = $list ?? $list[0].comb(/ 'notcurses_native_' \w+ /).sort !! ();
+        is @listed.join(' '), @exports.join(' '),
+            "$lane asserts every shim export, and nothing else";
+    }
+}
+
 done-testing;

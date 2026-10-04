@@ -1,0 +1,728 @@
+use Test;
+use lib 'lib';
+
+use Notcurses::Native;
+
+if $*DISTRO.is-win {
+    plan 1;
+    skip 'POSIX PTY terminal-guard contract; Windows terminal restoration is not verified by this test', 1;
+    done-testing;
+    exit 0;
+}
+
+sub fail-requirement(Str:D $message) {
+    plan 1;
+    flunk $message;
+    done-testing;
+    exit 1;
+}
+
+my Str $shim = shim-lib() // '';
+my Str $core = core-lib() // '';
+fail-requirement("POSIX terminal-guard test requires the built native shim; resolved '$shim'")
+    unless $shim.chars && $shim.IO.f;
+fail-requirement("POSIX terminal-guard test requires the matching native core; resolved '$core'")
+    unless $core.chars && $core.IO.f;
+
+my $tmp = $*TMPDIR.add('notcurses-native-guard-pty-' ~ $*PID ~ '-' ~ now.Int);
+$tmp.mkdir;
+LEAVE {
+    for <child.c child driver.py> -> $name {
+        try $tmp.add($name).unlink;
+    }
+    try $tmp.rmdir;
+}
+
+my $child-c = $tmp.add('child.c');
+$child-c.spurt(q:to/C/);
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <errno.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <termios.h>
+#include <unistd.h>
+
+typedef int (*owner_f)(uint64_t);
+typedef int (*arm_f)(uint64_t, const char*);
+
+static owner_f reserve_guard, disarm_guard, release_guard;
+static arm_f arm_guard;
+static const uint64_t first_owner = 7001;
+static const uint64_t final_owner = 7002;
+static const char first_cleanup[] = "\033[?25h\033[0m";
+static const char final_cleanup[] = "\033[?1049l\033[?25h";
+static const char ignored_cleanup[] = "\033[?2004l";
+static pthread_mutex_t start_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t start_cond = PTHREAD_COND_INITIALIZER;
+static int workers_started;
+static atomic_uint worker_errors = ATOMIC_VAR_INIT(0);
+
+static void require_code(const char* operation, int actual, int expected) {
+    if (actual != expected) {
+        fprintf(stderr, "%s returned %d, expected %d\n", operation, actual, expected);
+        _exit(20);
+    }
+}
+
+static void set_raw(const struct termios* cooked) {
+    struct termios raw = *cooked;
+    raw.c_lflag &= (tcflag_t)~(ECHO | ICANON | ISIG | IEXTEN);
+    raw.c_iflag &= (tcflag_t)~(IXON | ICRNL | BRKINT | INPCK | ISTRIP);
+    raw.c_oflag &= (tcflag_t)~OPOST;
+    raw.c_cflag |= (tcflag_t)CS8;
+    raw.c_cc[VMIN] = 1;
+    raw.c_cc[VTIME] = 0;
+    require_code("cfsetispeed", cfsetispeed(&raw, B19200), 0);
+    require_code("cfsetospeed", cfsetospeed(&raw, B19200), 0);
+    require_code("raw tcsetattr", tcsetattr(STDIN_FILENO, TCSANOW, &raw), 0);
+}
+
+static void* stress_worker(void* argument) {
+    unsigned kind = *(unsigned*)argument;
+    int rc = pthread_mutex_lock(&start_lock);
+    if (rc != 0) {
+        atomic_fetch_add(&worker_errors, 1);
+        return NULL;
+    }
+    while (!workers_started) {
+        rc = pthread_cond_wait(&start_cond, &start_lock);
+        if (rc != 0) {
+            atomic_fetch_add(&worker_errors, 1);
+            pthread_mutex_unlock(&start_lock);
+            return NULL;
+        }
+    }
+    if (pthread_mutex_unlock(&start_lock) != 0) {
+        atomic_fetch_add(&worker_errors, 1);
+        return NULL;
+    }
+    for (unsigned i = 0; i < 1000; ++i) {
+        rc = kind % 2
+            ? disarm_guard(first_owner)
+            : arm_guard(first_owner, ignored_cleanup);
+        /* The reservation is held throughout: only success or a
+         * concurrent arm/disarm claim may answer. */
+        if (rc != 0 && rc != 6) atomic_fetch_add(&worker_errors, 1);
+        if (i % 16 == 0) sched_yield();
+    }
+    return NULL;
+}
+
+static void stress_guard(void) {
+    pthread_t workers[8];
+    unsigned kinds[8];
+    for (unsigned i = 0; i < 8; ++i) {
+        kinds[i] = i;
+        require_code("pthread_create", pthread_create(&workers[i], NULL,
+            stress_worker, &kinds[i]), 0);
+    }
+    require_code("pthread_mutex_lock", pthread_mutex_lock(&start_lock), 0);
+    workers_started = 1;
+    require_code("pthread_cond_broadcast", pthread_cond_broadcast(&start_cond), 0);
+    require_code("pthread_mutex_unlock", pthread_mutex_unlock(&start_lock), 0);
+    for (unsigned i = 0; i < 8; ++i) {
+        require_code("pthread_join", pthread_join(workers[i], NULL), 0);
+    }
+    require_code("concurrent arm/disarm status", (int)atomic_load(&worker_errors), 0);
+    require_code("final disarm", disarm_guard(first_owner), 0);
+}
+
+int main(int argc, char** argv) {
+    if (argc != 6) return 10;
+    /* The macOS shim uses dynamic lookup for its notcurses symbols. */
+    void* core = dlopen(argv[1], RTLD_NOW | RTLD_GLOBAL);
+    if (!core) {
+        fprintf(stderr, "core dlopen failed: %s\n", dlerror());
+        return 11;
+    }
+    void* shim = dlopen(argv[2], RTLD_NOW | RTLD_LOCAL);
+    if (!shim) {
+        fprintf(stderr, "shim dlopen failed: %s\n", dlerror());
+        return 12;
+    }
+    reserve_guard = (owner_f)dlsym(shim, "notcurses_native_reserve_terminal_guard");
+    arm_guard = (arm_f)dlsym(shim, "notcurses_native_arm_terminal_guard_owned");
+    disarm_guard = (owner_f)dlsym(shim, "notcurses_native_disarm_terminal_guard_owned");
+    release_guard = (owner_f)dlsym(shim, "notcurses_native_release_terminal_guard");
+    if (!reserve_guard || !arm_guard || !disarm_guard || !release_guard) {
+        fputs("native shim must export all four owned terminal-guard functions\n", stderr);
+        return 13;
+    }
+    int mode = atoi(argv[3]);
+    int ready_fd = atoi(argv[4]);
+    int exit_fd = atoi(argv[5]);
+    if (mode < 1 || mode > 6 || ready_fd <= 2 || exit_fd <= 2) return 14;
+    struct termios cooked;
+    require_code("cooked tcgetattr", tcgetattr(STDIN_FILENO, &cooked), 0);
+    require_code("reserve first owner", reserve_guard(first_owner), 0);
+    require_code("arm first owner", arm_guard(first_owner, first_cleanup), 0);
+    set_raw(&cooked);
+
+    switch (mode) {
+        case 2:
+            require_code("repeat arm while raw", arm_guard(first_owner, ignored_cleanup), 0);
+            break;
+        case 3:
+            require_code("disarm while raw", disarm_guard(first_owner), 0);
+            break;
+        case 4:
+            require_code("wrong owner reserve", reserve_guard(7999), 6);
+            require_code("wrong owner arm", arm_guard(7999, ignored_cleanup), 7);
+            require_code("wrong owner disarm", disarm_guard(7999), 7);
+            require_code("wrong owner release", release_guard(7999), 7);
+            break;
+        case 5:
+        case 6:
+            if (mode == 6) stress_guard();
+            require_code("release first owner", release_guard(first_owner), 0);
+            require_code("restore cooked before handoff",
+                tcsetattr(STDIN_FILENO, TCSANOW, &cooked), 0);
+            require_code("reserve final owner", reserve_guard(final_owner), 0);
+            require_code("arm final owner", arm_guard(final_owner, final_cleanup), 0);
+            set_raw(&cooked);
+            break;
+    }
+
+    /* Let the parent observe the exact raw state before C exit runs
+     * atexit handlers. No Raku cleanup participates in this child. */
+    ssize_t n;
+    do { n = write(ready_fd, "R", 1); } while (n < 0 && errno == EINTR);
+    require_code("ready handshake", (int)n, 1);
+    close(ready_fd);
+    char response = 0;
+    do { n = read(exit_fd, &response, 1); } while (n < 0 && errno == EINTR);
+    require_code("exit handshake", n == 1 && response == 'X' ? 0 : -1, 0);
+    close(exit_fd);
+    exit(0);
+}
+C
+
+my $driver = $tmp.add('driver.py');
+$driver.spurt(q:to/PY/);
+import copy
+import errno
+import fcntl
+import json
+import os
+import pty
+import select
+import signal
+import subprocess
+import sys
+import tempfile
+import termios
+import time
+
+source, child, core, shim, compiler = sys.argv[1:]
+first_cleanup = b'\x1b[?25h\x1b[0m'
+final_cleanup = b'\x1b[?1049l\x1b[?25h'
+
+
+def interrupted(signum, frame):
+    raise KeyboardInterrupt('PTY test driver interrupted by signal %d' % signum)
+
+
+signal.signal(signal.SIGTERM, interrupted)
+
+
+def normalized(attributes):
+    return attributes[:6] + [[v if isinstance(v, int) else v[0]
+                              for v in attributes[6]]]
+
+
+def close_fd(fd):
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def reap_owned(pid, timeout):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        found, status = os.waitpid(pid, os.WNOHANG)
+        if found == pid:
+            return status
+        time.sleep(0.01)
+    raise RuntimeError('owned PTY child did not exit within %.1f seconds' % timeout)
+
+
+def build_child():
+    command = [compiler, '-std=c11', '-pthread', source, '-o', child]
+    if sys.platform.startswith('linux'):
+        command.append('-ldl')
+    with tempfile.TemporaryFile() as log:
+        try:
+            process = subprocess.Popen(command, stdout=log, stderr=log)
+        except OSError as exc:
+            raise RuntimeError("POSIX terminal-guard test requires C compiler %r: %s"
+                               % (compiler, exc)) from exc
+        try:
+            code = process.wait(timeout=30)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=2)
+        if code != 0:
+            log.seek(0)
+            detail = log.read(4096).decode('utf-8', 'replace')
+            raise RuntimeError('PTY child build failed (exit %d): %s' % (code, detail))
+
+
+def termios_tuple(fd, label):
+    try:
+        return termios.tcgetattr(fd)
+    except termios.error as exc:
+        raise RuntimeError('%s tcgetattr failed: %r' % (label, exc)) from exc
+    except OSError as exc:
+        raise RuntimeError('%s tcgetattr failed: %s' % (label, exc)) from exc
+
+
+def set_termios(fd, when, attributes, label):
+    try:
+        termios.tcsetattr(fd, when, attributes)
+    except termios.error as exc:
+        raise RuntimeError('%s tcsetattr failed: %r' % (label, exc)) from exc
+    except OSError as exc:
+        raise RuntimeError('%s tcsetattr failed: %s' % (label, exc)) from exc
+
+
+def read_exact_status(fd):
+    chunks = bytearray()
+    while True:
+        try:
+            chunk = os.read(fd, 256)
+        except OSError as exc:
+            if exc.errno == errno.EINTR:
+                continue
+            raise
+        if not chunk:
+            break
+        chunks.extend(chunk)
+        if len(chunks) > 4096:
+            raise RuntimeError('PTY controller status exceeded 4096-byte bound')
+    text = chunks.decode('utf-8', 'replace').strip()
+    if not text:
+        raise RuntimeError('PTY controller returned no child status')
+    if text.startswith('setup:'):
+        raise RuntimeError(text)
+    try:
+        return int(text)
+    except ValueError as exc:
+        raise RuntimeError('PTY controller returned invalid child status: %r' % text) from exc
+
+
+def drain_master(master, output, deadline, quiet_window=0.05):
+    quiet_until = None
+    while True:
+        now = time.monotonic()
+        if now >= deadline:
+            raise RuntimeError('PTY output drain exceeded deadline')
+        timeout = min(0.05, deadline - now)
+        readable, _, _ = select.select([master], [], [], timeout)
+        if not readable:
+            if quiet_until is None:
+                quiet_until = time.monotonic() + quiet_window
+            elif time.monotonic() >= quiet_until:
+                return
+            continue
+        quiet_until = None
+        try:
+            chunk = os.read(master, 4096)
+        except OSError as exc:
+            if exc.errno in (errno.EAGAIN, errno.EIO):
+                return
+            raise
+        if not chunk:
+            return
+        output.extend(chunk)
+        if len(output) > 8192:
+            raise RuntimeError('PTY child exceeded 8192-byte output bound')
+
+
+def controller_reap_child(pid, timeout):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            found, status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            return 'not-owned', None
+        if found == pid:
+            return 'reaped', status
+        time.sleep(0.01)
+    return 'timeout', None
+
+
+def controller_kill_child(pid):
+    if pid is None or pid <= 0:
+        return None
+    for sig, timeout in ((signal.SIGTERM, 1.0), (signal.SIGKILL, 1.0)):
+        # Cleanup may be called again after an abort has already reaped
+        # the child. Never signal a PID without proving child ownership.
+        try:
+            found, status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            return None
+        if found == pid:
+            return status
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return controller_reap_child(pid, 0.1)[1]
+        except OSError:
+            pass
+        ownership, status = controller_reap_child(pid, timeout)
+        if ownership != 'timeout':
+            return status
+    return None
+
+
+def controller_wait_child_or_parent_abort(child_pid, ack_fd):
+    while True:
+        try:
+            found, child_status = os.waitpid(child_pid, os.WNOHANG)
+        except ChildProcessError:
+            return 127
+        if found == child_pid:
+            return os.waitstatus_to_exitcode(child_status)
+        readable, _, _ = select.select([ack_fd], [], [], 0.05)
+        if ack_fd in readable:
+            try:
+                marker = os.read(ack_fd, 1)
+            except OSError:
+                marker = b''
+            controller_kill_child(child_pid)
+            raise RuntimeError('parent aborted before C child exit' if marker != b'C'
+                               else 'parent requested C child cleanup')
+
+
+def run_case(mode):
+    master = slave = ready_r = ready_w = exit_r = exit_w = None
+    status_r = status_w = ack_r = ack_w = None
+    controller_pid = status = before = None
+    output = bytearray()
+    observed_raw = None
+    result = {'mode': mode, 'code': None, 'before': None, 'after': None,
+              'raw_expected': None, 'raw_observed': None, 'cleanup_hex': '',
+              'expected_hex': (b'' if mode == 3 else final_cleanup
+                               if mode in (5, 6) else first_cleanup).hex()}
+    try:
+        master, slave = pty.openpty()
+        slave_name = os.ttyname(slave)
+        cooked = termios_tuple(slave, 'initial slave')
+        cooked[3] |= termios.ECHO | termios.ICANON | termios.ISIG | termios.IEXTEN
+        cooked[0] |= termios.IXON | termios.ICRNL | termios.BRKINT
+        cooked[1] |= termios.OPOST
+        cooked[4] = cooked[5] = termios.B9600
+        cooked[6][termios.VMIN] = 7
+        cooked[6][termios.VTIME] = 3
+        set_termios(slave, termios.TCSANOW, cooked, 'cooked fixture')
+        # The first raw/cooked cycle establishes the kernel's cooked
+        # state (Darwin adds PENDIN). Capture that complete state for the
+        # second cycle and the child; no flags are removed from comparison.
+        for _ in range(2):
+            before = termios_tuple(slave, 'preconditioned slave')
+            raw = copy.deepcopy(before)
+            raw[3] &= ~(termios.ECHO | termios.ICANON | termios.ISIG | termios.IEXTEN)
+            raw[0] &= ~(termios.IXON | termios.ICRNL | termios.BRKINT
+                        | termios.INPCK | termios.ISTRIP)
+            raw[1] &= ~termios.OPOST
+            raw[2] |= termios.CS8
+            raw[4] = raw[5] = termios.B19200
+            raw[6][termios.VMIN] = 1
+            raw[6][termios.VTIME] = 0
+            set_termios(slave, termios.TCSANOW, raw, 'raw fixture')
+            expected_raw = termios_tuple(slave, 'expected raw fixture')
+            set_termios(slave, termios.TCSANOW, before, 'restore cooked fixture')
+        if normalized(termios_tuple(slave, 'cooked preservation check')) != normalized(before):
+            raise RuntimeError('PTY cannot preserve the exact cooked fixture')
+        if normalized(expected_raw) == normalized(before):
+            raise RuntimeError('raw fixture did not change terminal state')
+        result['before'] = normalized(before)
+        result['raw_expected'] = normalized(expected_raw)
+
+        ready_r, ready_w = os.pipe()
+        exit_r, exit_w = os.pipe()
+        status_r, status_w = os.pipe()
+        ack_r, ack_w = os.pipe()
+        controller_pid = os.fork()
+        if controller_pid == 0:
+            child_pid = None
+            tty = None
+
+            def controller_interrupted(signum, frame):
+                controller_kill_child(child_pid)
+                os._exit(128 + signum)
+
+            signal.signal(signal.SIGTERM, controller_interrupted)
+            signal.signal(signal.SIGINT, controller_interrupted)
+            if hasattr(signal, 'SIGHUP'):
+                signal.signal(signal.SIGHUP, controller_interrupted)
+            try:
+                close_fd(master)
+                close_fd(slave)
+                close_fd(ready_r)
+                close_fd(exit_w)
+                close_fd(status_r)
+                close_fd(ack_w)
+                os.setsid()
+                tty = os.open(slave_name, os.O_RDWR)
+                if hasattr(termios, 'TIOCSCTTY'):
+                    try:
+                        fcntl.ioctl(tty, termios.TIOCSCTTY, 0)
+                    except OSError:
+                        pass
+                child_pid = os.fork()
+                if child_pid == 0:
+                    try:
+                        close_fd(status_w)
+                        close_fd(ack_r)
+                        for fd in (0, 1, 2):
+                            os.dup2(tty, fd)
+                        if tty > 2:
+                            close_fd(tty)
+                        os.set_inheritable(ready_w, True)
+                        os.set_inheritable(exit_r, True)
+                        os.execv(child, [child, core, shim, str(mode), str(ready_w), str(exit_r)])
+                    except BaseException as exc:
+                        os.write(2, ('PTY C child setup failed: %s' % exc).encode()[:1024])
+                        os._exit(127)
+                close_fd(ready_w)
+                ready_w = None
+                close_fd(exit_r)
+                exit_r = None
+                c_exit = controller_wait_child_or_parent_abort(child_pid, ack_r)
+                child_pid = None
+                status_text = ('%d\n' % c_exit).encode()
+                os.write(status_w, status_text)
+                close_fd(status_w)
+                status_w = None
+                # Keep the controlling session and tty alive until the
+                # parent has captured post-atexit termios and cleanup bytes.
+                while True:
+                    marker = os.read(ack_r, 1)
+                    if marker or marker == b'':
+                        break
+                close_fd(ack_r)
+                ack_r = None
+                if tty is not None and tty > 2:
+                    close_fd(tty)
+                    tty = None
+                os._exit(0)
+            except BaseException as exc:
+                controller_kill_child(child_pid)
+                try:
+                    message = ('setup:%s\n' % exc).encode('utf-8', 'replace')[:4096]
+                    os.write(status_w, message)
+                except BaseException:
+                    pass
+                for fd in (ready_w, exit_r, status_w, ack_r, tty):
+                    if fd is not None and fd > 2:
+                        close_fd(fd)
+                os._exit(127)
+        close_fd(ready_w); ready_w = None
+        close_fd(exit_r); exit_r = None
+        close_fd(status_w); status_w = None
+        close_fd(ack_r); ack_r = None
+        os.set_blocking(master, False)
+        deadline = time.monotonic() + 15
+        c_status = None
+        sent_exit = False
+        while c_status is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError('PTY mode %d exceeded 15-second child timeout' % mode)
+            watched = [master]
+            if ready_r is not None:
+                watched.append(ready_r)
+            if status_r is not None:
+                watched.append(status_r)
+            readable, _, _ = select.select(watched, [], [], min(0.05, remaining))
+            if ready_r is not None and ready_r in readable:
+                marker = os.read(ready_r, 1)
+                close_fd(ready_r); ready_r = None
+                if marker == b'R':
+                    observed_raw = termios_tuple(slave, 'observed raw state')
+                    os.write(exit_w, b'X')
+                    sent_exit = True
+                    close_fd(exit_w); exit_w = None
+                elif marker:
+                    raise RuntimeError('invalid child readiness marker %r' % marker)
+                else:
+                    raise RuntimeError('child closed readiness pipe before raw observation')
+            if master in readable:
+                try:
+                    output.extend(os.read(master, 4096))
+                except OSError as exc:
+                    if exc.errno not in (errno.EAGAIN, errno.EIO):
+                        raise
+                if len(output) > 8192:
+                    raise RuntimeError('PTY child exceeded 8192-byte output bound')
+            if status_r is not None and status_r in readable:
+                c_status = read_exact_status(status_r)
+                close_fd(status_r); status_r = None
+        if not sent_exit:
+            raise RuntimeError('controller reported C child exit before parent sent exit handshake')
+        drain_master(master, output, time.monotonic() + 2)
+        result['code'] = c_status
+        result['after'] = normalized(termios_tuple(slave, 'post-atexit slave'))
+        result['raw_observed'] = normalized(observed_raw) if observed_raw is not None else None
+        result['cleanup_hex'] = output.hex()
+        if result['code'] != 0:
+            result['error'] = 'C child exit %d: %r' % (result['code'], bytes(output[:1024]))
+        os.write(ack_w, b'A')
+        close_fd(ack_w); ack_w = None
+        status = reap_owned(controller_pid, 2)
+    except Exception as exc:
+        result['error'] = str(exc)[:4096]
+        result['cleanup_hex'] = output[:8192].hex()
+    finally:
+        if controller_pid is not None and controller_pid > 0 and status is None:
+            try:
+                if ack_w is not None:
+                    try:
+                        os.write(ack_w, b'C')
+                    except OSError:
+                        pass
+                    close_fd(ack_w)
+                    ack_w = None
+                try:
+                    status = reap_owned(controller_pid, 2)
+                except RuntimeError:
+                    try:
+                        os.killpg(controller_pid, signal.SIGTERM)
+                    except OSError:
+                        try:
+                            os.kill(controller_pid, signal.SIGTERM)
+                        except OSError:
+                            pass
+                    try:
+                        status = reap_owned(controller_pid, 1)
+                    except RuntimeError:
+                        try:
+                            os.killpg(controller_pid, signal.SIGKILL)
+                        except OSError:
+                            try:
+                                os.kill(controller_pid, signal.SIGKILL)
+                            except OSError:
+                                pass
+                        status = reap_owned(controller_pid, 2)
+            except (OSError, RuntimeError) as exc:
+                result['error'] = (result.get('error', '') + '; controller cleanup: ' + str(exc))[:4096]
+        if before is not None and slave is not None:
+            try:
+                termios.tcsetattr(slave, termios.TCSANOW, before)
+            except (OSError, termios.error):
+                pass
+        for fd in (master, slave, ready_r, ready_w, exit_r, exit_w, status_r, status_w, ack_r, ack_w):
+            close_fd(fd)
+    return result
+
+
+try:
+    build_child()
+    print(json.dumps({'control_char_count': termios.NCCS,
+                      'cases': [run_case(mode) for mode in range(1, 7)]}))
+except Exception as exc:
+    print(json.dumps({'error': str(exc)[:4096]}))
+    sys.exit(1)
+PY
+
+my Str $python = %*ENV<PYTHON> // 'python3';
+my Str $compiler = %*ENV<CC> // 'cc';
+my $process = Proc::Async.new($python, $driver.Str, $child-c.Str,
+    $tmp.add('child').Str, $core, $shim, $compiler);
+my Lock $output-lock .= new;
+my Str $out = '';
+my Str $err = '';
+my Bool $overflow = False;
+my $out-tap = $process.stdout.tap(-> $chunk {
+    $output-lock.protect: {
+        $overflow = True if $out.chars + $chunk.chars > 65536;
+        $out ~= $chunk.substr(0, 65536 - $out.chars);
+    }
+});
+my $err-tap = $process.stderr.tap(-> $chunk {
+    $output-lock.protect: {
+        $overflow = True if $err.chars + $chunk.chars > 8192;
+        $err ~= $chunk.substr(0, 8192 - $err.chars);
+    }
+});
+LEAVE {
+    try $out-tap.close;
+    try $err-tap.close;
+}
+my $completion = try $process.start;
+fail-requirement("POSIX terminal-guard test requires Python 3 with pty and termios: '$python'")
+    unless $completion.defined;
+try await Promise.anyof($completion, Promise.in(135));
+if $completion.status ~~ Planned {
+    try $process.kill(15);
+    try await Promise.anyof($completion, Promise.in(3));
+    if $completion.status ~~ Planned {
+        try $process.kill(9);
+        try await Promise.anyof($completion, Promise.in(2));
+    }
+    fail-requirement('POSIX terminal-guard driver exceeded its 135-second deadline');
+}
+my $result = try await $completion;
+fail-requirement("POSIX terminal-guard test requires Python 3 with pty and termios; '$python': "
+    ~ ($completion.status ~~ Broken ?? $completion.cause.message !! $err.trim))
+    unless $result.defined;
+fail-requirement('POSIX terminal-guard driver exceeded its output bound') if $overflow;
+my $report = try Rakudo::Internals::JSON.from-json($out);
+fail-requirement('Python PTY driver did not return a valid report: ' ~ $err.trim)
+    unless $report ~~ Associative;
+fail-requirement($report<error>.Str) if $report<error>:exists;
+fail-requirement('Python PTY driver failed: ' ~ $err.trim) if $result.exitcode != 0;
+fail-requirement('Python PTY driver did not return all six terminal-guard cases')
+    unless $report<cases> ~~ Positional && $report<cases>.elems == 6;
+fail-requirement('Python PTY driver did not return the platform control-character count')
+    unless $report<control_char_count> ~~ Int && $report<control_char_count> > 0;
+
+sub complete-termios($state, Int:D $control-char-count --> Bool) {
+    return False unless $state ~~ Positional && $state.elems == 7;
+    return False unless $state[6] ~~ Positional && $state[6].elems == $control-char-count;
+    so ($state.head(6).all ~~ Int) && ($state[6].all ~~ Int);
+}
+
+plan 6;
+my @names =
+    'C exit restores the original terminal and writes cleanup once',
+    'repeated arm while raw preserves the original snapshot and cleanup',
+    'disarm suppresses cleanup and preserves the exact raw state',
+    'a different owner cannot reserve, arm, disarm, or release the guard',
+    'release permits a fresh owner to capture and restore cooked state',
+    'concurrent arm/disarm completes before a fresh final snapshot';
+for $report<cases>.list.kv -> $index, $case {
+    subtest @names[$index] => {
+        plan 5;
+        nok ($case<error>:exists), 'PTY driver completed within its bounds';
+        diag $case<error> if $case<error>:exists;
+        is $case<code>, 0, 'C child accepted every required guard return code';
+        if complete-termios($case<raw_observed>, $report<control_char_count>)
+            && complete-termios($case<raw_expected>, $report<control_char_count>) {
+            is-deeply $case<raw_observed>, $case<raw_expected>,
+                'raw state matches all flags, speeds, and control characters';
+        } else {
+            flunk 'raw comparison requires two complete termios tuples';
+        }
+        my $expected-after = $index == 2 ?? $case<raw_expected> !! $case<before>;
+        if complete-termios($case<after>, $report<control_char_count>)
+            && complete-termios($expected-after, $report<control_char_count>) {
+            is-deeply $case<after>, $expected-after,
+                'exit leaves the exact required termios state';
+        } else {
+            flunk 'exit comparison requires two complete termios tuples';
+        }
+        is $case<cleanup_hex>, $case<expected_hex>, 'exit writes exactly the required cleanup bytes';
+    };
+}
+
+done-testing;

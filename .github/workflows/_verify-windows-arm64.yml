@@ -15,11 +15,17 @@ on:
 
 env:
   NOTCURSES_NATIVE_REQUIRE_SHIM: '1'
-  RAKUDO_VERSION: '2026.03'
 
 jobs:
   verify:
     runs-on: windows-11-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        # 2026.07: last legacy-frontend release. 2026.09: RakuAST is the default.
+        raku-version: ['2026.07', '2026.09']
+    env:
+      RAKUDO_VERSION: ${{ matrix.raku-version }}
     defaults:
       run:
         shell: 'msys2 {0}'

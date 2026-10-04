@@ -1,0 +1,63 @@
+use Test;
+use lib $*PROGRAM.parent.parent.add('lib').Str;
+use Notcurses::Native::Types;
+
+# Every NCSTYLE_* constant, pinned to the value notcurses.h (3.0.17, the
+# pinned fork) defines for it:
+#
+#   #define NCSTYLE_MASK      0xffffu
+#   #define NCSTYLE_ITALIC    0x0010u
+#   #define NCSTYLE_UNDERLINE 0x0008u
+#   #define NCSTYLE_UNDERCURL 0x0004u
+#   #define NCSTYLE_BOLD      0x0002u
+#   #define NCSTYLE_STRUCK    0x0001u
+#   #define NCSTYLE_NONE      0
+#
+# NCSTYLE_STRUCK was bound as 0x0020 — a bit notcurses does not define —
+# so strikethrough requested through this module rendered as plain text
+# and nothing noticed. Pure constant checks: no library, no terminal.
+
+my %header =
+    NCSTYLE_MASK      => 0xFFFF,
+    NCSTYLE_ITALIC    => 0x0010,
+    NCSTYLE_UNDERLINE => 0x0008,
+    NCSTYLE_UNDERCURL => 0x0004,
+    NCSTYLE_BOLD      => 0x0002,
+    NCSTYLE_STRUCK    => 0x0001,
+    NCSTYLE_NONE      => 0x0000;
+
+my %exported = Notcurses::Native::Types::EXPORT::DEFAULT::.pairs
+    .grep(*.key.starts-with('NCSTYLE_'))
+    .map({ .key => .value });
+
+plan 5;
+
+is-deeply %exported.keys.sort, %header.keys.sort,
+    'the module exports exactly the NCSTYLE_* names notcurses.h defines';
+
+subtest 'every constant matches its notcurses.h value' => {
+    plan +%header;
+    for %header.sort(*.key) -> (:$key, :$value) {
+        is %exported{$key}, $value,
+            sprintf('%s is 0x%04X', $key, $value);
+    }
+};
+
+is NCSTYLE_STRUCK, 0x0001,
+    'NCSTYLE_STRUCK is 0x0001, not the undefined bit 0x0020';
+
+subtest 'the five attribute bits are distinct single bits inside the mask' => {
+    my @bits = NCSTYLE_ITALIC, NCSTYLE_UNDERLINE, NCSTYLE_UNDERCURL,
+               NCSTYLE_BOLD, NCSTYLE_STRUCK;
+    plan 2;
+    is @bits.map({ $_ +& ($_ - 1) }).grep(* != 0).elems, 0,
+        'each attribute is a power of two';
+    is ([+|] @bits), 0x001F,
+        'together they occupy exactly the low five bits, no overlap';
+};
+
+is (NCSTYLE_ITALIC +| NCSTYLE_UNDERLINE +| NCSTYLE_UNDERCURL
+        +| NCSTYLE_BOLD +| NCSTYLE_STRUCK) +& +^NCSTYLE_MASK, 0,
+    'no attribute bit falls outside NCSTYLE_MASK';
+
+done-testing;

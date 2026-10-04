@@ -1,7 +1,6 @@
 use Test;
 use lib 'lib';
-use lib 't/lib';
-use TestHelper;
+use Notcurses::Native::Test::Helper;
 use NativeCall;
 use Notcurses::Native;
 use Notcurses::Native::Types;
@@ -122,15 +121,16 @@ subtest 'Plane navigation' => {
 	ncplane_destroy($child);
 };
 
-subtest 'Plane printf (variadic)' => {
-	plan 1;
+subtest 'Plane printf' => {
+	plan 3;
 	my $child-opts = NcplaneOptions.new(:y(0), :x(0), :rows(3), :cols(40));
 	my $child = ncplane_create($std, $child-opts);
 	my int32 $num = 42;
-	ncplane_printf_yx($child, 0, 0, "val=%d", $num);
+	is ncplane_printf_yx($child, 0, 0, "val=%d", $num), 6, 'Printf answers 6 columns (val=42)';
 	my uint32 ($cy, $cx);
 	ncplane_cursor_yx($child, $cy, $cx);
-	is $cx, 6, 'Printf wrote 6 chars (val=42)';
+	is $cx, 6, 'and the cursor advanced 6 columns';
+	is ncplane_printf($child, "!"), 1, 'printf with no arguments after the format';
 	ncplane_destroy($child);
 };
 

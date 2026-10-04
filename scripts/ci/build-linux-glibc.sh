@@ -204,11 +204,46 @@ cc -O2 -shared -fPIC \
   -Lbundle -lnotcurses-core
 patchelf --set-rpath '$ORIGIN' bundle/libnotcurses_native_shim.so
 echo "--- shim symbols ---"
-nm -g --defined-only bundle/libnotcurses_native_shim.so \
-  | grep -E 'T (_)?notcurses_native_' || {
-    echo "❌ no notcurses_native_* exports — link silently failed."
-    exit 1
-  }
+# Assert every entry point the binding calls BY NAME rather than by
+# the notcurses_native_ prefix: the prefix form is satisfied by
+# copy_cells alone, so a terminal guard that failed to compile in
+# would pass. The verify lanes cannot catch that either —
+# Build.rakumod recompiles the shim locally wherever a C toolchain
+# exists, and CI runners all have one, so their
+# NOTCURSES_NATIVE_REQUIRE_SHIM check inspects the freshly-compiled
+# copy rather than the archive's. This check is the ONLY place the
+# bundle's own contents are tested.
+shim_syms=$(nm -g --defined-only bundle/libnotcurses_native_shim.so)
+printf '%s\n' "$shim_syms"
+missing=0
+for sym in notcurses_native_copy_cells \
+           notcurses_native_reserve_terminal_guard \
+           notcurses_native_arm_terminal_guard_owned \
+           notcurses_native_disarm_terminal_guard_owned \
+           notcurses_native_release_terminal_guard \
+           notcurses_native_arm_terminal_guard \
+           notcurses_native_disarm_terminal_guard \
+           notcurses_native_abi_count \
+           notcurses_native_abi_key \
+           notcurses_native_abi_value; do
+  # Here-string, not `printf | grep -q`: grep -q exits on first
+  # match and closes the pipe, which SIGPIPEs the producer, and
+  # `set -o pipefail` (on, at the top of this script) would turn
+  # that into a spurious "symbol missing".
+  if ! grep -qE "T _?${sym}\$" <<< "$shim_syms"; then
+    echo "::error::shim .so does not export $sym"
+    missing=1
+  fi
+done
+if (( missing != 0 )); then
+  echo "❌ The packed shim is missing exports the binding calls —"
+  echo "   either the link silently failed or a source change"
+  echo "   dropped an entry point. A user installing this prebuilt"
+  echo "   would get the slow per-cell path, no terminal-restore"
+  echo "   guard, or no ABI table for t/42 to hold the"
+  echo "   bindings to."
+  exit 1
+fi
 # Sidecar for Build.rakumod's content-based freshness check: the
 # SHA-256 of the shim source this shim was compiled from. Without
 # it, installs fall back to a cross-machine mtime comparison that

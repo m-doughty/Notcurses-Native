@@ -1,7 +1,7 @@
 use NativeCall;
 use Notcurses::Native::Types;
 use Notcurses::Native;
-use Notcurses::Native::Str;
+use Notcurses::Native::Str :DEFAULT, :INTERNAL;
 
 unit module Notcurses::Native::Direct;
 
@@ -66,10 +66,80 @@ sub ncdirect_readline(NcdirectHandle $nc, Str $prompt --> Str) is export {
 	strdup-copy-and-free(_ncdirect_readline_raw($nc, $prompt))
 }
 
-# === Printf (variadic) ===
+# === Printf ===
+#
+# notcurses's ncdirect_printf_aligned is variadic, which NativeCall
+# cannot call safely (see ncplane_printf in Notcurses::Native::Plane),
+# and the helper its implementation leans on, ncdirect_align, is static
+# in direct.c. So ncdirect_printf_aligned below is a Raku port of
+# ncdirect_vprintf_aligned (direct.c), built from public calls: format,
+# measure with ncstrwidth, compute the column as ncdirect_align does,
+# move the cursor, write with puts(3).
 
-sub ncdirect_printf_aligned(NcdirectHandle $n, int32 $y, int32 $align, Str $fmt, **@args --> int32)
-	is native(&core-lib) is export { * }
+# ncstrwidth with both out-parameters NULL — ncdirect_vprintf_aligned
+# wants only the width. The Context binding takes them `is rw`.
+sub _ncstrwidth-only(Str, Pointer, Pointer --> int32)
+	is native(&core-lib) is symbol('ncstrwidth') { * }
+
+# The C library's puts(3), which is what ncdirect_vprintf_aligned
+# writes with: to the C runtime's stdout FILE*, the same stream (and
+# buffer) an ncdirect opened on stdout writes its escape sequences to,
+# so the text lands after the cursor move rather than racing it.
+sub _c-puts(Str --> int32)
+	is native(&libc-name) is symbol('puts') { * }
+
+my constant C-EOF     = -1;
+my constant C-INT-MAX = 2147483647;
+
+# ncdirect_align (static in direct.c): the column at which text $cols
+# columns wide starts under $align. Left is column 0; text wider than
+# the terminal also starts at 0; an alignment other than left, centre
+# or right answers INT_MAX, as in C.
+my sub ncdirect-align-column(NcdirectHandle $n, Int $align, Int $cols --> Int) {
+	return 0 if $align == NCALIGN_LEFT;
+	my Int $dimx = ncdirect_dim_x($n);
+	return 0 if $cols > $dimx;
+	return ($dimx - $cols) div 2 if $align == NCALIGN_CENTER;
+	return $dimx - $cols if $align == NCALIGN_RIGHT;
+	C-INT-MAX
+}
+
+#|( Format C<@args> with the printf-style C<$format>, move the cursor to
+    row C<$y> (-1 keeps the current row) at the column C<$align> calls for
+    (C<NCALIGN_LEFT>, C<NCALIGN_CENTER> or C<NCALIGN_RIGHT>, measured in
+    columns against C<ncdirect_dim_x>), and write the text followed by a
+    newline. Format rules are those of C<ncplane_printf> (see C<c-sprintf>
+    in Notcurses::Native::Str): C formats work unchanged, C<%n>, C<%p>
+    and the wide-character conversions die, and widths count characters.
+
+    Behaves as notcurses's own C<ncdirect_printf_aligned>, which it
+    reimplements from public calls because the C function is variadic
+    (NativeCall cannot call it safely — a call with no arguments after
+    the format died before 0.6.7). Like the C function, it writes with
+    C<puts(3)>, i.e. to the process's C C<stdout> whichever stream the
+    ncdirect was opened on, and answers what C<puts> answers: a
+    non-negative number on success, whose exact value is the C
+    library's choice (glibc: the bytes written plus one; macOS: 10;
+    Windows: 0). Answers -1, writing nothing, when the text has no
+    column width (ncstrwidth rejects it: a control character, say) or
+    the cursor cannot be moved, and -1 when C<puts> fails. An C<$align>
+    that is none of the three asks for column C<INT_MAX>, exactly as the
+    C function does, and what the terminal makes of that is up to the
+    terminal: pass one of the three. Dies on an undefined handle.
+
+        ncdirect_printf_aligned($nc, -1, NCALIGN_CENTER, "%s v%s", $name, $version); )
+sub ncdirect_printf_aligned(NcdirectHandle $n, Int:D $y, Int:D $align,
+	Str:D $fmt, *@args --> Int) is export
+{
+	die 'ncdirect_printf_aligned: the ncdirect handle is undefined' without $n;
+	my Str $text = c-sprintf($fmt, @args, :caller<ncdirect_printf_aligned>);
+	my Int $cols = _ncstrwidth-only($text, Pointer, Pointer);
+	return -1 if $cols < 0;
+	my Int $x = ncdirect-align-column($n, $align, $cols);
+	return -1 if ncdirect_cursor_move_yx($n, $y, $x) != 0;
+	my Int $written = _c-puts($text);
+	$written == C-EOF ?? -1 !! $written
+}
 
 # === Dimensions ===
 

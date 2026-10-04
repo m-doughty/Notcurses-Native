@@ -83,9 +83,44 @@ sub ncselector_nextitem(NcselectorHandle $n --> Str)
 sub ncselector_offer_input(NcselectorHandle $n, Ncinput $nc --> bool)
 	is native(&core-lib) is export { * }
 
-# item is char** output (pass Pointer for NULL or to receive selected item string)
+#|( Raw binding. Destroys the selector. C<$item> is a C<char**>: pass the
+    C<Pointer> type object (NULL) to discard the selection. A non-NULL
+    C<$item> receives the selected option string, whose ownership passes
+    to the caller — notcurses detaches it from the selector before
+    destroying the rest, so it must be released with C<c-free>. Prefer
+    C<ncselector-destroy-selected>, which receives, copies and frees it
+    for you. )
 sub ncselector_destroy(NcselectorHandle $n, Pointer $item)
 	is native(&core-lib) is export { * }
+
+# Same C function, with the char** out-parameter typed as a one-slot
+# CArray[Pointer] so the malloc'd option string can be read back and freed
+# as the raw pointer it is (never through a Str round trip, which would
+# hand free(3) a pointer notcurses never allocated).
+sub _ncselector_destroy_out(NcselectorHandle $n, CArray[Pointer] $item)
+	is native(&core-lib) is symbol('ncselector_destroy') { * }
+
+#|( Destroy the selector and answer the option that was selected at that
+    moment as a Raku-owned C<Str>, or the C<Str> type object when the
+    selector holds no items. notcurses hands the selected option string
+    to the caller on destruction; this wrapper copies it and frees the C
+    string, so there is nothing to release. Calling it with an undefined
+    handle does nothing and answers C<Str>. The handle is dead afterwards,
+    exactly as after C<ncselector_destroy>. )
+sub ncselector-destroy-selected(NcselectorHandle $n --> Str) is export {
+	return Str without $n;
+	# notcurses reads items[selected] unconditionally when asked for the
+	# selection, which is an out-of-bounds read on a selector with no
+	# items; ncselector_selected answers NULL in exactly that case, so
+	# destroy without asking.
+	without ncselector_selected($n) {
+		ncselector_destroy($n, Pointer);
+		return Str;
+	}
+	my $slot = CArray[Pointer].new(Pointer);
+	_ncselector_destroy_out($n, $slot);
+	strdup-copy-and-free($slot[0])
+}
 
 # === Multiselector (multi-item picker) ===
 
@@ -431,6 +466,29 @@ sub ncreader_contents(NcreaderHandle $n --> Str) is export {
 	strdup-copy-and-free(_ncreader_contents_raw($n))
 }
 
-# contents is char** output
+#|( Raw binding. Destroys the reader. C<$contents> is a C<char**>: pass
+    the C<Pointer> type object (NULL) to discard the text. A non-NULL
+    C<$contents> receives a C<malloc(3)>'d copy of the reader's text,
+    which the caller must release with C<c-free>. Prefer
+    C<ncreader-destroy-contents>, which receives, copies and frees it for
+    you. )
 sub ncreader_destroy(NcreaderHandle $n, Pointer $contents)
 	is native(&core-lib) is export { * }
+
+# Same C function with the char** out-parameter typed as a one-slot
+# CArray[Pointer], so the heap copy can be freed as the raw pointer it is.
+sub _ncreader_destroy_out(NcreaderHandle $n, CArray[Pointer] $contents)
+	is native(&core-lib) is symbol('ncreader_destroy') { * }
+
+#|( Destroy the reader and answer the text it held as a Raku-owned
+    C<Str> (C<''> for an empty reader). notcurses allocates a copy of
+    the contents for the caller on destruction; this wrapper decodes it
+    and frees the copy. Answers the C<Str> type object for an undefined
+    handle, or if notcurses could not allocate the copy — the reader is
+    destroyed either way and the handle is dead afterwards. )
+sub ncreader-destroy-contents(NcreaderHandle $n --> Str) is export {
+	return Str without $n;
+	my $slot = CArray[Pointer].new(Pointer);
+	_ncreader_destroy_out($n, $slot);
+	strdup-copy-and-free($slot[0])
+}

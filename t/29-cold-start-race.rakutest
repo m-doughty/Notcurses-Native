@@ -1,0 +1,154 @@
+use Test;
+use lib 'lib';
+
+use NativeCall;
+use Notcurses::Native;
+use Notcurses::Native::Str;
+
+# Regression guard for the cold-start resolver race fixed in 0.6.7.
+#
+# The library-path resolvers (nc-lib, ffi-lib, core-lib, shim-lib in
+# Notcurses::Native, libc-name in Notcurses::Native::Str) memoise a
+# lookup that walks the staged library directory — and, on Windows,
+# calls LoadLibraryExW. They used to memoise it in a bare
+# `state $r = ...`, whose initialisation is NOT atomic: the slot is
+# marked initialised independently of the value landing in it, so a
+# thread arriving mid-initialisation reads `Any` and NativeCall is
+# handed a `Str` type object as a library name.
+#
+# That is what a TUI's startup looks like from the module's side: a
+# pile of threads binding native subs for the first time, together.
+# Before the fix, 64 threads released together saw roughly 180 of
+# 448 resolver calls answer `Any` — on 25 of 25 cold launches. After
+# it, 0 of 50.
+#
+# The race lives in the FIRST touch of each memo, so it can only be
+# observed from a process that has not touched them yet — and this
+# harness has, merely by loading the module. Hence child processes.
+#
+# Everything here is headless: the resolvers are pure path lookups,
+# notcurses_version() reads a static string out of the core library
+# (see t/18), and free(NULL) is a no-op by the C standard. No
+# terminal is required, so this belongs in t/ rather than xt/.
+
+my Int $launches = (%*ENV<NOTCURSES_NATIVE_COLD_LAUNCHES> // 10).Int;
+my Int $threads  = 64;
+
+plan 5 + $launches;
+
+# --- part 1: the resolvers agree with themselves across threads ------
+#
+# In-process, so the memos are already warm — this is not the race
+# test but the invariant test: every thread must see one identical,
+# defined answer. A memo that handed `Any` to a late arrival, or that
+# re-probed per thread and drifted, fails here.
+
+for (nc-lib    => &nc-lib,
+     ffi-lib   => &ffi-lib,
+     core-lib  => &core-lib,
+     shim-lib  => &shim-lib,
+     libc-name => &libc-name) -> (:key($name), :value(&resolver))
+{
+    my @seen = await (^32).map: { start resolver() };
+    ok @seen.grep({ $_.defined && $_ eqv @seen[0] }).elems == @seen.elems,
+        "$name returns one identical, defined value to 32 concurrent callers";
+}
+
+# --- part 2: cold-burst child processes ------------------------------
+
+my IO::Path $lib = $*PROGRAM.absolute.IO.parent.parent.add('lib');
+
+# The child is written to a temp file rather than passed as `-e` so no
+# shell's idea of quoting can touch it, and the library path travels
+# as a `-I` argument rather than being interpolated into its source,
+# so a Windows path full of backslashes stays intact.
+#
+# Every worker parks on the gate and is released into its first-ever
+# resolver call at once. `Thread.start` rather than `start`: pool
+# tasks that `await` are parked as continuations and resumed on
+# however few pool threads exist, so opening the gate releases them
+# in batches rather than together, and there is no concurrent *first*
+# touch to catch. Real OS threads blocked on one Promise all wake
+# together.
+my IO::Path $child =
+    $*TMPDIR.add("notcurses-native-cold-{$*PID}-{now.Int}.raku");
+END { $child.unlink if $child.e }
+
+$child.spurt: qq:to/CHILD/;
+    use NativeCall;
+    use Notcurses::Native;
+    use Notcurses::Native::Str;
+
+    my \$gate = Promise.new;
+    my atomicint \$bad = 0;
+    my \$lock = Lock.new;
+    my Str \@errors;
+
+    sub note-bad(Str \$message) \{
+        \$bad⚛++;
+        \$lock.protect: \{ \@errors.push: \$message \}
+    \}
+
+    # Defensive stringification: a torn memo can produce failures
+    # whose payload is itself a type object, and this reporting path
+    # has to survive that to name the culprit.
+    sub describe(\$e --> Str) \{
+        (try \$e.Str) // \$e.^name
+    \}
+
+    sub check(Str \$what, \&probe) \{
+        my \$value = try probe();
+        my \$error = \$!;
+        if \$error \{
+            note-bad("\$what threw: " ~ describe(\$error).lines.head);
+        \}
+        elsif !\$value.defined \{
+            note-bad("\$what returned an undefined value");
+        \}
+    \}
+
+    my \@workers;
+    for ^$threads \{
+        \@workers.push: Thread.start(\{
+            await \$gate;
+            check 'nc-lib',    \{ nc-lib()    \};
+            check 'ffi-lib',   \{ ffi-lib()   \};
+            check 'core-lib',  \{ core-lib()  \};
+            check 'shim-lib',  \{ shim-lib()  \};
+            check 'libc-name', \{ libc-name() \};
+            # A real native call through the freshly resolved core
+            # library, and a free(NULL) through the freshly resolved
+            # libc — both no-ops, both proving the resolved value was
+            # usable rather than merely defined.
+            check 'notcurses_version', \{ notcurses_version() \};
+            check 'c-free(NULL)',      \{ c-free(Pointer); 'ok' \};
+        \});
+    \}
+
+    \$gate.keep;
+    .finish for \@workers;
+
+    if \$bad \{
+        note "bad=\$bad: " ~ \@errors.unique.join(' | ');
+        exit 1;
+    \}
+    exit 0;
+    CHILD
+
+for ^$launches -> $launch {
+    # Proc handling by hand: a *sunk* failing Proc throws when it is
+    # GC'd, outside any `try` meant to contain it. Assign it, drain
+    # both handles (a full pipe buffer would deadlock the child),
+    # then read .exitcode.
+    my $proc = run $*EXECUTABLE, "-I{$lib.absolute}", $child.absolute,
+                   :out, :err;
+    my Str $out = $proc.out.slurp(:close) // '';
+    my Str $err = $proc.err.slurp(:close) // '';
+
+    ok $proc.exitcode == 0,
+        "cold launch {$launch + 1}/$launches: $threads threads resolve"
+        ~ " every library on first touch"
+        or diag "exitcode {$proc.exitcode}\nout: $out\nerr: $err";
+}
+
+done-testing;

@@ -1,0 +1,430 @@
+use Test;
+use lib $*PROGRAM.parent.parent.add('lib').Str;
+use NativeCall;
+use Notcurses::Native::Types;
+use Notcurses::Native::Test::Headless;
+
+# The option structs own their strings. Every `const char*` field in the
+# ten string-bearing structs is a private CArray[uint8] the struct keeps
+# alive for exactly its own lifetime, and item arrays (selector items,
+# menu sections and their items) are C arrays the options struct owns,
+# strings and all. They used to go through set-cstruct-str, which wrote a
+# raw pointer and pushed the buffer onto a global array that was never
+# emptied — a leak per string per struct for the life of the process.
+#
+# This file pins, for every string field: the value reads back through
+# the accessor AND through the pointer at the field's C offset, and
+# keeps doing so across repeated forced collections with allocation
+# churn; setters replace and clear; bad input dies. Then the item
+# arrays' C layout and ownership, the deprecated writer, what notcurses
+# itself sees (real widgets, headless), and a bounded-RSS rebinding loop.
+
+my constant PTR = nativesizeof(Pointer);
+
+# Garbage, then a collection, six times over: anything only weakly held
+# would be reclaimed (and its memory reused) by the end.
+sub churn() {
+    for ^6 {
+        my @garbage = (^5_000).map({ "churn $_" x 4 });
+        my @buffers = (^100).map({ CArray[uint8].allocate(256) });
+        $*VM.request-garbage-collection;
+    }
+}
+
+# The C string whose pointer sits at byte $offset of $struct, or Str for
+# NULL — i.e. exactly what notcurses would read.
+sub c-string-at($struct, Int $offset --> Str) {
+    my $p = nativecast(CArray[Pointer], $struct)[$offset div PTR];
+    ($p.defined && +$p) ?? nativecast(Str, $p) !! Str
+}
+
+# Every string field: class, field (accessor; set-<field> is the setter),
+# its byte offset in the C struct.
+my @fields =
+    (NotcursesOptions,       'termtype',   0),
+    (NcplaneOptions,         'name',      24),
+    (NcselectorItem,         'option',     0),
+    (NcselectorItem,         'desc',       8),
+    (NcselectorOptions,      'title',      0),
+    (NcselectorOptions,      'secondary',  8),
+    (NcselectorOptions,      'footer',    16),
+    (NcmselectorItem,        'option',     0),
+    (NcmselectorItem,        'desc',       8),
+    (NcmultiselectorOptions, 'title',      0),
+    (NcmultiselectorOptions, 'secondary',  8),
+    (NcmultiselectorOptions, 'footer',    16),
+    (NcmenuItem,             'desc',       0),
+    (NcmenuSection,          'name',       0),
+    (NctabbedOptions,        'separator', 24),
+    (NcplotOptions,          'title',     32);
+
+plan @fields + 7;
+
+my Str $multibyte = "\x[3A9] plane \x[2713] \x[1F600]";
+my Str $long      = 'abcdefgh' x 512;
+
+for @fields -> ($class, Str $field, Int $offset) {
+    subtest "{$class.^shortname}.$field" => {
+        plan 17;
+        my Str $setter = "set-$field";
+
+        my $s = $class.new(|($field => 'status'));
+        is $s."$field"(), 'status', '.new(field => ...) reads back through the accessor';
+        is c-string-at($s, $offset), 'status', 'and C reads it at the field offset';
+        churn();
+        is $s."$field"(), 'status', 'the accessor still reads it after forced GC and churn';
+        is c-string-at($s, $offset), 'status', 'and so does C';
+
+        ok $s."$setter"($multibyte) === $s, "{$setter} answers the struct";
+        churn();
+        is $s."$field"(), $multibyte, 'a UTF-8 replacement reads back';
+        is c-string-at($s, $offset), $multibyte, 'and C sees the new bytes';
+
+        $s."$setter"($long);
+        churn();
+        is $s."$field"(), $long, 'a 4 KiB string reads back after GC';
+        is c-string-at($s, $offset), $long, 'and C sees all of it';
+
+        $s."$setter"('');
+        is $s."$field"(), '', 'the empty string is kept as the empty string';
+        ok nativecast(CArray[Pointer], $s)[$offset div PTR].defined,
+            'which is a real (non-NULL) pointer to a NUL';
+
+        $s."$setter"(Str);
+        nok $s."$field"().defined, "{$setter}(Str) clears the field";
+        nok nativecast(CArray[Pointer], $s)[$offset div PTR].defined,
+            'leaving NULL for C';
+
+        my $bare = $class.new;
+        nok $bare."$field"().defined, 'a struct made without the field answers Str';
+        nok nativecast(CArray[Pointer], $bare)[$offset div PTR].defined,
+            'and holds NULL';
+
+        throws-like { $class.new(|($field => "a\x[0]b")) }, Exception,
+            message => /"{$class.^shortname}.$field" .* 'NUL'/,
+            'an embedded NUL dies, naming the field';
+        is $class.new(|($field => 'x'))."$field"(), 'x',
+            'a struct constructed after all that is independent';
+    }
+}
+
+subtest 'selector items: a NULL-terminated array the options struct owns' => {
+    plan 13;
+    my $opts = NcselectorOptions.new(:title<Colour>, :items(
+        NcselectorItem.new(:option<red>,  :desc<warm>),
+        NcselectorItem.new(:option<blue>),                    # no desc
+        NcselectorItem.new(:option("gr\x[FC]n"), :desc("\x[1F333]")),
+    ));
+    churn();
+    my $slots = nativecast(CArray[Pointer], $opts.items);
+    my @read = (^8).map(-> $i { my $p = $slots[$i]; ($p.defined && +$p) ?? nativecast(Str, $p) !! 'NULL' });
+    is @read[0, 1].join(','), 'red,warm', 'item 0: option and desc';
+    is @read[2, 3].join(','), 'blue,NULL', 'item 1: a missing desc is NULL';
+    is @read[4, 5].join(','), "gr\x[FC]n,\x[1F333]", 'item 2: UTF-8 in both';
+    is @read[6, 7].join(','), 'NULL,NULL', 'then the all-NULL terminator';
+    is c-string-at($opts, 0), 'Colour', 'the title alongside';
+
+    my $address = $opts.items;
+    ok $address.defined && +$address, '.items answers the array address';
+    $opts.set-items(NcselectorItem.new(:option<only>));
+    ok +$opts.items != +$address, 'set-items with a single item builds a new array';
+    my $one = nativecast(CArray[Pointer], $opts.items);
+    is nativecast(Str, $one[0]) ~ ($one[2].defined ?? '+more' !! ''), 'only',
+        'holding that item and a terminator';
+
+    $opts.set-items(());
+    ok $opts.items.defined && !nativecast(CArray[Pointer], $opts.items)[0].defined,
+        'an empty list is an array holding only the terminator';
+
+    my $raw = CArray[Pointer].new(Pointer, Pointer);
+    $opts.set-items(nativecast(Pointer, $raw));
+    is +$opts.items, +nativecast(Pointer, $raw), 'a raw Pointer is used as given (caller-owned)';
+    $opts.set-items(Pointer);
+    nok $opts.items.defined, 'the Pointer type object means NULL';
+
+    throws-like { NcselectorOptions.new(:items(NcselectorItem.new(:option<a>), 42)) },
+        Exception, message => /'element 1'/, 'a non-item element dies, naming its index';
+    throws-like { NcselectorOptions.new(:items(NcselectorItem.new(:desc<orphan>),)) },
+        Exception, message => /'element 0 has no option'/,
+        'an item without an option dies (C would end the list there)';
+};
+
+subtest 'multiselector items keep their selected flags' => {
+    plan 6;
+    my $opts = NcmultiselectorOptions.new(:items(
+        NcmselectorItem.new(:option<a>, :desc<A>, :selected),
+        NcmselectorItem.new(:option<b>, :desc('')),
+        NcmselectorItem.new(:option<c>, :desc<C>, :selected),
+    ));
+    churn();
+    my Int $size = nativesizeof(NcmselectorItem);
+    is $size, 24, 'an ncmselector_item is 24 bytes';
+    my $bytes = nativecast(CArray[uint8], $opts.items);
+    is (^3).map({ $bytes[$_ * $size + 16] }).join(','), '1,0,1',
+        'each element carries its selected byte at offset 16';
+    my $slots = nativecast(CArray[Pointer], $opts.items);
+    is (0, 3, 6).map({ nativecast(Str, $slots[$_]) }).join(','), 'a,b,c',
+        'and its option';
+    nok $slots[9].defined, 'then the terminator';
+    throws-like { NcmultiselectorOptions.new(:items(NcmselectorItem.new(:option<a>),)) },
+        Exception, message => /'element 0 has no desc'/,
+        'an item without a desc dies (notcurses would dereference NULL)';
+    throws-like { NcmultiselectorOptions.new(:items(NcmselectorItem.new(:option<a>, :desc<A>),
+                                                    NcmselectorItem.new(:desc<B>))) },
+        Exception, message => /'element 1 has no option'/,
+        'an item without an option dies (C would end the list there)';
+};
+
+subtest 'menus: sections own their names, items and the items\' strings' => {
+    plan 13;
+    my $opts = NcmenuOptions.new(:flags(NCMENU_OPTION_HIDING), :sections(
+        NcmenuSection.new(:name<File>, :items(
+            NcmenuItem.new(:desc<Open>, :shortcut_id(0x6F), :shortcut_ctrl(1)),
+            NcmenuItem.new,                                   # separator
+            NcmenuItem.new(:desc<Quit>, :shortcut_id(0x71)),
+        )),
+        NcmenuSection.new(:name("\x[2753]"), :items(NcmenuItem.new(:desc<About>))),
+    ));
+    # Nothing but $opts refers to any section, item or string any more.
+    churn();
+    is $opts.sectioncount, 2, 'sectioncount follows the sections given';
+    is $opts.flags, NCMENU_OPTION_HIDING, 'other fields are untouched';
+    my Int $section-size = nativesizeof(NcmenuSection);
+    my Int $item-size    = nativesizeof(NcmenuItem);
+    my $sections = nativecast(CArray[Pointer], $opts.sections);
+    my $counts   = nativecast(CArray[int32], $opts.sections);
+    my Int $stride = $section-size div PTR;
+    is nativecast(Str, $sections[0]), 'File', 'section 0 name';
+    is nativecast(Str, $sections[$stride]), "\x[2753]", 'section 1 name';
+    is $counts[2] ~ ',' ~ $counts[$stride * 2 + 2], '3,1', 'itemcount at offset 8 of each section';
+    my $file-items = $sections[2];
+    my $file-slots = nativecast(CArray[Pointer], $file-items);
+    my Int $item-stride = $item-size div PTR;
+    is nativecast(Str, $file-slots[0]), 'Open', 'File item 0';
+    nok $file-slots[$item-stride].defined, 'File item 1 is a separator (NULL desc)';
+    is nativecast(Str, $file-slots[$item-stride * 2]), 'Quit', 'File item 2';
+    my $file-words = nativecast(CArray[uint32], $file-items);
+    is ($file-words[2], $file-words[$item-stride * 2 * 2 + 2]).join(','), '111,113',
+        'each item\'s shortcut id sits at offset 8, as the embedded ncinput\'s first field';
+    is nativecast(CArray[uint8], $file-items)[8 + 19], 1,
+        'and the shortcut\'s ctrl flag at 8 + 19';
+    is nativecast(Str, nativecast(CArray[Pointer], $sections[$stride + 2])[0]), 'About',
+        'section 1\'s items too';
+
+    throws-like { NcmenuSection.new(:items(NcmenuItem.new(:desc<a>),), :itemcount(2)) },
+        Exception, message => /'itemcount(2)' .* '1 items'/, 'a contradicting :itemcount dies';
+    throws-like { NcmenuOptions.new(:sections(NcmenuSection.new(:name<x>),), :sectioncount(3)) },
+        Exception, message => /'sectioncount(3)'/, 'a contradicting :sectioncount dies';
+};
+
+subtest 'raw Pointer arrays stay caller-owned, as before' => {
+    plan 4;
+    my $raw = CArray[Pointer].new(Pointer xx 20);
+    my $section = NcmenuSection.new(:name<Raw>, :items(nativecast(Pointer, $raw)), :itemcount(2));
+    is $section.itemcount, 2, 'itemcount is kept as given with a raw pointer';
+    is +$section.items, +nativecast(Pointer, $raw), '.items answers that pointer';
+    my $opts = NcmenuOptions.new(:sections(nativecast(Pointer, $raw)), :sectioncount(4));
+    is $opts.sectioncount, 4, 'sectioncount likewise';
+    is +$opts.sections, +nativecast(Pointer, $raw), '.sections answers that pointer';
+};
+
+subtest 'set-cstruct-str still works, and says it is deprecated' => {
+    plan 3;
+    my $run = run-headless-script(q:to/RAKU/);
+        use NativeCall;
+        use Notcurses::Native::Types;
+        use Notcurses::Native::Test::Headless;
+        my $opts = NcplaneOptions.new;
+        set-cstruct-str($opts, 3, 'legacy');
+        report 'written', nativecast(Str, nativecast(CArray[Pointer], $opts)[3]);
+        RAKU
+    is describe-exit($run), 'exit 0', 'a caller of the old writer still runs';
+    is $run<results><written>, 'legacy', 'and the pointer lands in the slot it names';
+    ok $run<err>.contains('set-cstruct-str') && $run<err>.lc.contains('deprecated'),
+        'with a deprecation notice pointing at the replacement';
+};
+
+subtest 'notcurses reads the owned strings: real widgets, headless' => {
+    plan 16;
+    my $run = run-headless-script(q:to/RAKU/);
+        use NativeCall;
+        use Notcurses::Native;
+        use Notcurses::Native::Types;
+        use Notcurses::Native::Plane;
+        use Notcurses::Native::Widgets;
+        use Notcurses::Native::Test::Headless;
+        sub churn() {
+            for ^6 {
+                my @garbage = (^5_000).map({ "churn $_" x 4 });
+                $*VM.request-garbage-collection;
+            }
+        }
+        my $nc  = headless-notcurses(:termtype<xterm>);
+        my $std = notcurses_stdplane($nc);
+        sub contents($p) {
+            my uint32 ($rows, $cols);
+            ncplane_dim_yx($p, $rows, $cols);
+            ncplane_contents($p, 0, 0, $rows, $cols)
+        }
+
+        # One options struct, reused: named, churned, renamed, churned.
+        my $popts = NcplaneOptions.new(:rows(2), :cols(8), :name<first>);
+        churn();
+        my $first = ncplane_create($std, $popts);
+        $popts.set-name("s\x[E9]cond");
+        churn();
+        my $second = ncplane_create($std, $popts);
+        report 'plane-first', ncplane_name($first);
+        report 'plane-second', ncplane_name($second);
+
+        my $sopts = NcselectorOptions.new(:title<Colour>, :secondary<pick>, :footer<done>,
+            :items(NcselectorItem.new(:option<red>, :desc<warm>),
+                   NcselectorItem.new(:option<blue>, :desc<cool>)));
+        churn();
+        my $sel = ncselector_create(ncplane_create($std, NcplaneOptions.new(:rows(12), :cols(40))), $sopts);
+        report 'sel-selected', ncselector_selected($sel);
+        report 'sel-drawn', contents(ncselector_plane($sel)).raku;
+
+        my $mopts = NcmultiselectorOptions.new(:title<Multi>, :items(
+            NcmselectorItem.new(:option<a>, :desc<A>, :selected),
+            NcmselectorItem.new(:option<b>, :desc<B>),
+            NcmselectorItem.new(:option<c>, :desc<C>, :selected)));
+        churn();
+        my $ms = ncmultiselector_create(ncplane_create($std, NcplaneOptions.new(:rows(12), :cols(40))), $mopts);
+        # notcurses's getter never writes flag 0 (its loop is
+        # `while(--count)`), so only 1 and 2 are read back through it;
+        # the drawn check boxes show all three.
+        my $flags = CArray[uint8].new(0xEE, 0xEE, 0xEE);
+        report 'ms-rc', ncmultiselector_selected($ms, nativecast(Pointer, $flags), 3);
+        report 'ms-flags', ($flags[1], $flags[2]).join(',');
+        report 'ms-drawn', contents(ncmultiselector_plane($ms)).raku;
+
+        my $menu-opts = NcmenuOptions.new(:sections(
+            NcmenuSection.new(:name<File>, :items(NcmenuItem.new(:desc<Open>), NcmenuItem.new,
+                                                   NcmenuItem.new(:desc<Quit>))),
+            NcmenuSection.new(:name<Help>, :items(NcmenuItem.new(:desc<About>)))));
+        churn();
+        my $menu = ncmenu_create(ncplane_create($std, NcplaneOptions.new(:rows(10), :cols(40))), $menu-opts);
+        report 'menu-bar', contents(ncmenu_plane($menu)).raku;
+        my $ni = Ncinput.new;
+        ncmenu_unroll($menu, 0);
+        report 'menu-first', ncmenu_selected($menu, $ni);
+        ncmenu_nextitem($menu);
+        report 'menu-next', ncmenu_selected($menu, $ni);
+        ncmenu_unroll($menu, 1);
+        report 'menu-help', ncmenu_selected($menu, $ni);
+
+        my $topts = NctabbedOptions.new(:separator(' || '));
+        churn();
+        my $nt = nctabbed_create(ncplane_create($std, NcplaneOptions.new(:rows(4), :cols(30))), $topts);
+        report 'tabbed-separator', nctabbed_separator($nt).raku;
+
+        my $plot-opts = NcplotOptions.new(:title<cpu>, :rangex(10));
+        churn();
+        my $plot = ncuplot_create(ncplane_create($std, NcplaneOptions.new(:rows(4), :cols(30))),
+            $plot-opts, 0, 100);
+        ncuplot_add_sample($plot, 1, 50);
+        report 'plot-drawn', contents(ncuplot_plane($plot)).raku;
+        report 'stop', notcurses_stop($nc);
+        RAKU
+    ok !$run<timed-out> && $run<exitcode> == 0 && $run<signal> == 0,
+        "the widget child exits cleanly ({describe-exit($run)})"
+        or diag $run<err>;
+    my %r = $run<results>;
+    is %r<plane-first>, 'first', 'ncplane_name: the name the plane was created with';
+    is %r<plane-second>, "s\x[E9]cond", 'and the renamed struct\'s name for the second plane';
+    is %r<sel-selected>, 'red', 'ncselector_selected: the first item from the owned array';
+    ok %r<sel-drawn>.contains('Colour') && %r<sel-drawn>.contains('pick')
+        && %r<sel-drawn>.contains('done'), 'the selector drew its title, secondary and footer';
+    ok %r<sel-drawn>.contains('red warm') && %r<sel-drawn>.contains('blue cool'),
+        'and both items with their descriptions';
+    is %r<ms-rc>, '0', 'ncmultiselector_selected accepts the item count';
+    is %r<ms-flags>, '0,1', 'and reports items 1 and 2 as the struct array had them';
+    ok %r<ms-drawn>.contains("\x[2612] a A") && %r<ms-drawn>.contains("\x[2610] b B")
+        && %r<ms-drawn>.contains("\x[2612] c C"), 'the drawn boxes show all three flags';
+    ok %r<menu-bar>.contains('File') && %r<menu-bar>.contains('Help'),
+        'the menu bar shows both section names';
+    is %r<menu-first>, 'Open', 'the unrolled section\'s first item';
+    is %r<menu-next>, 'Quit', 'the next item skips the separator';
+    is %r<menu-help>, 'About', 'the second section\'s item';
+    is %r<tabbed-separator>, ' || '.raku, 'nctabbed_separator: the owned separator';
+    ok %r<plot-drawn>.contains('cpu'), 'the plot drew its title';
+    is %r<stop>, '0', 'notcurses_stop succeeds';
+};
+
+subtest 'termtype reaches notcurses, and rebinding strings keeps RSS flat' => {
+    plan 5;
+    # notcurses exports a termtype option as TERM before anything else
+    # (on every platform, Windows included, where it then ignores it), so
+    # the native environment shows whether it read the owned string —
+    # even for a name no terminfo knows, which init then refuses on POSIX.
+    my $bogus = run-headless-script(q:to/RAKU/);
+        use Notcurses::Native;
+        use Notcurses::Native::Test::Headless;
+        my $nc = try headless-notcurses(:termtype<nn-no-such-terminal>);
+        report 'term', native-getenv('TERM');
+        # Windows ignores the termtype and starts; stop what started.
+        notcurses_stop($nc) if $nc;
+        RAKU
+    is $bogus<results><term>, 'nn-no-such-terminal',
+        'notcurses exported the owned termtype string as TERM';
+
+    my $run = run-headless-script(q:to/RAKU/);
+        use NativeCall;
+        use Notcurses::Native;
+        use Notcurses::Native::Types;
+        use Notcurses::Native::Test::Headless;
+        my $nc = headless-notcurses(:termtype<vt100>);
+        report 'vt100', native-getenv('TERM');
+        # Structs and items are made once: MoarVM never frees a CStruct
+        # body, so .new per iteration would measure that, not us.
+        my $plane-opts = NcplaneOptions.new;
+        my $sel-opts   = NcselectorOptions.new;
+        my @items = (^3).map({ NcselectorItem.new(:option("option $_"), :desc('d' x 1024)) });
+        my Str $name = 'n' x 4096;
+        sub step(Int $i) {
+            $plane-opts.set-name($name ~ $i);
+            $sel-opts.set-title($name ~ $i);
+            $sel-opts.set-items(@items);
+        }
+        # A single request-garbage-collection is not enough to settle RSS
+        # under -j-parallel contention: MoarVM's generational collector
+        # needs more than one cycle to promote-then-reclaim short-lived
+        # garbage, and a loaded scheduler can defer the collection thread.
+        # Churn between repeated requests gives it real work to do each
+        # time rather than a no-op call.
+        sub full-gc() {
+            for ^5 {
+                my @churn = (^2_000).map({ "gc-churn $_" x 2 });
+                $*VM.request-garbage-collection;
+            }
+        }
+        step($_) for ^200;
+        full-gc();
+        my $before = current-rss-kib();
+        for 1..20_000 {
+            step($_);
+            $*VM.request-garbage-collection if $_ %% 250;
+        }
+        full-gc();
+        report 'growth-kib', current-rss-kib() - $before;
+        report 'last-name-ok', $plane-opts.name eq $name ~ 20_000;
+        report 'stop', notcurses_stop($nc);
+        RAKU
+    ok !$run<timed-out> && $run<exitcode> == 0 && $run<signal> == 0,
+        "the rebinding child exits cleanly ({describe-exit($run)})"
+        or diag $run<err>;
+    is $run<results><vt100>, 'vt100', 'a termtype with an entry starts, exported likewise';
+    # 20,000 iterations each bind ~11 KiB of strings (two 4 KiB strings,
+    # three item strings of 1 KiB): ~215 MiB if nothing were ever freed.
+    # The bound (100 MiB) sits under half of that, and — measured over
+    # many -j 6 runs — comfortably above the ~17-23 MiB of GC-lag noise
+    # parallel contention adds even with the multi-cycle full-gc() above;
+    # the iteration count was doubled from 10,000 specifically so that
+    # bound has that headroom on both sides (noise does not scale with
+    # iteration count the way the retained-if-leaking total does).
+    ok ($run<results><growth-kib> // Inf) < 100 * 1024,
+        "20,000 rebinds of ~11 KiB each leave RSS flat "
+          ~ "(grew {$run<results><growth-kib> // '?'} KiB; retaining them would grow ~215 MiB)";
+    is $run<results><last-name-ok>, 'True', 'and the last name bound is the one held';
+};

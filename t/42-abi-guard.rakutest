@@ -1,0 +1,298 @@
+use Test;
+use lib $*PROGRAM.parent.parent.add('lib').Str;
+use NativeCall;
+use Notcurses::Native;
+
+# The permanent ABI guard. Every struct this distribution mirrors as a
+# Raku CStruct, and every constant it mirrors from the notcurses headers,
+# is written out by hand — and until 0.6.7 nothing checked any of it:
+# NCSTYLE_STRUCK was a bit notcurses does not define, NCOPTION_CLI_MODE
+# the wrong mask, and Timespec the wrong layout on Windows.
+#
+# The ground truth is the shim's ABI table (src/notcurses_native_shim.c):
+# sizes, field offsets and widths, and constant values, computed by the
+# compiler from the pinned headers. This file discovers every CStruct
+# class and every exported integer constant in every module the
+# distribution provides, measures each struct's layout from the Raku side
+# (writing each field into a zeroed struct and finding its bytes), and
+# fails on:
+#
+#   * any size, offset, width or value that differs from C;
+#   * any Raku struct, field or constant the table does not cover — a
+#     new binding cannot land unguarded;
+#   * any table entry no binding accounts for (a stale table).
+#
+# The table comes from the live shim when the installed one carries it,
+# and otherwise from t/fixtures/abi-table.tsv, which scripts/abi/
+# regenerate-fixture.raku prints from the same source. Either way the
+# comparison runs; this file never skips. With a live shim it also checks
+# that the committed fixture still matches it.
+
+my IO::Path $root = $*PROGRAM.parent.parent;
+
+# ---------------------------------------------------------------------
+# The C side
+# ---------------------------------------------------------------------
+
+sub notcurses_native_abi_count(--> size_t) is native(&shim-lib) { * }
+sub notcurses_native_abi_key(size_t --> Str) is native(&shim-lib) { * }
+sub notcurses_native_abi_value(size_t --> int64) is native(&shim-lib) { * }
+
+# The live shim's table, or the Map type object when there is no shim or
+# it predates the table (a prebuilt pack built before 0.6.7).
+sub shim-table(--> Map) {
+    return Map unless ensure-shim-loadable();
+    my $count = try notcurses_native_abi_count();
+    return Map without $count;
+    my %table;
+    for ^$count -> Int $i {
+        my Str $key = notcurses_native_abi_key($i);
+        die "shim ABI table: entry $i has no key" without $key;
+        die "shim ABI table: duplicate key $key" if %table{$key}:exists;
+        %table{$key} = notcurses_native_abi_value($i);
+    }
+    die "shim ABI table: notcurses_native_abi_key($count) is not NULL"
+        with notcurses_native_abi_key($count);
+    %table.Map
+}
+
+# The committed fixture: its entries, and the notcurses commit it names.
+sub fixture-table(--> List) {
+    my IO::Path $file = $root.add('t/fixtures/abi-table.tsv');
+    die "t/fixtures/abi-table.tsv is missing; run scripts/abi/regenerate-fixture.raku"
+        unless $file.f;
+    my %table;
+    my Str $sha;
+    for $file.lines -> Str $line {
+        if $line.starts-with('#') {
+            $sha = ~$0 if $line ~~ / 'notcurses-sha:' \s* (<[0..9a..f]>+) /;
+            next;
+        }
+        next unless $line.chars;
+        my ($key, $value) = $line.split("\t", 2);
+        die "t/fixtures/abi-table.tsv: malformed line {$line.raku}"
+            unless $value.defined && $value ~~ /^ '-'? \d+ $/;
+        die "t/fixtures/abi-table.tsv: duplicate key $key" if %table{$key}:exists;
+        %table{$key} = $value.Int;
+    }
+    (%table.Map, $sha)
+}
+
+sub pinned-sha(--> Str) {
+    $root.add('NOTCURSES_FORK').lines.first(*.starts-with('sha='))
+        .substr(4).trim
+}
+
+# ---------------------------------------------------------------------
+# The Raku side
+# ---------------------------------------------------------------------
+
+# Every module the distribution provides, bar test support.
+my @modules = Rakudo::Internals::JSON.from-json($root.add('META6.json').slurp)<provides>
+    .keys.grep(!*.contains('::Test::')).sort;
+
+my %structs;    # C struct name => Raku class
+my %constants;  # constant name => value
+for @modules -> Str $module {
+    require ::($module);
+    my $export = ::($module).WHO<EXPORT>;
+    next unless $export.WHO<ALL>:exists;
+    for $export.WHO<ALL>.WHO.kv -> Str $name, Mu $value {
+        next if $name ~~ /^ <[$@%&]> /;          # variables and subs
+        if !$value.defined && $value.REPR eq 'CStruct' {
+            %structs{c-struct-name($value.^shortname)} = $value;
+        }
+        elsif $value.defined && $value ~~ Int {
+            # Enum members and `constant`s alike. (Non-integer exports —
+            # the platform strings $os and $ext — are not from C.)
+            %constants{$name} = $value.Int;
+        }
+    }
+}
+
+# NcplaneOptions -> ncplane_options: the rule every mirrored struct's
+# name follows. A class that does not follow it shows up below as a
+# struct the table lacks.
+sub c-struct-name(Str $raku --> Str) {
+    $raku.subst(/ <?after <[a..z0..9]>> (<[A..Z]>) /, { '_' ~ $0 }, :g).lc
+}
+
+# The flattened inline C arrays: utf8_3 is utf8[3], eff_text_1 is
+# eff_text[1]; and shortcut_<field> is <field> of the ncinput embedded
+# as `shortcut` in ncmenu_item and ncmenu_section.
+my constant FLATTENED-ARRAYS = Map.new('utf8', 5, 'eff_text', 4);
+sub c-member(Str $raku --> Str) {
+    return 'shortcut.' ~ c-member($raku.substr(9)) if $raku.starts-with('shortcut_');
+    if $raku ~~ / ^ (\w+?) '_' (\d+) $ / && (FLATTENED-ARRAYS{~$0}:exists)
+            && +$1 < FLATTENED-ARRAYS{~$0} {
+        return "$0\[$1]";
+    }
+    $raku
+}
+
+# The bytes $value occupies as a $type in native memory.
+sub native-image(Mu $type, Mu $value --> Blob) {
+    my Int $width = nativesizeof($type);
+    my $cell = CArray[$type ~~ Pointer | CArray ?? Pointer !! $type].new;
+    $cell[0] = $type ~~ CArray ?? nativecast(Pointer, $value) !! $value;
+    my $bytes = nativecast(CArray[uint8], $cell);
+    Blob.new((^$width).map({ $bytes[$_] }))
+}
+
+# Offset and width of attribute $attr of CStruct $class, measured: write
+# a distinctive value into that one field of a zeroed struct, then find
+# its bytes. Answers (offset, width), or dies explaining why it cannot.
+sub measure(Mu $class, Attribute $attr --> List) {
+    my Mu $type = $attr.type;
+    my Int $width = nativesizeof($type);
+    my Mu $value;
+    my Blob $image;
+    if $type ~~ CArray {
+        $value = $type.allocate(1);
+        $image = native-image($type, $value);
+    }
+    elsif $type ~~ Pointer {
+        $value = $type.new(0x0123456789ABCDEF +& (2 ** (8 * $width) - 1));
+        $image = native-image($type, $value);
+    }
+    elsif $type.^name eq 'bool' {
+        $value = 1;
+        $image = Blob.new(1);
+    }
+    elsif $type ~~ Int {
+        # All ones: -1 for a signed type, the maximum for an unsigned one.
+        $value = $type.^unsigned ?? 2 ** (8 * $width) - 1 !! -1;
+        $image = native-image($type, $value);
+    }
+    elsif $type ~~ Num {
+        $value = $width == 4 ?? 1.0000001e0 !! 1.0000000000000002e0;
+        $image = native-image($type, $value);
+    }
+    else {
+        die "cannot measure {$class.^shortname}.{$attr.name}: unsupported type {$type.^name}";
+    }
+    my $struct = $class.CREATE;
+    $attr.set_value($struct, $value<>);
+    my $bytes = nativecast(CArray[uint8], $struct);
+    my Int $size = nativesizeof($class);
+    my Blob $whole = Blob.new((^$size).map({ $bytes[$_] }));
+    my @at = (0 .. $size - $image.bytes).grep(-> $o {
+        $whole.subbuf($o, $image.bytes) eq $image
+    });
+    die "{$class.^shortname}.{$attr.name}: its bytes appear {+@at} times in the struct"
+        unless @at == 1;
+    my Int $nonzero = $whole.grep(* != 0).elems;
+    die "{$class.^shortname}.{$attr.name}: writing it touched bytes outside its own"
+        unless $nonzero == $image.grep(* != 0).elems;
+    (@at[0], $width)
+}
+
+# ---------------------------------------------------------------------
+# The checks
+# ---------------------------------------------------------------------
+
+my ($fixture, $fixture-sha) = fixture-table();
+my Map $shim = shim-table();
+my Str $source = $shim.defined ?? 'the live shim' !! 't/fixtures/abi-table.tsv';
+my Map $table = $shim // $fixture;
+my Int $long = nativesizeof(long);
+
+# The value C expects for a key, from the authoritative table. A C `long`
+# member's width comes from this platform when the table is the fixture,
+# which may have been generated on the other data model.
+sub expected(Str $key) {
+    return $long if !$shim.defined && $key.starts-with('width-long:');
+    $table{$key}
+}
+
+# Every key the Raku side accounts for, to find stale entries with.
+my SetHash $covered .= new;
+$covered.set('platform:sizeof-long');
+
+# Two's-complement 64-bit reading of a Raku integer, as the table holds it.
+sub as-int64(Int $v --> Int) { ($v + 2 ** 63) % 2 ** 64 - 2 ** 63 }
+
+plan 6;
+
+diag "ABI table source: $source ({$table.elems} entries)";
+
+subtest 'discovery finds the bindings' => {
+    plan 3;
+    ok %structs.elems >= 25, "found {%structs.elems} CStruct classes";
+    ok %constants.elems >= 270, "found {%constants.elems} exported integer constants";
+    ok @modules.elems >= 10, "across {@modules.elems} modules";
+};
+
+subtest 'the fixture is current' => {
+    plan 3;
+    is $fixture-sha, pinned-sha(),
+        'the fixture was generated from the notcurses commit NOTCURSES_FORK pins'
+        or diag 'regenerate it: raku scripts/abi/regenerate-fixture.raku';
+    my $model = $fixture<platform:sizeof-long>;
+    my @long-widths = $fixture.keys.grep(*.starts-with('width-long:')).map({ $fixture{$_} });
+    ok $model.defined && @long-widths && so(@long-widths.all == $model),
+        "its C long widths agree with the data model it records (sizeof(long) = {$model // '?'})";
+    if $shim.defined {
+        my @differ = ($shim.keys ∪ $fixture.keys).keys.sort.grep(-> $k {
+            !($k eq 'platform:sizeof-long' || $k.starts-with('width-long:'))
+                && ($shim{$k} // 'absent') ne ($fixture{$k} // 'absent')
+        });
+        is @differ.join(', '), '', 'the live shim\'s table matches the fixture entry for entry'
+            or diag "stale fixture; run raku scripts/abi/regenerate-fixture.raku\n"
+                  ~ @differ.map({ "  $_: shim {$shim{$_} // 'absent'}, fixture {$fixture{$_} // 'absent'}" }).join("\n");
+    }
+    else {
+        pass 'no installed shim carries the table (a prebuilt pack that predates it), '
+           ~ 'so the fixture is the table: checked against the pinned commit above';
+    }
+};
+
+subtest 'every CStruct class has C\'s layout' => {
+    plan %structs.elems;
+    for %structs.sort(*.key) -> (:key($c), :value($class)) {
+        subtest "{$class.^shortname} is struct $c" => {
+            my @attrs = $class.^attributes;
+            plan 1 + 2 * @attrs;
+            $covered.set("size:$c");
+            diag "no size:$c entry in $source" without expected("size:$c");
+            is nativesizeof($class), expected("size:$c"), "sizeof($c)";
+            for @attrs -> Attribute $attr {
+                my Str $member = c-member($attr.name.substr(2));
+                my Str $width-key = ($table{"width-long:$c.$member"}:exists)
+                    ?? "width-long:$c.$member" !! "width:$c.$member";
+                $covered.set("offset:$c.$member");
+                $covered.set($width-key);
+                my ($offset, $width) = measure($class, $attr);
+                is $offset, expected("offset:$c.$member"), "offsetof($c, $member)";
+                is $width, expected($width-key), "sizeof $c.$member";
+            }
+        }
+    }
+};
+
+subtest 'every exported constant has C\'s value' => {
+    plan %constants.elems;
+    for %constants.sort(*.key) -> (:key($name), :value($value)) {
+        $covered.set("const:$name");
+        is as-int64($value), expected("const:$name"), $name;
+    }
+};
+
+subtest 'the table has no entry the bindings do not account for' => {
+    plan 1;
+    my @stale = $table.keys.grep({ !$covered{$_} }).sort;
+    is @stale.join(', '), '', "every entry in $source maps to a Raku struct, field or constant";
+};
+
+subtest 'the probe reads what it should' => {
+    plan 4;
+    # The measuring itself, against layouts known independently of the
+    # table, so a broken measurement cannot pass by agreeing with itself.
+    use Notcurses::Native::Types;
+    is measure(Ncinput, Ncinput.^attributes.first(*.name eq '$!eff_text_3')).join(','), '48,4',
+        'Ncinput.eff_text_3 is the last uint32 of a 52-byte struct';
+    is measure(NcplaneOptions, NcplaneOptions.^attributes.first(*.name eq '$!name')).join(','),
+        "24,{nativesizeof(Pointer)}", 'NcplaneOptions.name is the pointer after four ints and a pointer';
+    is c-member('shortcut_utf8_4'), 'shortcut.utf8[4]', 'flattened members map to C designators';
+    is c-struct-name('NcmultiselectorOptions'), 'ncmultiselector_options', 'and class names to C struct names';
+};

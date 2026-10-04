@@ -1,0 +1,72 @@
+use Test;
+use lib $*PROGRAM.parent.parent.add('lib').Str;
+use NativeCall;
+use Notcurses::Native::Types;
+
+# Timespec must have the layout of C's `struct timespec` on every
+# supported target: { time_t tv_sec; long tv_nsec; } is 16 bytes with
+# tv_nsec at offset 8 on LP64 (macOS, Linux) AND on LLP64 (Windows,
+# where time_t is 64-bit but long is 32-bit and alignment pads tv_nsec
+# to offset 8). Declared as two `long`s it was 8 bytes with tv_nsec at
+# offset 4 on Windows, so every timeout handed to notcurses_get,
+# ncdirect_get or the fade/stream calls was misread there — while the
+# LP64 platforms, where `long` is 64-bit, could never notice.
+#
+# Offsets are measured, not assumed: set one field on a zeroed struct
+# and find the bytes that changed. No library, no terminal.
+
+sub raw-bytes(Timespec:D $t --> List) {
+    my $view = nativecast(CArray[uint8], $t);
+    (^nativesizeof(Timespec)).map({ $view[$_] }).List
+}
+
+# Little-endian reading of $n bytes at $offset (every supported target
+# is little-endian).
+sub le-uint(@bytes, Int $offset, Int $n --> Int) {
+    [+] (^$n).map({ @bytes[$offset + $_] +< (8 * $_) })
+}
+
+sub offset-of(Str $attr --> Int) {
+    my $t = Timespec.CREATE;
+    my $a = Timespec.^attributes.first(*.name eq "\$!$attr");
+    $a.set_value($t, 0x5A);
+    raw-bytes($t).first(* != 0, :k) // -1
+}
+
+plan 7;
+
+is nativesizeof(Timespec), 16, 'Timespec is 16 bytes, like struct timespec';
+
+is offset-of('tv_sec'), 0, 'tv_sec starts at byte 0';
+is offset-of('tv_nsec'), 8, 'tv_nsec starts at byte 8';
+
+subtest 'tv_sec is a full 64-bit field' => {
+    plan 2;
+    my $t = Timespec.new(:tv_sec(0x0102_0304_0506_0708), :tv_nsec(0));
+    my @bytes = raw-bytes($t);
+    is-deeply @bytes[^8].List, (0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01),
+        'all eight bytes of tv_sec land at offsets 0..7';
+    is $t.tv_sec, 0x0102_0304_0506_0708, 'and read back unchanged';
+};
+
+for (1, 500_000_000), (0, 999_999_999) -> ($sec, $nsec) {
+    subtest "round-trip \{$sec, $nsec\}" => {
+        plan 4;
+        my $t = Timespec.new(:tv_sec($sec), :tv_nsec($nsec));
+        is $t.tv_sec,  $sec,  'tv_sec reads back';
+        is $t.tv_nsec, $nsec, 'tv_nsec reads back';
+        my @bytes = raw-bytes($t);
+        is le-uint(@bytes, 0, 8), $sec, 'tv_sec is in bytes 0..7';
+        is le-uint(@bytes, 8, 4), $nsec, 'tv_nsec is in bytes 8..11';
+    };
+}
+
+subtest 'a tv_sec beyond 32 bits survives (a 32-bit field would truncate)' => {
+    plan 2;
+    my $sec = 2**33 + 5;
+    my $t = Timespec.new(:tv_sec($sec), :tv_nsec(1));
+    is $t.tv_sec, $sec, 'tv_sec keeps its high bits';
+    is $t.tv_nsec, 1, 'tv_nsec is untouched by them';
+};
+
+done-testing;

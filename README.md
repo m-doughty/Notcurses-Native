@@ -36,7 +36,7 @@ Notcurses::Native provides complete 1:1 NativeCall bindings for [notcurses](http
 
 This module vendors notcurses and builds it from source, so no system installation of notcurses is required. FFmpeg is used for multimedia support (image/video loading).
 
-**606 functions** are bound across 9 modules, covering 100% of the bindable notcurses API. The only unbound functions are 4 `vprintf` variants that take `va_list`, which cannot be bridged through any FFI.
+**606 functions** are bound across 9 modules, covering 100% of the bindable notcurses API. The only unbound functions are 4 `vprintf` variants that take `va_list`, which cannot be bridged through any FFI. The five printf-style functions (`ncplane_printf`, `ncplane_printf_yx`, `ncplane_printf_aligned`, `ncplane_printf_stained`, `ncdirect_printf_aligned`) keep their C names and arguments but are Raku subs: NativeCall cannot call a C variadic function safely, so they format with Raku's `sprintf` and write through notcurses's fixed-arity calls. C formats work unchanged — see `ncplane_printf`.
 
 MODULES
 =======
@@ -63,7 +63,7 @@ Notcurses::Native::Types
 
 All CStruct definitions, enums, constants, and opaque handle types.
 
-**CStruct types:** NotcursesOptions, NcplaneOptions, Nccell, Ncinput, Ncstats, Nccapabilities, Ncvgeom, NcvisualOptions, Timespec, and all widget options structs (NcselectorOptions, NcmenuOptions, NctabbedOptions, NcplotOptions, NcprogbarOptions, NcreaderOptions, etc.)
+**CStruct types:** NotcursesOptions, NcplaneOptions, Nccell, Ncinput, Ncstats, Nccapabilities, Ncvgeom, NcvisualOptions, Timespec, and all widget options structs (NcselectorOptions, NcmenuOptions, NctabbedOptions, NcplotOptions, NcprogbarOptions, NcreaderOptions, etc.). Their string fields and item arrays are owned by the struct — see MEMORY OWNERSHIP. Every struct's layout and every constant's value is checked against the pinned notcurses headers by the test suite (t/42-abi-guard).
 
 **Enums:** NcLogLevel, NcAlign, NcBlitter, NcScale, NcInputType, NcPixelImpl.
 
@@ -72,7 +72,7 @@ All CStruct definitions, enums, constants, and opaque handle types.
 Notcurses::Native::Plane
 ------------------------
 
-133 plane functions: create, destroy, write text, read back, cursor, colors, styles, channels, box drawing, lines, gradients, merge, resize, reparent, z-ordering, printf (variadic).
+133 plane functions: create, destroy, write text, read back, cursor, colors, styles, channels, box drawing, lines, gradients, merge, resize, reparent, z-ordering, and printf (formatted in Raku, C formats accepted).
 
 ```raku
 use Notcurses::Native::Plane;
@@ -233,6 +233,113 @@ if nckey_mouse_p($ni.id) {
 notcurses_mice_disable($nc);
 ```
 
+MEMORY OWNERSHIP
+================
+
+notcurses hands memory across the boundary in three different ways, and each binding follows the one its C function uses. Where C gives the caller something to free, this module offers a wrapper that copies the data into Raku-owned storage and frees the original, so ordinary code never calls `free` at all.
+
+Library-owned (borrowed): never free
+------------------------------------
+
+Static strings (`notcurses_version`, `notcurses_str_blitter`) and pointers into a widget's own storage (`ncselector_selected`, `ncmenu_selected`, `nccell_extended_gcluster`) are bound `--> Str`: Raku copies the text and the original stays with notcurses.
+
+`ncpile_render_to_buffer` also lends rather than gives, despite what notcurses.h says: the frame lives in notcurses's own output buffer, which it reuses on the next render and frees in `notcurses_stop`. The frame is exactly `buflen` bytes with **no NUL terminator**. Use the wrappers, which copy exactly the reported bytes:
+
+```raku
+use Notcurses::Native::Context;
+
+my $std = notcurses_stdplane($nc);
+ncplane_putstr_yx($std, 0, 0, 'hello');
+
+# Byte-exact: diff it, hash it, or replay it to a terminal.
+my buf8 $frame = ncpile-render-to-blob($std);
+die 'render failed' without $frame;
+$*OUT.write($frame);
+
+# The same frame decoded as UTF-8 (strict: invalid UTF-8 dies).
+my Str $text = ncpile-render-to-string($std);
+```
+
+Both answer their type object (`buf8` / `Str`) when rendering fails, and an empty frame when there is nothing to draw. The copy outlives later frames and `notcurses_stop`.
+
+Caller-owned: the wrapper frees for you
+---------------------------------------
+
+These C functions allocate for the caller. Each public name below copies the result into Raku-owned storage and frees the C allocation before returning:
+
+  * `ncplane_name($plane)` — the plane's name as a `Str`: `''` for a plane created without one, the `Str` type object once cleared.
+
+  * `ncplane-as-rgba($plane, $blit, $y, $x, $leny, $lenx, $pxy, $pxx)` — the region rasterised to a `buf32` of `$pxy × $pxx` pixels, red in the low byte; the `buf32` type object when notcurses refuses.
+
+  * `notcurses-stats-snapshot($nc, :$into)` — the current statistics as a Raku-owned `Ncstats`. Pass `:into` to reuse one struct per frame.
+
+  * `ncselector-destroy-selected($selector)` — destroys the selector and answers the option selected at that moment (`Str` type object for a selector with no items).
+
+  * `ncreader-destroy-contents($reader)` — destroys the reader and answers its text.
+
+  * `ncplane_at_yx`, `ncplane_at_cursor`, `ncplane_contents`, `ncreader_contents`, `nccell_strdup`, `notcurses_at_yx` and the other string returns — already wrapped the same way.
+
+```raku
+use Notcurses::Native::Plane;
+use Notcurses::Native::Context;
+use Notcurses::Native::Widgets;
+
+my ($h, $w);
+with ncplane-as-rgba($plane, NCBLIT_1x1, 0, 0, 0, 0, $h, $w) -> $px {
+    say "{$h}x$w pixels; top-left is {$px[0].fmt('%08X')}";
+}
+
+my $stats = Ncstats.new;
+loop {
+    render-frame();
+    notcurses-stats-snapshot($nc, :into($stats));   # no allocation per frame
+    last if $stats.renders > 1000;
+}
+
+my Str $choice = ncselector-destroy-selected($selector);
+```
+
+Strings and arrays you hand to notcurses
+----------------------------------------
+
+The option structs own the C strings in them. Pass a string to `.new`, or replace it later with the struct's `set-*` method; either stores a NUL-terminated UTF-8 copy that lives exactly as long as the struct, and the accessor of the same name reads it back. notcurses copies what it keeps during the call that receives the struct, so nothing else needs to stay alive — and one struct can be reused for any number of calls, which matters because MoarVM never frees a CStruct's own memory.
+
+```raku
+my $opts = NcplaneOptions.new(:rows(1), :cols(20), :name('status'));
+my $status = ncplane_create($std, $opts);
+$opts.set-name('clock');                 # the old copy is collectable
+my $clock  = ncplane_create($std, $opts);
+```
+
+Item arrays work the same way: give `NcselectorOptions` or `NcmultiselectorOptions` a list of items, `NcmenuSection` a list of `NcmenuItem`s, or `NcmenuOptions` a list of sections, and the struct builds the C array and owns it, strings and nested arrays included (counts such as `itemcount` follow). A raw `Pointer` is still accepted for an array you manage yourself.
+
+```raku
+my $menu = ncmenu_create($std, NcmenuOptions.new(:sections(
+    NcmenuSection.new(:name<File>, :items(
+        NcmenuItem.new(:desc<Open>),
+        NcmenuItem.new,                  # a separator
+        NcmenuItem.new(:desc<Quit>),
+    )),
+)));
+```
+
+`set-cstruct-str`, which wrote a raw pointer into a struct and kept every string it was ever given alive forever, is deprecated.
+
+Raw bindings you free yourself
+------------------------------
+
+The raw forms stay exported for code that manages lifetimes itself: `ncplane_as_rgba` answers a `Pointer` to free with `c-free`; `notcurses_stats_alloc` answers an `Ncstats` to release with `notcurses-stats-free` (only ever structs from that allocator — never one made with `Ncstats.new`); `ncselector_destroy` and `ncreader_destroy` accept only NULL (`Pointer`) for their out-parameter. `borrowed-buf-from-pointer($ptr, $bytes)` and `strdup-copy-and-free` (from `Notcurses::Native::Str`) are the building blocks the wrappers use.
+
+When you free a pointer yourself, pass the pointer, not a variable that might have held the type object earlier: a NativeCall call site that first receives an undefined value through a variable or an attribute (a Scalar container) passes NULL — or 0, for a boxed `Int` — on every later call through that site, so a `free($maybe-null)` in a loop silently stops freeing once the first NULL goes through it. The same goes for any raw binding handed a possibly-undefined `Pointer`, handle, `Str` or `Int` from a variable. Guard the call, or decontainerise:
+
+```raku
+my Pointer $pixels = ncplane_as_rgba($plane, NCBLIT_1x1, 0, 0, 0, 0, $h, $w);
+if $pixels {
+    # ... read the pixels ...
+    c-free($pixels<>);
+}
+```
+
 BUILD REQUIREMENTS
 ==================
 
@@ -315,9 +422,13 @@ On supported platforms this downloads a prebuilt self-contained archive from Git
 
 If you're on an unsupported platform, the build falls back to compiling notcurses from source via CMake — see **BUILD REQUIREMENTS** above for the dev packages that needs.
 
-Installation runs `t/` tests only — pure-Raku channel math and input struct tests plus one TTY-free full-library dependency-load probe. The full terminal-dependent test suite lives in `xt/` and can be run manually:
+Installation runs `t/` tests only. None of them needs a terminal: besides the pure-Raku checks (channel math, struct layouts, constants, loader and packaging contracts), the memory-ownership tests start notcurses in child processes with no terminal attached and assert on how those children exit. The full terminal-dependent test suite lives in `xt/` and can be run manually:
 
-    prove -e 'raku -I lib -I t/lib' xt/*.rakutest
+    prove -e 'raku -I lib' xt/*.rakutest
+
+`xxt/` holds checks that need tooling outside Raku. Today that is an AddressSanitizer driver for the perf shim's cell copy, which needs a C compiler with ASan (clang, or gcc with libasan; MSYS2 CLANG64 clang on Windows) and the pinned notcurses headers, and fails rather than skips without them:
+
+    prove6 -I lib xxt/
 
 `prove` (Perl 5) is recommended for `xt/` tests because [prove6 has a bug](https://github.com/Raku/tap-harness6/issues/64) where terminal escape sequences from C libraries corrupt its TAP parser.
 
@@ -389,7 +500,7 @@ Environment knobs
 
   * `NOTCURSES_NATIVE_BINARY_URL=I<url>` — override the GitHub Release base URL (point at a mirror).
 
-  * `NOTCURSES_NATIVE_CACHE_DIR=I<path>` — override the prebuilt-download cache directory.
+  * `NOTCURSES_NATIVE_CACHE_DIR=I<path>` — override the cache for prebuilt downloads, fetched notcurses sources and compiled shims (default `$XDG_CACHE_HOME`, else `~/.cache`; `%LOCALAPPDATA%` on Windows).
 
   * `NOTCURSES_NATIVE_DATA_DIR=I<path>` — override the staged-libs directory (defaults to XDG_DATA_HOME).
 

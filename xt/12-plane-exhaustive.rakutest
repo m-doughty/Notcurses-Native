@@ -1,7 +1,6 @@
 use Test;
 use lib 'lib';
-use lib 't/lib';
-use TestHelper;
+use Notcurses::Native::Test::Helper;
 use NativeCall;
 use Notcurses::Native;
 use Notcurses::Native::Types;
@@ -650,44 +649,41 @@ subtest 'Plane greyscale' => {
 };
 
 # === 21. Printf variants ===
+#
+# The printf family formats in Raku and writes through the fixed-arity
+# putstr calls (notcurses's own printf functions are variadic, which
+# NativeCall cannot call safely), so every variant works with no
+# arguments after the format and with 64-bit integers.
 
 subtest 'Printf variants' => {
-    # Variadic NativeCall can be fragile; test each printf variant individually
-    plan 3;
+    plan 10;
     my $child = ncplane_create($std, NcplaneOptions.new(:rows(10), :cols(40)));
 
-    # ncplane_printf with no variadic args (just format string)
-    # Note: variadic NativeCall with zero extra args can fail on some Rakudo versions
     ncplane_cursor_move_yx($child, 0, 0);
-    my $ok1 = False;
-    try {
-        my $written = ncplane_printf($child, "hello");
-        $ok1 = $written.defined && $written == 5;
-        CATCH { default { } }
-    }
-    # If printf fails with zero variadic args, use putstr as evidence the binding loads
-    unless $ok1 {
-        ncplane_cursor_move_yx($child, 0, 0);
-        my $w = ncplane_putstr($child, "hello");
-        $ok1 = ($w == 5);
-    }
-    ok $ok1, 'ncplane_printf (or putstr fallback) wrote 5 columns';
+    is ncplane_printf($child, "hello"), 5,
+        'ncplane_printf with no arguments after the format wrote 5 columns';
 
-    # ncplane_printf_yx with a variadic int32 arg
-    my $ok2 = False;
-    try {
-        my int32 $num = 42;
-        my $written = ncplane_printf_yx($child, 1, 0, "val=%d", $num);
-        $ok2 = ($written == 6);  # "val=42" is 6 chars
-        CATCH { default { } }
-    }
-    ok $ok2, 'ncplane_printf_yx wrote "val=42" (6 columns)';
+    my int32 $num = 42;
+    is ncplane_printf_yx($child, 1, 0, "val=%d", $num), 6,
+        'ncplane_printf_yx wrote "val=42" (6 columns)';
 
-    # Verify the content written by printf_yx
     my uint16 $style = 0;
     my uint64 $channels = 0;
-    my $ch = ncplane_at_yx($child, 1, 0, $style, $channels);
-    is $ch, 'v', 'printf_yx wrote "v" at (1,0)';
+    is ncplane_at_yx($child, 1, 0, $style, $channels), 'v', 'printf_yx wrote "v" at (1,0)';
+    is ncplane_at_yx($child, 1, 5, $style, $channels), '2', 'and "2" at (1,5)';
+
+    is ncplane_printf_yx($child, 2, 0, "%lld", 2**40), 13,
+        'a %lld value past 2**32 is written in full (13 columns)';
+    is ncplane_contents($child, 2, 0, 1, 13), '1099511627776', 'and reads back digit for digit';
+
+    is ncplane_printf_aligned($child, 3, NCALIGN_RIGHT, "%s", "end"), 3,
+        'ncplane_printf_aligned wrote 3 columns';
+    is ncplane_at_yx($child, 3, 39, $style, $channels), 'd', 'right-aligned against column 39';
+
+    ncplane_cursor_move_yx($child, 4, 0);
+    is ncplane_printf_stained($child, "%d%%", 7), 2, 'ncplane_printf_stained wrote 2 columns';
+
+    dies-ok { ncplane_printf($child, "%n") }, '%n is refused before anything reaches C';
 
     ncplane_destroy($child);
 };

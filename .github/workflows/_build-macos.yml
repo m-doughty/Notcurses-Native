@@ -507,8 +507,50 @@ jobs:
             bundle/libnotcurses_native_shim.dylib
           codesign --verify bundle/libnotcurses_native_shim.dylib
           echo "--- shim symbols ---"
-          nm -gU bundle/libnotcurses_native_shim.dylib \
-            | grep notcurses_native_copy_cells
+          # Assert every entry point the binding calls BY NAME. This
+          # used to grep for notcurses_native_copy_cells alone, which
+          # meant a terminal guard that silently failed to compile
+          # into the bundle sailed through CI — and the verify lanes
+          # cannot catch that either, because Build.rakumod
+          # recompiles the shim locally on any runner with a C
+          # toolchain, so their NOTCURSES_NATIVE_REQUIRE_SHIM check
+          # passes on the freshly-compiled copy regardless of what
+          # the archive shipped. This step is the ONLY place the
+          # bundle's own contents are tested.
+          # `nm -gU` (BSD/llvm: global, defined-only) prints
+          # "<addr> T _<symbol>" — Mach-O prefixes C symbols with an
+          # underscore, hence the optional `_` in the pattern.
+          shim_syms=$(nm -gU bundle/libnotcurses_native_shim.dylib)
+          printf '%s\n' "$shim_syms"
+          missing=0
+          for sym in notcurses_native_copy_cells \
+                     notcurses_native_reserve_terminal_guard \
+                     notcurses_native_arm_terminal_guard_owned \
+                     notcurses_native_disarm_terminal_guard_owned \
+                     notcurses_native_release_terminal_guard \
+                     notcurses_native_arm_terminal_guard \
+                     notcurses_native_disarm_terminal_guard \
+                     notcurses_native_abi_count \
+                     notcurses_native_abi_key \
+                     notcurses_native_abi_value; do
+            # Here-string, not `printf | grep -q`: grep -q exits on
+            # first match and closes the pipe, which SIGPIPEs the
+            # producer, and `set -o pipefail` would turn that into a
+            # spurious "symbol missing". Small outputs hide it; the
+            # construct should not depend on that.
+            if ! grep -qE "T _?${sym}\$" <<< "$shim_syms"; then
+              echo "::error::shim dylib does not export $sym"
+              missing=1
+            fi
+          done
+          if (( missing != 0 )); then
+            echo "❌ The packed shim is missing exports the binding"
+            echo "   calls. A user installing this prebuilt would get"
+            echo "   the slow per-cell path, no terminal-restore"
+            echo "   guard, or no ABI table for t/42 to hold the"
+            echo "   bindings to."
+            exit 1
+          fi
           # Sidecar for Build.rakumod's content-based freshness
           # check: the SHA-256 of the shim source this shim was
           # compiled from. Without it, installs fall back to a

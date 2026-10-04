@@ -1,0 +1,104 @@
+use Test;
+use lib $*PROGRAM.parent.parent.add('lib').Str;
+use NativeCall;
+use Notcurses::Native::Str :DEFAULT, :INTERNAL;
+
+# The byte-copy helpers behind every copy-out wrapper in this dist
+# (ncpile-render-to-blob/-string, ncplane-as-rgba, notcurses-stats-snapshot).
+# They copy an exact byte count out of native memory the caller does not
+# own, so the properties that matter are: exactly N bytes (never "up to
+# the next NUL" — notcurses's render buffer has no terminator), no
+# ownership taken, and loud failure on an impossible pointer/length pair.
+# Native memory here is CArrays this test allocates; memcpy is the only
+# library call. No notcurses, no terminal.
+
+plan 6;
+
+# 'abc' followed by bytes an earlier, longer frame might have left
+# behind, then a NUL: what a non-terminated borrowed buffer looks like.
+my $frame = CArray[uint8].new(|'abc'.encode.list, |'STALE-TAIL'.encode.list, 0);
+my Pointer $frame-ptr = nativecast(Pointer, $frame);
+
+subtest 'borrowed-buf-from-pointer copies exactly the requested bytes' => {
+    plan 5;
+    my $buf = borrowed-buf-from-pointer($frame-ptr, 3);
+    isa-ok $buf, buf8, 'answers a buf8';
+    is $buf.bytes, 3, 'three bytes, not up to the NUL';
+    is $buf.decode('utf8'), 'abc', 'the right three bytes';
+    is-deeply borrowed-buf-from-pointer($frame-ptr, 13).decode('utf8'),
+        'abcSTALE-TAIL', 'a longer count reaches further, exactly';
+    $frame[0] = 'z'.ord;
+    is $buf.decode('utf8'), 'abc',
+        'the copy is Raku-owned: later writes to the source do not reach it';
+    $frame[0] = 'a'.ord;
+};
+
+subtest 'a zero count answers an empty buf whatever the pointer is' => {
+    plan 3;
+    is borrowed-buf-from-pointer($frame-ptr, 0).bytes, 0, 'live pointer';
+    is borrowed-buf-from-pointer(Pointer, 0).bytes, 0, 'NULL type object';
+    is borrowed-buf-from-pointer(Pointer.new(0), 0).bytes, 0, 'NULL address';
+};
+
+subtest 'impossible pointer/length pairs die instead of answering empty' => {
+    plan 3;
+    throws-like { borrowed-buf-from-pointer(Pointer, 4) }, Exception,
+        message => /'NULL pointer paired with 4 bytes'/,
+        'NULL type object with a non-zero count';
+    throws-like { borrowed-buf-from-pointer(Pointer.new(0), 1) }, Exception,
+        message => /'NULL pointer'/,
+        'NULL address with a non-zero count';
+    throws-like { borrowed-buf-from-pointer($frame-ptr, -1) }, Exception,
+        message => /'non-negative'/,
+        'a negative count';
+};
+
+subtest 'copy-native-into-blob fills a typed buf in one copy' => {
+    plan 6;
+    my $pixels = CArray[uint32].new(0xFF302010, 0x00000000, 0xDEADBEEF);
+    my $out = buf32.allocate(3);
+    copy-native-into-blob($out, nativecast(Pointer, $pixels), 12);
+    is-deeply $out.list, (0xFF302010, 0x00000000, 0xDEADBEEF),
+        'a buf32 receives whole 32-bit elements';
+    my $small = buf8.allocate(2);
+    throws-like { copy-native-into-blob($small, $frame-ptr, 3) }, Exception,
+        message => /'holds 2 bytes'/,
+        'refuses a destination smaller than the copy';
+    throws-like { copy-native-into-blob($small, Pointer, 1) }, Exception,
+        message => /'NULL source'/,
+        'refuses a NULL source with a non-zero count';
+    throws-like { copy-native-into-blob($small, $frame-ptr, -2) }, Exception,
+        message => /'non-negative'/,
+        'refuses a negative count';
+    lives-ok { copy-native-into-blob(buf8.new, Pointer, 0) },
+        'a zero count touches neither side, even with NULL and an empty buf';
+    is-deeply $small.list, (0, 0), 'a refused copy wrote nothing';
+};
+
+subtest 'copy-native-between copies between two native regions' => {
+    plan 4;
+    my $src = CArray[uint8].new(1, 2, 3, 4, 5);
+    my $dst = CArray[uint8].allocate(5);
+    copy-native-between(nativecast(Pointer, $dst), nativecast(Pointer, $src), 4);
+    is-deeply (^5).map({ $dst[$_] }).List, (1, 2, 3, 4, 0),
+        'exactly the requested bytes, the rest untouched';
+    throws-like { copy-native-between(Pointer, nativecast(Pointer, $src), 1) },
+        Exception, message => /'NULL destination'/, 'NULL destination dies';
+    throws-like { copy-native-between(nativecast(Pointer, $dst), Pointer, 1) },
+        Exception, message => /'NULL source'/, 'NULL source dies';
+    lives-ok { copy-native-between(Pointer, Pointer, 0) },
+        'a zero count touches neither pointer';
+};
+
+subtest 'the INTERNAL helpers stay out of the default export set' => {
+    plan 3;
+    my @default = Notcurses::Native::Str::EXPORT::DEFAULT::.keys;
+    ok '&borrowed-buf-from-pointer' ∈ @default,
+        'borrowed-buf-from-pointer is public API';
+    nok '&copy-native-into-blob' ∈ @default,
+        'copy-native-into-blob needs :INTERNAL';
+    nok '&copy-native-between' ∈ @default,
+        'copy-native-between needs :INTERNAL';
+};
+
+done-testing;

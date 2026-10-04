@@ -1,0 +1,212 @@
+use Test;
+use lib $*PROGRAM.parent.parent.add('lib').Str;
+use Notcurses::Native::Test::Headless;
+
+# A NativeCall trap (Rakudo 2025.05 through at least 2026.08): a native
+# call site whose FIRST call receives an undefined value through a Scalar
+# container — a `my` variable or an attribute; a Pointer, any CPointer
+# class, a boxed Int or Str — bakes that NULL (or 0) into the site and
+# passes it on every later call, whatever the container then holds.
+# Parameters, return values, native-typed lexicals and `$x<>` are immune.
+#
+# The wrappers in this distribution that accept a possibly-undefined
+# pointer or handle are written so that no such value ever reaches a
+# native site through a container: they test definedness first, or hand
+# the native call a parameter. This file pins that from the outside, in
+# the order that exposes the trap: every wrapper is called with an
+# undefined value held in a `my` variable FIRST, then with real ones in
+# the same process — and the one whose failure mode is silent (a free
+# that stops freeing) runs a leak loop that would grow ~80 MiB if it had
+# been pinned.
+
+plan 4;
+
+sub clean-exit(Map $run, Str $what) {
+    ok !$run<timed-out> && $run<exitcode> == 0 && $run<signal> == 0,
+        "$what: child exits cleanly ({describe-exit($run)})"
+        or diag "child stderr:\n{$run<err>}";
+}
+
+subtest 'Str helpers: an undefined pointer first, then real ones' => {
+    plan 9;
+    my $run = run-headless-script(q:to/RAKU/);
+        use NativeCall;
+        use Notcurses::Native::Str :DEFAULT, :INTERNAL;
+        use Notcurses::Native::Test::Headless;
+        # The UCRT exports strdup only under its underscore name; ucrtbase.dll
+        # has no `strdup` at all (see Test::Helper's DUP-SYM for the family).
+        my constant STRDUP-SYM = $*DISTRO.is-win ?? '_strdup' !! 'strdup';
+        sub _strdup(Str --> Pointer) is native(&libc-name) is symbol(STRDUP-SYM) { * }
+
+        # Undefined values, each through a container, before anything real.
+        my Pointer $none;
+        report 'strdup-none', strdup-copy-and-free($none).defined ?? 'defined' !! 'Str';
+        report 'borrowed-none', borrowed-str-from-pointer($none).defined ?? 'defined' !! 'Str';
+        report 'buf-none', borrowed-buf-from-pointer($none, 0).elems;
+        my buf8 $sink = buf8.allocate(4);
+        copy-native-into-blob($sink, $none, 0);
+        copy-native-between($none, $none, 0);
+        copy-blob-into-native($none, $sink, 0);
+
+        # Then real pointers through the very same wrappers.
+        report 'strdup-real', strdup-copy-and-free(_strdup("r\x[E9]el"));
+        my Pointer $owned = _strdup('borrowed text');
+        report 'borrowed-real', borrowed-str-from-pointer($owned);
+        report 'buf-real', borrowed-buf-from-pointer($owned, 8).decode;
+        copy-native-into-blob($sink, $owned, 4);
+        report 'into-blob', $sink.decode;
+        my buf8 $dest = buf8.allocate(3);
+        copy-blob-into-native(nativecast(Pointer, $dest), 'xyz'.encode, 3);
+        report 'from-blob', $dest.decode;
+        c-free($owned);
+
+        # strdup-copy-and-free frees what it decodes. Pinned to NULL, its
+        # free would silently stop: 20,000 4 KiB strings, ~80 MiB.
+        my Str $big = 'x' x 4096;
+        # A single request-garbage-collection does not reliably settle RSS
+        # under -j-parallel contention: MoarVM's generational collector
+        # needs more than one cycle to promote-then-reclaim short-lived
+        # garbage, and a loaded scheduler can defer the collection thread.
+        # Give it several cycles with real churn between them before
+        # either RSS reading the growth figure is computed from.
+        sub full-gc() {
+            for ^5 {
+                my @churn = (^2_000).map({ "gc-churn $_" x 2 });
+                $*VM.request-garbage-collection;
+            }
+        }
+        strdup-copy-and-free(_strdup($big)) for ^200;
+        full-gc();
+        my $before = current-rss-kib();
+        for 1..20_000 {
+            strdup-copy-and-free(_strdup($big));
+            $*VM.request-garbage-collection if $_ %% 1000;
+        }
+        full-gc();
+        report 'growth-kib', current-rss-kib() - $before;
+        RAKU
+    clean-exit($run, 'Str helpers');
+    my %r = $run<results>;
+    is %r<strdup-none>, 'Str', 'strdup-copy-and-free of an undefined pointer answers Str';
+    is %r<borrowed-none> ~ '/' ~ %r<buf-none>, 'Str/0',
+        'the borrowed readers answer Str and an empty buf for it';
+    is %r<strdup-real>, "r\x[E9]el", 'then decodes a real heap string';
+    is %r<borrowed-real>, 'borrowed text', 'borrowed-str-from-pointer reads a real one';
+    is %r<buf-real>, 'borrowed', 'borrowed-buf-from-pointer copies exactly the bytes asked for';
+    is %r<into-blob>, 'borr', 'copy-native-into-blob copies after a zero-byte undefined call';
+    is %r<from-blob>, 'xyz', 'copy-blob-into-native likewise';
+    ok %r<growth-kib>.defined && %r<growth-kib> < 24 * 1024,
+        "20,000 strdup-copy-and-free calls after the undefined one leave RSS flat "
+          ~ "(grew {%r<growth-kib> // '?'} KiB; a pinned free grows ~80 MiB)";
+};
+
+subtest 'destroy wrappers: an undefined handle first, then real widgets' => {
+    plan 6;
+    my $run = run-headless-script(q:to/RAKU/);
+        use NativeCall;
+        use Notcurses::Native;
+        use Notcurses::Native::Types;
+        use Notcurses::Native::Widgets;
+        use Notcurses::Native::Context;
+        use Notcurses::Native::Test::Headless;
+        my $nc  = headless-notcurses();
+        my $std = notcurses_stdplane($nc);
+        sub plane() { ncplane_create($std, NcplaneOptions.new(:rows(8), :cols(30))) }
+
+        my NcselectorHandle $no-selector;
+        my NcreaderHandle   $no-reader;
+        my Ncstats          $no-stats;
+        report 'selector-none', ncselector-destroy-selected($no-selector).defined ?? 'defined' !! 'Str';
+        report 'reader-none', ncreader-destroy-contents($no-reader).defined ?? 'defined' !! 'Str';
+        notcurses-stats-free($no-stats);
+
+        my $selector = ncselector_create(plane(), NcselectorOptions.new(:items(
+            NcselectorItem.new(:option<alpha>), NcselectorItem.new(:option<beta>))));
+        ncselector_nextitem($selector);
+        report 'selector-real', ncselector-destroy-selected($selector);
+        my $reader = ncreader_create(plane(), NcreaderOptions.new);
+        ncreader_write_egc($reader, $_) for <o k>;
+        report 'reader-real', ncreader-destroy-contents($reader);
+        my Ncstats $stats = notcurses_stats_alloc($nc);
+        notcurses_stats($nc, $stats);
+        report 'stats-real', $stats.planes;
+        notcurses-stats-free($stats);
+        report 'stop', notcurses_stop($nc);
+        RAKU
+    clean-exit($run, 'destroy wrappers');
+    my %r = $run<results>;
+    is %r<selector-none> ~ '/' ~ %r<reader-none>, 'Str/Str',
+        'undefined selector and reader handles answer Str, touching nothing';
+    is %r<selector-real>, 'beta', 'then a real selector hands back its selection';
+    is %r<reader-real>, 'ok', 'and a real reader its text';
+    ok %r<stats-real>.defined && %r<stats-real> > 0,
+        'notcurses-stats-free of a type object, then a real struct freed after use';
+    is %r<stop>, '0', 'notcurses_stop succeeds';
+};
+
+subtest 'printf and the other Raku-side wrappers: undefined first, then real' => {
+    plan 6;
+    my $run = run-headless-script(q:to/RAKU/);
+        use NativeCall;
+        use Notcurses::Native;
+        use Notcurses::Native::Types;
+        use Notcurses::Native::Plane;
+        use Notcurses::Native::Test::Headless;
+        my $nc  = headless-notcurses();
+        my $std = notcurses_stdplane($nc);
+        my NcplaneHandle $no-plane;
+        report 'printf-none', (try { ncplane_printf($no-plane, "x"); 'lived' }) // 'died';
+        my ($y, $x) = 9, 9;
+        report 'rgba-none', ncplane-as-rgba($no-plane, NCBLIT_1x1, 0, 0, 0, 0, $y, $x).defined
+            ?? 'defined' !! "buf32 {$y}x$x";
+        my $p = ncplane_create($std, NcplaneOptions.new(:rows(1), :cols(10)));
+        report 'printf-real', ncplane_printf($p, "%d-%s", 7, 'up');
+        ncplane_set_bg_rgb($p, 0x102030);
+        ncplane_putstr_yx($p, 0, 0, ' ');
+        report 'rgba-real', ncplane-as-rgba($p, NCBLIT_1x1, 0, 0, 1, 1, $y, $x)[0].fmt('%08X');
+        report 'stop', notcurses_stop($nc);
+        RAKU
+    clean-exit($run, 'Raku-side wrappers');
+    my %r = $run<results>;
+    is %r<printf-none>, 'died', 'ncplane_printf refuses an undefined plane';
+    is %r<rgba-none>, 'buf32 0x0', 'ncplane-as-rgba answers buf32 and 0x0 for one, calling nothing';
+    is %r<printf-real>, '4', 'then prints on a real one';
+    ok %r<rgba-real>.defined && %r<rgba-real> eq 'FF302010',
+        "ncplane-as-rgba reads a real plane after an undefined one ({%r<rgba-real> // '?'})";
+    is %r<stop>, '0', 'notcurses_stop succeeds';
+};
+
+subtest 'test support: the null device opens, and is never a file called NUL' => {
+    plan 4;
+    # Notcurses::Native::Test::Helper picked the null device with a /win/
+    # match on the kernel name — which "darwin" satisfies — so on macOS it
+    # redirected the process's stdout into, and handed notcurses, a file
+    # literally named NUL in the working directory. Run it with an empty
+    # working directory (a real one: C's open(2) never sees a Raku chdir)
+    # and list what appears. (Listing, not .e: on Windows NUL names the
+    # null device in every directory without ever being an entry.)
+    my IO::Path $dir = $*TMPDIR.add("notcurses-native-nul-{$*PID}-{(^2**31).pick}");
+    $dir.mkdir;
+    LEAVE { .unlink for $dir.dir; $dir.rmdir }
+    my $run = run-headless-script(q:to/RAKU/, :cwd($dir));
+        use NativeCall;
+        use Notcurses::Native::Str;
+        use Notcurses::Native::Direct;
+        use Notcurses::Native::Test::Headless;
+        use Notcurses::Native::Test::Helper;
+        # Detach first, as headless-notcurses does, so direct mode never
+        # interrogates a controlling terminal.
+        sub setsid(--> int32) is native(&libc-name) { * }
+        setsid() unless $*DISTRO.is-win;
+        my ($ncd, $devnull) = test-init-direct();
+        report 'direct', $ncd.defined ?? 'started' !! 'refused';
+        report 'fp', $devnull.defined ?? 'open' !! 'null';
+        ncdirect_stop($ncd) if $ncd;
+        RAKU
+    ok $run<exitcode> == 0 && $run<signal> == 0, "the child exits cleanly ({describe-exit($run)})"
+        or diag $run<err>;
+    is $run<results><fp>, 'open', 'test-init-direct opened the null device';
+    is $run<results><direct>, 'started', 'and direct mode started on it';
+    is $dir.dir.map(*.basename).sort.join(', '), '',
+        'nothing, NUL included, appeared in the working directory';
+};

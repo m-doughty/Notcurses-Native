@@ -1,0 +1,198 @@
+use Test;
+use lib 'lib';
+
+use Notcurses::Native;
+use Notcurses::Native::Plane;
+
+# The terminal restore guard (src/notcurses_native_shim.c) captures
+# the terminal before a TUI takes it, and puts it back from an
+# atexit(3) handler — the only cleanup hook that still runs when the
+# VM exits without executing any Raku, e.g. a MoarVM panic calling
+# exit(3) from the runtime.
+#
+# What this file can assert is the fail-closed contract, which is
+# exactly what a test harness is good for: a harness has no
+# controlling terminal, so every arm here must decline politely
+# rather than throw, crash, or arm something that would then scribble
+# on the harness's stdout at exit. The restore itself needs a real
+# terminal and a real process death, so it is verified by hand, not
+# here.
+#
+# Shim-optional, same gate as t/15: an end user installing without a
+# C toolchain gets no shim and Selkie runs unguarded by design, while
+# CI sets NOTCURSES_NATIVE_REQUIRE_SHIM=1 and a missing shim is a
+# build-pipeline failure.
+
+my Bool $require-shim = (%*ENV<NOTCURSES_NATIVE_REQUIRE_SHIM> // '').chars > 0;
+my Str  $resolved     = shim-lib() // '';
+my Bool $have-shim    = $resolved.chars > 0 && $resolved.IO.e;
+
+unless $have-shim {
+    if $require-shim {
+        plan 1;
+        flunk "perf shim not staged at '$resolved' — "
+            ~ "NOTCURSES_NATIVE_REQUIRE_SHIM=1 enforced, so the terminal "
+            ~ "guard bindings cannot be exercised.";
+        done-testing;
+        exit 0;
+    }
+    plan 1;
+    skip "perf shim not present at '$resolved' — the guard bindings have "
+       ~ "nothing to bind to; install with a C toolchain or set "
+       ~ "NOTCURSES_NATIVE_REQUIRE_SHIM=1 to enforce", 1;
+    done-testing;
+    exit 0;
+}
+
+plan 9;
+
+# macOS builds the shim with -undefined dynamic_lookup, so dyld
+# refuses to load it until libnotcurses is already in the process.
+# ensure-shim-loadable is what puts it there, and every shim caller
+# owes it one call before its first — including the terminal guard,
+# whose whole point is to arm before notcurses_init.
+subtest 'ensure-shim-loadable makes the shim bindable' => {
+    plan 2;
+
+    my $loadable;
+    lives-ok { $loadable = ensure-shim-loadable() },
+        'ensure-shim-loadable never throws';
+    ok $loadable,
+        'libnotcurses is loaded, so the shim can resolve its symbols';
+};
+
+# Return codes, mirroring the NOTCURSES_NATIVE_GUARD_* defines in the
+# shim. 0 only happens on a host running this suite from a terminal;
+# CI and `prove6` under a pipe land on 3 (no terminal) or 4 (opened
+# but would not report its state).
+my constant GUARD-OK      = 0;
+my constant GUARD-NOTERM  = 3;
+my constant GUARD-STATE   = 4;
+my constant GUARD-BUSY    = 6;
+my constant GUARD-OWNER   = 7;
+my constant GUARD-TOKEN   = 8;
+my constant GUARD-MAX-OWNER = 0x1fffffffffffffff;
+
+
+subtest 'owned reservation is exclusive and releasable' => {
+    plan 5;
+
+    my $owner = 42;
+    my $other = 43;
+    is notcurses_native_reserve_terminal_guard($owner), GUARD-OK,
+        'first owner reserves the guard';
+    is notcurses_native_reserve_terminal_guard($owner), GUARD-OK,
+        'same owner reservation is idempotent';
+    is notcurses_native_reserve_terminal_guard($other), GUARD-BUSY,
+        'second owner is rejected while reservation is held';
+    is notcurses_native_release_terminal_guard($other), GUARD-OWNER,
+        'non-owner cannot release the reservation';
+    is notcurses_native_release_terminal_guard($owner), GUARD-OK,
+        'owner releases the reservation';
+};
+
+subtest 'owned arm is token checked and repeated arm is stable' => {
+    plan 6;
+
+    my $owner = 44;
+    is notcurses_native_reserve_terminal_guard($owner), GUARD-OK,
+        'owner reserves before arming';
+    is notcurses_native_arm_terminal_guard_owned($owner + 1, "\e[?1049l"), GUARD-OWNER,
+        'wrong owner cannot arm';
+    my $first = notcurses_native_arm_terminal_guard_owned($owner, "\e[?1049l");
+    ok $first == GUARD-OK | GUARD-NOTERM | GUARD-STATE,
+        "owner arm answers success or fail-closed terminal code (got {$first // 'undefined'})";
+    my $again = notcurses_native_arm_terminal_guard_owned($owner, "\e[?1049l");
+    is $again, $first, 'repeated owner arm is idempotent or repeats the same fail-closed code';
+    is notcurses_native_disarm_terminal_guard_owned($owner + 1), GUARD-OWNER,
+        'wrong owner cannot disarm';
+    is notcurses_native_release_terminal_guard($owner), GUARD-OK,
+        'owner release succeeds after arm attempts';
+};
+
+subtest 'invalid owner tokens are refused at the C boundary' => {
+    plan 5;
+
+    is notcurses_native_reserve_terminal_guard(0), GUARD-TOKEN,
+        'zero token cannot reserve';
+    is notcurses_native_arm_terminal_guard_owned(0, ''), GUARD-TOKEN,
+        'zero token cannot arm';
+    is notcurses_native_disarm_terminal_guard_owned(0), GUARD-TOKEN,
+        'zero token cannot disarm';
+    is notcurses_native_release_terminal_guard(0), GUARD-TOKEN,
+        'zero token cannot release';
+    is notcurses_native_reserve_terminal_guard(GUARD-MAX-OWNER + 1), GUARD-TOKEN,
+        'packed-state high token bits cannot reserve';
+};
+
+subtest 'arming without a terminal fails closed instead of throwing' => {
+    plan 2;
+
+    my $rc;
+    lives-ok { $rc = notcurses_native_arm_terminal_guard("\e[?25h\e[0m") },
+        'arm is callable and never throws';
+    ok $rc == GUARD-OK | GUARD-NOTERM | GUARD-STATE,
+        "arm answers success or a fail-closed code (got {$rc // 'undefined'})";
+};
+
+subtest 'disarm is callable and idempotent' => {
+    plan 3;
+
+    lives-ok { notcurses_native_disarm_terminal_guard() },
+        'disarm lives after an arm attempt';
+    lives-ok { notcurses_native_disarm_terminal_guard() },
+        'disarm lives a second time';
+    lives-ok { notcurses_native_disarm_terminal_guard() },
+        'disarm lives a third time';
+};
+
+subtest 'repeated arms register with atexit exactly once' => {
+    plan 1;
+
+    # Re-arming is how a consumer re-enters a terminal after handing
+    # it back. The C side has to notice it already holds an atexit
+    # slot: a process may only register so many, and one cannot be
+    # withdrawn. Observable from here only as "still answers the same
+    # code, still doesn't throw", which is the regression that would
+    # bite (a failed atexit answers 5).
+    my @codes = (^8).map: {
+        notcurses_native_arm_terminal_guard("\e[?1049l");
+    };
+    ok @codes.unique.elems == 1
+        && @codes.head == (GUARD-OK | GUARD-NOTERM | GUARD-STATE),
+        "eight arms answer one stable fail-closed code (@codes.unique[])";
+};
+
+subtest 'an oversized cleanup string is refused, not truncated' => {
+    plan 2;
+
+    # The C side copies into a 1024-byte static buffer. Anything that
+    # would not fit has to be refused outright — a truncated escape
+    # sequence written to a terminal at exit is worse than none.
+    my $rc;
+    lives-ok { $rc = notcurses_native_arm_terminal_guard('x' x 4096) },
+        'an oversized cleanup string does not throw';
+    ok $rc != GUARD-OK,
+        "an oversized cleanup string is refused (got {$rc // 'undefined'})";
+};
+
+subtest 'an empty cleanup string is accepted by the copy bound' => {
+    plan 2;
+
+    # Empty is legal: a consumer may want only the terminal-state
+    # restore and no escape sequence. It must not be confused with
+    # the too-long rejection above.
+    my $rc;
+    lives-ok { $rc = notcurses_native_arm_terminal_guard('') },
+        'an empty cleanup string does not throw';
+    ok $rc == GUARD-OK | GUARD-NOTERM | GUARD-STATE,
+        "an empty cleanup string is judged on the terminal, not the string "
+        ~ "(got {$rc // 'undefined'})";
+};
+
+# Leave nothing armed behind: this process exits through the same
+# atexit handler, and a guard armed by the block above would write
+# escape sequences into the harness's output.
+notcurses_native_disarm_terminal_guard();
+
+done-testing;

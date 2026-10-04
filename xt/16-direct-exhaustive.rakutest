@@ -1,7 +1,6 @@
 use Test;
 use lib 'lib';
-use lib 't/lib';
-use TestHelper;
+use Notcurses::Native::Test::Helper;
 use NativeCall;
 use Notcurses::Native::Types;
 use Notcurses::Native::Direct;

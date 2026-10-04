@@ -243,12 +243,15 @@ class Build {
         my Str $current-abs = $current-tag-dir.absolute;
 
         for $root.dir -> $entry {
+            next if $entry.l;
             next unless $entry.d;
             next unless $entry.basename.starts-with('binaries-notcurses-');
             next if $entry.absolute eq $current-abs;
             say "🧹 Removing orphaned staged dir: { $entry }";
+            # In Raku, not `rm -rf` (a stock Windows has none); a link
+            # inside is removed as a link, never followed.
             try {
-                run 'rm', '-rf', $entry.Str;
+                self!remove-stage-entry($entry);
                 CATCH { default { note "  (failed to remove: { .message })" } }
             };
         }
@@ -461,11 +464,24 @@ class Build {
         }
     }
 
+    #|( Where downloads, fetched notcurses sources and compiled shims are
+        kept between installs. Windows sets no HOME, so the POSIX default
+        (C<$HOME/.cache>) used to come out as C<./.cache> -- inside
+        whatever directory zef ran the build from, which for a local
+        C<zef install .> is the dist's own source tree. It is
+        C<%LOCALAPPDATA%> there. )
     method !cache-dir(Str $binary-tag --> IO::Path) {
-        my Str $base = %*ENV<NOTCURSES_NATIVE_CACHE_DIR>
+        "{self!cache-base}/Notcurses-Native-binaries/$binary-tag".IO;
+    }
+
+    #| The cache root both caches live under: see !cache-dir.
+    method !cache-base(--> Str) {
+        %*ENV<NOTCURSES_NATIVE_CACHE_DIR>
             // %*ENV<XDG_CACHE_HOME>
-            // "{%*ENV<HOME> // '.'}/.cache";
-        "$base/Notcurses-Native-binaries/$binary-tag".IO;
+            // ($*DISTRO.is-win
+                    ?? (%*ENV<LOCALAPPDATA>
+                            // "{%*ENV<USERPROFILE> // '.'}\\AppData\\Local")
+                    !! "{%*ENV<HOME> // '.'}/.cache");
     }
 
     method !binary-tag($dist-path --> Str) {
@@ -612,11 +628,8 @@ class Build {
         my Str $sha = %pin<sha>;
         my Str $url = %pin<url>;
 
-        my Str $cache-base-str = %*ENV<NOTCURSES_NATIVE_CACHE_DIR>
-            // %*ENV<XDG_CACHE_HOME>
-            // "{%*ENV<HOME> // '.'}/.cache";
         my IO::Path $src-dir =
-            "$cache-base-str/Notcurses-Native-source/$sha".IO;
+            "{self!cache-base}/Notcurses-Native-source/$sha".IO;
 
         if $src-dir.d && "$src-dir/CMakeLists.txt".IO.e {
             # Verify HEAD still matches the pin (defends against an
@@ -628,7 +641,7 @@ class Build {
             }
             note "⚠️  Cached source at $src-dir has wrong HEAD "
                ~ "($head), re-cloning.";
-            run 'rm', '-rf', $src-dir.Str;
+            self!remove-stage-entry($src-dir);
         }
 
         $src-dir.mkdir;
@@ -647,7 +660,7 @@ class Build {
             my $out = $proc.out.slurp(:close);
             my $err = $proc.err.slurp(:close);
             unless $proc.exitcode == 0 {
-                run 'rm', '-rf', $src-dir.Str;
+                try self!remove-stage-entry($src-dir);
                 die "❌ Failed to fetch notcurses source: "
                   ~ "{ @cmd.join(' ') }\n"
                   ~ "stdout: $out\nstderr: $err\n"
@@ -1133,10 +1146,12 @@ class Build {
 
     #|( Compile the perf shim alongside the staged libnotcurses libs.
         See src/notcurses_native_shim.c for what it contains and why
-        — short version: a couple of hot loops (currently just the
-        per-cell plane copy used by Selkie::Widget::ViewportedCardList)
-        that are unaffordable to express call-per-cell over the Raku
-        NativeCall boundary.
+        — short version: the per-cell plane copy used by
+        Selkie::Widget::ViewportedCardList, unaffordable to express
+        call-per-cell over the Raku NativeCall boundary, and the
+        atexit-based terminal restore guard, which has to be C
+        because atexit handlers are the last hook standing when the
+        VM exits without running Raku.
 
         Linked with -undefined dynamic_lookup (macOS) or
         -Wl,--unresolved-symbols=ignore-in-shared-libs (Linux) so the
@@ -1168,7 +1183,11 @@ class Build {
         it surfaced as the per-cell-fallback warning despite the
         musl pack shipping a perfectly good shim. Packs that
         predate the sidecar fall back to the old mtime
-        comparison. Every successful local compile writes the
+        comparison, except on Windows, where IO::Path.modified is
+        not a file time (a MoarVM overflow puts every file within
+        seconds of 1970): there a shim with no sidecar is
+        refreshed from the cache or the compiler, and kept only
+        when neither can. Every successful local compile writes the
         sidecar and parks a content-addressed copy of the shim
         under <cache>/shims/<src-sha256>.<ext>, so a
         toolchain-equipped machine compiles at most once per
@@ -1206,6 +1225,15 @@ class Build {
                 return if $packed eq $src-hash;
                 say "🔁 Staged shim was built from different source — refreshing.";
             }
+            elsif $*DISTRO.is-win {
+                # No mtime guess on Windows: IO::Path.modified there is
+                # not a file time at all (MoarVM builds the nanosecond
+                # stamp by multiplying a 32-bit `long`, putting every
+                # file within seconds of 1970). Refresh from the cache
+                # or the compiler; the old shim stays if neither can.
+                say "🔁 Staged shim has no record of the source it was "
+                  ~ "built from — refreshing.";
+            }
             else {
                 my $src-mtime  = $src.IO.modified // 0;
                 my $shim-mtime = $shim.modified  // 0;
@@ -1231,9 +1259,21 @@ class Build {
         if $src-hash.defined {
             my IO::Path $cached-shim = $shim-cache.add("$src-hash.$ext");
             if $cached-shim.e {
-                $cached-shim.copy($shim);
-                $shim.chmod(0o755);
-                $sidecar.spurt("$src-hash\n");
+                # Copying over a shim a running process has loaded fails
+                # on Windows; that is a note, not a failed install.
+                try {
+                    $cached-shim.copy($shim);
+                    $shim.chmod(0o755);
+                    $sidecar.spurt("$src-hash\n");
+                    CATCH {
+                        default {
+                            note "⚠️  Could not restore the Notcurses perf shim "
+                               ~ "from the build cache into $shim ({.message}) "
+                               ~ "— is an application that uses it still running?";
+                            return;
+                        }
+                    }
+                }
                 say "✅ Restored Notcurses perf shim from build cache → $shim.";
                 return;
             }
@@ -1295,6 +1335,15 @@ class Build {
             }
         }
 
+        # Compiled to a temporary name and renamed over the shim only
+        # once the compiler has succeeded, so a failed or interrupted
+        # compile never leaves a truncated shim where a working one was.
+        # The library's own name is set explicitly where a platform
+        # records one (install_name on macOS, soname on Linux), so the
+        # temporary file name does not leak into it.
+        my IO::Path $tmp = $stage.add("libnotcurses_native_shim.$*PID.tmp.$ext");
+        LEAVE { try $tmp.unlink if $tmp.e }
+
         my @cmd = do given $os {
             when /darwin/ {
                 # -headerpad_max_install_names: reserve generous load-
@@ -1309,7 +1358,7 @@ class Build {
                 '-install_name', "\@loader_path/libnotcurses_native_shim.dylib",
                 '-undefined', 'dynamic_lookup',
                 "-I$inc",
-                '-o', $shim.Str, $src;
+                '-o', $tmp.Str, $src;
             }
             when /win/ {
                 # Link against the import lib found above. Windows DLL
@@ -1317,7 +1366,7 @@ class Build {
                 # sibling in the same staged dir.
                 'cc', '-O2', '-shared',
                 "-I$inc",
-                '-o', $shim.Str, $src,
+                '-o', $tmp.Str, $src,
                 $import-lib;
             }
             default {
@@ -1337,14 +1386,27 @@ class Build {
                 "-L$stage", '-lnotcurses-core',
                 '-Wl,-soname,libnotcurses_native_shim.so',
                 "-Wl,-rpath,\$ORIGIN",
-                '-o', $shim.Str, $src;
+                '-o', $tmp.Str, $src;
             }
         };
 
         my $rc = run |@cmd, :out, :err;
         my $err = $rc.err.slurp(:close);
         $rc.out.slurp(:close);
-        if $rc.exitcode == 0 {
+        if $rc.exitcode == 0 && $tmp.e {
+            # Renaming over a shim a running process has loaded fails on
+            # Windows. Say so, rather than leave the old one looking fresh.
+            try {
+                rename $tmp, $shim;
+                CATCH {
+                    default {
+                        note "⚠️  Compiled the Notcurses perf shim but could not "
+                           ~ "replace $shim ({.message}) — is an application "
+                           ~ "that uses it still running?";
+                        return;
+                    }
+                }
+            }
             say "✅ Compiled Notcurses perf shim → $shim.";
             # Stamp what we compiled (content match beats cross-machine
             # mtime guesses) and park a copy in the build cache so the

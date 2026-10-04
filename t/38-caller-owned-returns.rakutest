@@ -1,0 +1,299 @@
+use Test;
+use lib $*PROGRAM.parent.parent.add('lib').Str;
+use Notcurses::Native::Test::Headless;
+
+# Four notcurses calls hand heap memory to the caller, and the bindings
+# used to drop it on the floor:
+#
+#   ncplane_name         strdup()s the name; bound `--> Str`, it leaked
+#                        the copy on every call (and was documented as
+#                        library-owned).
+#   ncplane_as_rgba      malloc()s the pixel array; only a raw Pointer
+#                        binding existed.
+#   notcurses_stats_alloc  malloc()s an ncstats; nothing could free it.
+#   ncselector_destroy / ncreader_destroy
+#                        hand back a malloc'd string through a char**
+#                        out-parameter that the Pointer binding could
+#                        only ever pass as NULL.
+#
+# Each now has a wrapper that copies into Raku-owned storage and frees
+# the C allocation. This file pins their values and failure answers, and
+# for the two per-frame-plausible ones runs a leak loop with a coarse RSS
+# bound: 20,000 calls that each leaked ~4 KiB (or 16 KiB) grew the child
+# by ~80-100 MiB before the fix and grow it by a few MiB after, so the
+# 24 MiB bound sits far from both.
+#
+# Runs in headless children (Notcurses::Native::Test::Headless); every
+# check asserts the child's exit code AND signal.
+
+my Str $prelude = q:to/RAKU/;
+    use NativeCall;
+    use Notcurses::Native;
+    use Notcurses::Native::Types;
+    use Notcurses::Native::Plane;
+    use Notcurses::Native::Context;
+    use Notcurses::Native::Widgets;
+    use Notcurses::Native::Str;
+    use Notcurses::Native::Test::Headless;
+
+    my $nc  = headless-notcurses();
+    my $std = notcurses_stdplane($nc);
+    sub plane(UInt $rows, UInt $cols) {
+        ncplane_create($std, NcplaneOptions.new(:$rows, :$cols))
+            // die "ncplane_create failed for {$rows}x$cols";
+    }
+    # Garbage the loop itself makes (Raku strings, bufs) is collected on
+    # a fixed cadence so it cannot masquerade as a native leak.
+    #
+    # A single request-garbage-collection does not reliably settle RSS
+    # under -j-parallel contention: MoarVM's generational collector needs
+    # more than one cycle to promote-then-reclaim short-lived garbage, and
+    # a loaded scheduler can defer the collection thread. Give it several
+    # cycles with real churn between them (never a bare, single request)
+    # before either RSS reading that the growth figure is computed from.
+    sub full-gc() {
+        for ^5 {
+            my @churn = (^2_000).map({ "gc-churn $_" x 2 });
+            VM.request-garbage-collection;
+        }
+    }
+    sub rss-growth-kib(&body, UInt $iterations --> Int) {
+        body() for ^200;
+        full-gc();
+        my $before = current-rss-kib();
+        for 1..$iterations {
+            body();
+            VM.request-garbage-collection if $_ %% 250;
+        }
+        full-gc();
+        current-rss-kib() - $before
+    }
+    RAKU
+
+sub clean-exit(Map $run, Str $what) {
+    ok !$run<timed-out> && $run<exitcode> == 0 && $run<signal> == 0,
+        "$what: child exits cleanly ({describe-exit($run)})"
+        or diag "child stderr:\n{$run<err>}";
+}
+
+my constant LEAK-BOUND-KIB = 24 * 1024;
+
+plan 5;
+
+subtest 'ncplane_name answers a Raku-owned copy and frees the C one' => {
+    plan 10;
+    my $run = run-headless-script($prelude ~ q:to/RAKU/);
+        my $p = plane(2, 2);
+        report 'unnamed', ncplane_name($p).raku;
+        ncplane_set_name($p, 'status-bar');
+        report 'simple', ncplane_name($p);
+        ncplane_set_name($p, "\x[3A9] plane \x[2713]");
+        report 'unicode', ncplane_name($p).raku;
+        ncplane_set_name($p, 'renamed');
+        report 'renamed', ncplane_name($p);
+        ncplane_set_name($p, Str);
+        report 'cleared', ncplane_name($p).defined ?? 'defined' !! 'undefined';
+        my $long = ('abcdefgh' x 512);
+        ncplane_set_name($p, $long);
+        report 'long-exact', ncplane_name($p) eq $long ?? 'yes' !! 'no';
+        report 'named-at-create', ncplane_name(ncplane_create($std,
+            NcplaneOptions.new(:rows(1), :cols(1), :name('from-options'))));
+        report 'growth-kib', rss-growth-kib({ ncplane_name($p) }, 20_000);
+        report 'stop', notcurses_stop($nc);
+        RAKU
+    clean-exit($run, 'ncplane_name round-trips and 20k-call loop');
+    my %r = $run<results>;
+    is %r<unnamed>, ''.raku, 'a plane created without a name answers the empty string';
+    is %r<simple>, 'status-bar', 'a set name reads back';
+    is %r<unicode>, "\x[3A9] plane \x[2713]".raku, 'a UTF-8 name reads back intact';
+    is %r<renamed>, 'renamed', 'renaming is observed';
+    is %r<cleared>, 'undefined', 'clearing the name (NULL) reads back as the type object';
+    is %r<long-exact>, 'yes', 'a 4 KiB name reads back byte for byte';
+    is %r<named-at-create>, 'from-options', 'a name given at creation reads back';
+    ok %r<growth-kib>.defined && %r<growth-kib> < LEAK-BOUND-KIB,
+        "20,000 reads of a 4 KiB name leave RSS flat "
+          ~ "(grew {%r<growth-kib> // '?'} KiB; the leaking binding grew ~100 MiB)";
+    is %r<stop>, '0', 'notcurses_stop succeeds';
+};
+
+subtest 'ncplane-as-rgba copies the pixels and frees notcurses\'s array' => {
+    plan 13;
+    my $run = run-headless-script($prelude ~ q:to/RAKU/);
+        # Failures FIRST, before any success: the wrapper's free once went
+        # through a NativeCall callsite that a type object poisoned for
+        # good (see ncplane-as-rgba), so a failed call followed by
+        # successful ones is the order that exposes it — the leak loop
+        # below would have grown ~80 MiB.
+        my $p = plane(2, 3);
+        my ($a, $b) = 0, 0;
+        report 'default-blitter', ncplane-as-rgba($p, NCBLIT_DEFAULT, 0, 0, 0, 0, $a, $b).defined
+            ?? 'defined' !! 'undefined';
+        report 'off-plane', ncplane-as-rgba($p, NCBLIT_1x1, 5, 0, 0, 0, $a, $b).defined
+            ?? 'defined' !! 'undefined';
+        ncplane_putstr_yx($p, 0, 0, 'x');
+        report 'unblittable-glyph', ncplane-as-rgba($p, NCBLIT_1x1, 0, 0, 0, 0, $a, $b).defined
+            ?? 'defined' !! 'undefined';
+
+        # 2x3 plane of spaces, each cell a distinct background: under the
+        # 1x1 blitter a space is one background pixel, so the answer is
+        # exactly those six colours, row-major, as 0xAABBGGRR.
+        my @rgb = 0x102030, 0x405060, 0x708090, 0xA0B0C0, 0xD0E0F0, 0x010203;
+        for ^2 -> $y {
+            for ^3 -> $x {
+                ncplane_set_bg_rgb($p, @rgb[$y * 3 + $x]);
+                ncplane_putstr_yx($p, $y, $x, ' ');
+            }
+        }
+        my ($h, $w) = 0, 0;
+        my $px = ncplane-as-rgba($p, NCBLIT_1x1, 0, 0, 0, 0, $h, $w);
+        report 'type', $px.^name;
+        report 'dims', "{$h}x$w";
+        report 'pixels', $px.list.map(*.fmt('%08X')).join(',');
+
+        my ($sh, $sw) = 0, 0;
+        my $sub = ncplane-as-rgba($p, NCBLIT_1x1, 1, 1, 1, 2, $sh, $sw);
+        report 'sub-dims', "{$sh}x$sw";
+        report 'sub-pixels', $sub.list.map(*.fmt('%08X')).join(',');
+
+        # The raw binding is unchanged for existing callers: Pointer out,
+        # caller frees.
+        my uint32 ($ry, $rx);
+        my $raw = ncplane_as_rgba($p, NCBLIT_1x1, 1, 0, 1, 1, $ry, $rx);
+        report 'raw', ($raw.defined && +$raw) ?? 'pointer' !! 'null';
+        c-free($raw) if $raw.defined && +$raw;
+
+        my $big = plane(64, 64);
+        ncplane_set_bg_rgb($big, 0x123456);
+        ncplane_putstr_yx($big, $_, 0, ' ' x 64) for ^64;
+        report 'growth-kib', rss-growth-kib({
+            my ($y, $x);
+            ncplane-as-rgba($big, NCBLIT_1x1, 0, 0, 0, 0, $y, $x)
+                // die 'ncplane-as-rgba failed inside the leak loop';
+        }, 5_000);
+        report 'stop', notcurses_stop($nc);
+        RAKU
+    clean-exit($run, 'as-rgba values, failures and 5k-call loop');
+    my %r = $run<results>;
+    is %r<type>, 'Buf[uint32]', 'answers a buf32';
+    is %r<dims>, '2x3', 'pixel geometry comes back through the rw parameters';
+    is %r<pixels>, 'FF302010,FF605040,FF908070,FFC0B0A0,FFF0E0D0,FF030201',
+        'six opaque pixels, row-major, red in the low byte';
+    is %r<sub-dims>, '1x2', 'a sub-region reports its own geometry';
+    is %r<sub-pixels>, 'FFF0E0D0,FF030201', 'and holds exactly that region';
+    is %r<default-blitter>, 'undefined', 'NCBLIT_DEFAULT is refused with the buf32 type object';
+    is %r<off-plane>, 'undefined', 'an origin off the plane is refused';
+    is %r<unblittable-glyph>, 'undefined',
+        'a glyph the blitter cannot express is refused';
+    is %r<raw>, 'pointer', 'the raw binding still answers a caller-owned Pointer';
+    ok %r<growth-kib>.defined && %r<growth-kib> < LEAK-BOUND-KIB,
+        "5,000 16 KiB rasterisations leave RSS flat "
+          ~ "(grew {%r<growth-kib> // '?'} KiB; an unfreed array per call grows ~80 MiB)";
+    is %r<stop>, '0', 'notcurses_stop succeeds';
+    ok %r<pixels>.defined, 'the child reported its pixels';
+};
+
+subtest 'stats: a Raku-owned snapshot, and a free for notcurses_stats_alloc' => {
+    plan 9;
+    my $run = run-headless-script($prelude ~ q:to/RAKU/);
+        my $first = notcurses-stats-snapshot($nc);
+        report 'type', $first.^name;
+        notcurses_render($nc) for ^3;
+        my $into = Ncstats.new;
+        my $second = notcurses-stats-snapshot($nc, :$into);
+        report 'into-identity', ($second === $into) ?? 'same' !! 'different';
+        report 'renders-delta', $second.renders - $first.renders;
+        report 'first-unchanged', $first.renders;
+        my $renders-then = $into.renders;
+        notcurses_render($nc);
+        notcurses-stats-snapshot($nc, :$into);
+        report 'into-updated', $into.renders - $renders-then;
+
+        # The raw allocator, paired with its free.
+        my $raw = notcurses_stats_alloc($nc);
+        report 'raw-alloc', $raw.defined ?? 'defined' !! 'undefined';
+        notcurses_stats($nc, $raw);
+        report 'raw-renders', $raw.renders;
+        notcurses-stats-free($raw);
+        notcurses-stats-free(Ncstats);    # type object: a no-op
+        report 'stop', notcurses_stop($nc);
+        RAKU
+    clean-exit($run, 'stats snapshot and free');
+    my %r = $run<results>;
+    is %r<type>, 'Notcurses::Native::Types::Ncstats', 'snapshot answers an Ncstats';
+    is %r<into-identity>, 'same', ':into fills and answers the struct it was given';
+    is %r<renders-delta>, '3', 'three renders between snapshots are counted';
+    ok %r<first-unchanged>.defined && %r<first-unchanged> ~~ /^ \d+ $/,
+        'an earlier snapshot is a copy, not a live view';
+    is %r<into-updated>, '1', 'reusing :into picks up later renders';
+    is %r<raw-alloc>, 'defined', 'notcurses_stats_alloc still answers a struct';
+    ok %r<raw-renders>.defined && %r<raw-renders> >= 4,
+        'notcurses_stats fills the raw struct';
+    is %r<stop>, '0', 'the raw struct freed, notcurses_stop still succeeds';
+};
+
+subtest 'ncselector-destroy-selected hands back the selection' => {
+    plan 7;
+    my $run = run-headless-script($prelude ~ q:to/RAKU/);
+        sub selector(*@options) {
+            my $sel = ncselector_create(plane(8, 30), NcselectorOptions.new(:title('pick')));
+            for @options -> $o {
+                ncselector_additem($sel, NcselectorItem.new(:option($o), :desc("about $o")))
+                    == 0 or die "additem $o failed";
+            }
+            $sel
+        }
+        my $first = selector(<alpha beta gamma>);
+        report 'first', ncselector-destroy-selected($first);
+
+        my $moved = selector(<alpha beta gamma>);
+        ncselector_nextitem($moved);
+        report 'moved', ncselector-destroy-selected($moved);
+
+        my $unicode = selector("\x[3BB]-calculus", 'plain');
+        report 'unicode', ncselector-destroy-selected($unicode).raku;
+
+        # Empty: notcurses would read items[0] of an empty array if asked
+        # for the selection, so the wrapper must not ask.
+        my $empty = selector();
+        report 'empty', ncselector-destroy-selected($empty).defined ?? 'defined' !! 'undefined';
+
+        report 'undefined-handle',
+            ncselector-destroy-selected(NcselectorHandle).defined ?? 'defined' !! 'undefined';
+
+        # The raw binding still takes NULL for callers that discard it.
+        ncselector_destroy(selector(<x y>), Pointer);
+        report 'stop', notcurses_stop($nc);
+        RAKU
+    clean-exit($run, 'selector destroy variants');
+    my %r = $run<results>;
+    is %r<first>, 'alpha', 'the initially selected option comes back';
+    is %r<moved>, 'beta', 'the selection at destruction time comes back';
+    is %r<unicode>, "\x[3BB]-calculus".raku, 'a UTF-8 option comes back intact';
+    is %r<empty>, 'undefined', 'an empty selector answers the Str type object, safely';
+    is %r<undefined-handle>, 'undefined', 'an undefined handle answers Str and touches nothing';
+    is %r<stop>, '0', 'raw destroy with NULL still works; notcurses_stop succeeds';
+};
+
+subtest 'ncreader-destroy-contents hands back the text' => {
+    plan 5;
+    my $run = run-headless-script($prelude ~ q:to/RAKU/);
+        sub reader() { ncreader_create(plane(2, 30), NcreaderOptions.new) }
+        my $r = reader();
+        ncreader_write_egc($r, $_) == 0 or die "write $_ failed" for <H i !>;
+        report 'text', ncreader-destroy-contents($r);
+
+        report 'empty', ncreader-destroy-contents(reader()).raku;
+        report 'undefined-handle',
+            ncreader-destroy-contents(NcreaderHandle).defined ?? 'defined' !! 'undefined';
+        ncreader_destroy(reader(), Pointer);
+        report 'stop', notcurses_stop($nc);
+        RAKU
+    clean-exit($run, 'reader destroy variants');
+    my %r = $run<results>;
+    is %r<text>, 'Hi!', 'the written text comes back';
+    is %r<empty>, ''.raku, 'an empty reader answers the empty string';
+    is %r<undefined-handle>, 'undefined', 'an undefined handle answers Str';
+    is %r<stop>, '0', 'raw destroy with NULL still works; notcurses_stop succeeds';
+};
+
+done-testing;

@@ -21,12 +21,18 @@ env:
 jobs:
   verify:
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # 2026.07: last legacy-frontend release. 2026.09: RakuAST is the default.
+        raku-version: ['2026.07', '2026.09']
     steps:
       - uses: actions/checkout@v6
         with: { submodules: recursive }
 
       - uses: Raku/setup-raku@v1
-        with: { raku-version: 'latest' }
+        with:
+          raku-version: ${{ matrix.raku-version }}
 
       - name: zef install (prebuilt path)
         run: zef install --/test .
@@ -35,10 +41,10 @@ jobs:
         run: zef install --/test App::Prove6
 
       - name: prove6 (prebuilt path)
-        run: prove6 --verbose -I lib -I t/lib t
+        run: prove6 --verbose -I lib t
 
       - name: prove (xt — terminal-dependent, prebuilt path)
-        run: prove -e 'raku -I lib -I t/lib' --verbose xt/*.rakutest
+        run: prove -e 'raku -I lib' --verbose xt/*.rakutest
 
       - name: Install apt deps for source-build pass
         run: |
@@ -54,4 +60,4 @@ jobs:
         run: zef install --/test --force-install .
 
       - name: prove6 (source-build path)
-        run: prove6 --verbose -I lib -I t/lib t
+        run: prove6 --verbose -I lib t

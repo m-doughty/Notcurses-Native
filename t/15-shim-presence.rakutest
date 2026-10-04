@@ -1,6 +1,7 @@
 use Test;
 use lib 'lib';
 
+use NativeCall;
 use Notcurses::Native;
 
 # Shim-presence test. Selkie::Widget::ViewportedCardList's merge
@@ -21,7 +22,7 @@ use Notcurses::Native;
 
 my Bool $require-shim = (%*ENV<NOTCURSES_NATIVE_REQUIRE_SHIM> // '').chars > 0;
 my Str  $shim-name    = "libnotcurses_native_shim.$ext";
-# shim-lib() is a state-cached resolver sub (not a constant) —
+# shim-lib() is a memoised resolver sub (not a constant) —
 # evaluate it once and capture for the rest of the file.
 my Str  $resolved     = shim-lib() // '(unresolved)';
 
@@ -42,12 +43,43 @@ unless $resolved.defined && $resolved.chars > 0 && $resolved.IO.e {
     exit 0;
 }
 
-plan 2;
+# Every function the shim source exports (a definition at the start of a
+# line that is not `static`), read from the source this dist ships so the
+# list cannot drift from it. The CI build lanes assert the same list
+# against each packed binary; xt/20 checks their lists match this source.
+my IO::Path $shim-source = $*PROGRAM.parent.parent.add('src/notcurses_native_shim.c');
+my @exports = $shim-source.lines.map({
+    ~$0 if / ^ <!before 'static'> [ <[\w]>+ <[\s*]>+ ]+ ('notcurses_native_' \w+) \s* '(' /
+}).unique;
+
+plan 4;
 
 ok $resolved.defined && $resolved.chars > 0,
     "shim-lib() resolver returned a path (got '$resolved')";
 
 ok $resolved.IO.e,
     "shim binary '$shim-name' is on disk at '$resolved'";
+
+ok @exports >= 10, "the shim source exports {+@exports} functions";
+
+# cglobal resolves a symbol the way NativeCall binds one (dlsym, or
+# GetProcAddress on Windows) without calling it. macOS resolves the
+# shim's notcurses references at load, so libnotcurses goes in first.
+ensure-shim-loadable();
+my @missing = @exports.grep(-> $sym {
+    !(try cglobal($resolved, $sym, Pointer)).defined
+});
+if $require-shim || !@missing {
+    is @missing.join(', '), '', "the staged shim exports all {+@exports} of them";
+}
+else {
+    # A prebuilt pack's shim is compiled at its BINARY_TAG, so on a
+    # machine with no C toolchain an older pack's shim can lack entry
+    # points this source added since; the bindings degrade without them
+    # until the next binary release. CI sets NOTCURSES_NATIVE_REQUIRE_SHIM
+    # and fails above instead.
+    pass "the staged shim predates {+@missing} of them ({@missing.join(', ')}); "
+       ~ "they arrive with the next binary release";
+}
 
 done-testing;

@@ -1,0 +1,296 @@
+use Test;
+use lib $*PROGRAM.parent.parent.add('lib').Str;
+use Notcurses::Native::Str :DEFAULT, :INTERNAL;
+use Notcurses::Native::Test::Headless;
+
+# The printf family no longer goes through NativeCall's variadic support.
+# ncplane_printf, _yx, _aligned, _stained and ncdirect_printf_aligned were
+# bound straight to notcurses's variadic C functions, and NativeCall
+# cannot call those safely: a call with no arguments after the format
+# died on every platform ("cannot unbox to an unsigned native int"), and
+# on Windows every integer vararg travels as a 32-bit `long`, so %lld of
+# anything past 2**32 printed garbage there. They are Raku subs now that
+# format with c-sprintf (Raku's sprintf, fed a C format) and hand the
+# text to the fixed-arity call notcurses's own vprintf_* use after
+# formatting. This file pins the format rules in-process and the plane
+# and direct-mode behaviour in headless children, reading every written
+# cell back through ncplane_at_yx.
+
+plan 5;
+
+subtest 'c-sprintf: C formats in, Raku sprintf out' => {
+    plan 22;
+    is c-sprintf('hello', []), 'hello', 'a format with no conversions and no arguments';
+    is c-sprintf('100%%', []), '100%', '%% is a literal percent sign';
+    is c-sprintf('val=%d', [42]), 'val=42', '%d';
+    is c-sprintf('%lld', [2**40 + 5]), '1099511627781',
+        '%lld of a value past 2**32 prints in full';
+    is c-sprintf('%llx', [2**36]), '1000000000', '%llx';
+    is c-sprintf('%hhd %hd %ld %jd %zu %td %qd %lu', [300, 70000, -3, 4, 5, 6, 7, 8]),
+        '300 70000 -3 4 5 6 7 8',
+        'every integer length modifier is dropped, and nothing is truncated to it';
+    is c-sprintf('%Lf|%lf|%5.2lf', [1.5, 2.25, 3.14159]), '1.500000|2.250000| 3.14',
+        'length modifiers on floating conversions are dropped too';
+    is c-sprintf('%-4ld|%+lld|%08llx', [7, 9, 255]), '7   |+9|000000ff',
+        'flags, widths and precisions survive the length modifier being dropped';
+    is c-sprintf('%s', ["h\x[E9]\x[1F600]"]), "h\x[E9]\x[1F600]", '%s with multi-byte text';
+    is c-sprintf('%5s|', ["\x[E9]"]), "    \x[E9]|",
+        'widths count characters, not UTF-8 bytes';
+    is c-sprintf('%.2s|', ["\x[E9]\x[E8]\x[EA]"]), "\x[E9]\x[E8]|",
+        'precisions count characters, not UTF-8 bytes';
+    is c-sprintf('%2$s %1$s', ['b', 'a']), 'a b', 'POSIX n$ argument indices';
+    is c-sprintf('%*d|', [4, 7]), '   7|', '* widths take their argument';
+    is c-sprintf('%c%c', [72, 105]), 'Hi', '%c of a codepoint';
+    for '%n' => '%n', '%hhn' => '%n', '%p' => '%p', '%ls' => '%ls',
+        '%lc' => '%lc', '%S' => '%S', '%C' => '%C' -> (:key($format), :value($named)) {
+        my Str $message = (try { c-sprintf("x $format", [1], :caller<probe>); Str }) // $!.message;
+        ok $message.defined && $message.starts-with('probe:')
+            && $message.contains("'$named'"),
+            "'$format' dies, naming the caller and '$named'";
+    }
+    dies-ok { c-sprintf('%d %d', [1]) }, 'fewer arguments than conversions dies';
+};
+
+my Str $prelude = q:to/RAKU/;
+    use NativeCall;
+    use Notcurses::Native;
+    use Notcurses::Native::Types;
+    use Notcurses::Native::Plane;
+    use Notcurses::Native::Direct;
+    use Notcurses::Native::Test::Headless;
+
+    # The clusters in row $y, columns ^$cols, as the .raku of a List (so a
+    # '|' or ',' in the text cannot blur the cell boundaries). A wide
+    # glyph answers the same cluster from both of its cells.
+    sub cells($p, Int $y, Int $cols --> Str) {
+        (^$cols).map(-> $x {
+            my uint16 $style = 0;
+            my uint64 $channels = 0;
+            ncplane_at_yx($p, $y, $x, $style, $channels) // 'NULL'
+        }).List.raku
+    }
+    sub cursor($p --> Str) {
+        my uint32 ($y, $x);
+        ncplane_cursor_yx($p, $y, $x);
+        "$y,$x"
+    }
+    sub died(&code --> Str) {
+        try { code(); return 'lived' }
+        $!.message.lines.head
+    }
+    RAKU
+
+# The expected cells of a row, in the form the child's cells() reports
+# (stringified: <1 2> words are IntStr allomorphs, which .raku shows as such).
+sub row(*@clusters --> Str) { @clusters.map(~*).List.raku }
+
+sub clean-exit(Map $run, Str $what) {
+    ok !$run<timed-out> && $run<exitcode> == 0 && $run<signal> == 0,
+        "$what: child exits cleanly ({describe-exit($run)})"
+        or diag "child stderr:\n{$run<err>}";
+}
+
+subtest 'ncplane_printf and ncplane_printf_yx write what C would' => {
+    plan 24;
+    my $run = run-headless-script($prelude ~ q:to/RAKU/);
+        my $nc  = headless-notcurses();
+        my $std = notcurses_stdplane($nc);
+        my $p = ncplane_create($std, NcplaneOptions.new(:rows(8), :cols(16)));
+
+        # No arguments after the format: the call that always died.
+        report 'bare-ret', ncplane_printf($p, "hello");
+        report 'bare-cells', cells($p, 0, 5);
+        report 'bare-cursor', cursor($p);
+
+        report 'd-ret', ncplane_printf_yx($p, 1, 0, "val=%d", 42);
+        report 'd-cells', cells($p, 1, 6);
+
+        report 'lld-ret', ncplane_printf_yx($p, 2, 0, "%lld", 2**40 + 5);
+        report 'lld-cells', cells($p, 2, 13);
+
+        report 'mod-ret', ncplane_printf_yx($p, 3, 0, "%hhd,%zu,%llx", 300, 7, 255);
+        report 'mod-cells', cells($p, 3, 8);
+
+        # h, e-acute, a two-column emoji, '!': five columns in four clusters.
+        report 'mb-ret', ncplane_printf_yx($p, 4, 0, "%s!", "h\x[E9]\x[1F600]");
+        report 'mb-cells', cells($p, 4, 5);
+        report 'mb-cursor', cursor($p);
+
+        report 'width-ret', ncplane_printf_yx($p, 5, 0, "%3s|", "\x[E9]");
+        report 'width-cells', cells($p, 5, 4);
+
+        # A rejected format writes nothing and leaves the cursor alone.
+        ncplane_cursor_move_yx($p, 6, 2);
+        report 'n-died', died({ ncplane_printf($p, "a%nb", 1) });
+        report 'p-died', died({ ncplane_printf($p, "%p", 1) });
+        report 'ls-died', died({ ncplane_printf($p, "%ls", "x") });
+        report 'arity-died', died({ ncplane_printf($p, "%d %d", 1) });
+        report 'rejected-cells', cells($p, 6, 4);
+        report 'rejected-cursor', cursor($p);
+
+        report 'undef-died', died({ ncplane_printf(NcplaneHandle, "x") });
+
+        # Running off the plane: the same partial count putstr answers.
+        my $narrow = ncplane_create($std, NcplaneOptions.new(:rows(1), :cols(3)));
+        my $other  = ncplane_create($std, NcplaneOptions.new(:rows(1), :cols(3)));
+        report 'overflow-ret', ncplane_printf_yx($narrow, 0, 0, "%s", "abcdef");
+        report 'overflow-putstr', ncplane_putstr_yx($other, 0, 0, "abcdef");
+        report 'stop', notcurses_stop($nc);
+        RAKU
+    clean-exit($run, 'plane printf');
+    my %r = $run<results>;
+    is %r<bare-ret>, '5', 'no arguments after the format: 5 columns written';
+    is %r<bare-cells>, row(<h e l l o>), 'and the cells hold "hello"';
+    is %r<bare-cursor>, '0,5', 'the cursor advanced past it';
+    is %r<d-ret>, '6', '%d: "val=42" is 6 columns';
+    is %r<d-cells>, row(<v a l = 4 2>), '%d cells';
+    is %r<lld-ret>, '13', '%lld of 2**40+5 is 13 columns';
+    is %r<lld-cells>, row(<1 0 9 9 5 1 1 6 2 7 7 8 1>),
+        '%lld cells: every digit, nothing truncated';
+    is %r<mod-ret>, '8', 'C length modifiers: "300,7,ff" is 8 columns';
+    is %r<mod-cells>, row(<3 0 0 , 7 , f f>),
+        'the modifiers are accepted, and %hhd does not truncate to a byte';
+    is %r<mb-ret>, '5', 'multi-byte %s: columns, not bytes or characters';
+    is %r<mb-cells>, row('h', "\x[E9]", "\x[1F600]", "\x[1F600]", '!'),
+        'multi-byte cells, the wide glyph in two';
+    is %r<mb-cursor>, '4,5', 'the cursor advanced five columns';
+    is %r<width-ret>, '4', 'a %3s field around one character is 4 columns';
+    is %r<width-cells>, row(' ', ' ', "\x[E9]", '|'), 'padded by characters, not bytes';
+    ok %r<n-died>.contains("'%n'"), "%n dies: {%r<n-died>}";
+    ok %r<p-died>.contains("'%p'"), "%p dies: {%r<p-died>}";
+    ok %r<ls-died>.contains("'%ls'"), "%ls dies: {%r<ls-died>}";
+    ok %r<arity-died>.contains('argument'), "an argument-count mismatch dies: {%r<arity-died>}";
+    is %r<rejected-cells>, row('', '', '', ''), 'a rejected call writes nothing';
+    is %r<rejected-cursor>, '6,2', 'and leaves the cursor where it was';
+    ok %r<undef-died>.contains('undefined'), 'an undefined plane dies instead of reaching C';
+    is %r<overflow-ret>, %r<overflow-putstr>,
+        "running off the plane answers what ncplane_putstr_yx answers ({%r<overflow-ret>})";
+    is %r<stop>, '0', 'notcurses_stop succeeds';
+};
+
+subtest 'ncplane_printf_aligned and ncplane_printf_stained' => {
+    plan 12;
+    my $run = run-headless-script($prelude ~ q:to/RAKU/);
+        my $nc  = headless-notcurses();
+        my $std = notcurses_stdplane($nc);
+        my $p = ncplane_create($std, NcplaneOptions.new(:rows(4), :cols(12)));
+        report 'right-ret', ncplane_printf_aligned($p, 0, NCALIGN_RIGHT, "%d", 42);
+        report 'right-cells', cells($p, 0, 12);
+        report 'center-ret', ncplane_printf_aligned($p, 1, NCALIGN_CENTER, "%s", "abcd");
+        report 'center-cells', cells($p, 1, 12);
+        report 'left-ret', ncplane_printf_aligned($p, 2, NCALIGN_LEFT, "x%sy", "");
+        report 'left-cells', cells($p, 2, 3);
+
+        # Stained: the glyphs change, the colours already there stay.
+        ncplane_set_fg_rgb($p, 0xFF0000);
+        ncplane_putstr_yx($p, 3, 0, "wxyz");
+        ncplane_set_fg_rgb($p, 0x0000FF);
+        ncplane_cursor_move_yx($p, 3, 0);
+        report 'stained-ret', ncplane_printf_stained($p, "%s", "ab");
+        report 'stained-cells', cells($p, 3, 4);
+        my uint16 $style = 0;
+        my uint64 $channels = 0;
+        ncplane_at_yx($p, 3, 0, $style, $channels);
+        report 'stained-fg', (($channels +> 32) +& 0xFFFFFF).fmt('%06X');
+        report 'bare-stained', ncplane_printf_stained($p, "!");
+        report 'bare-aligned', ncplane_printf_aligned($p, 2, NCALIGN_RIGHT, "end");
+        report 'stop', notcurses_stop($nc);
+        RAKU
+    clean-exit($run, 'aligned and stained');
+    my %r = $run<results>;
+    is %r<right-ret>, '2', 'right-aligned: 2 columns';
+    is %r<right-cells>, row('' xx 10, '4', '2'), 'placed against the right edge';
+    is %r<center-ret>, '4', 'centred: 4 columns';
+    is %r<center-cells>, row('' xx 4, <a b c d>, '' xx 4), 'placed at column (12 - 4) / 2';
+    is %r<left-cells>, row('x', 'y', ''), 'left-aligned from column 0; an empty %s adds nothing';
+    is %r<stained-ret>, '2', 'stained: 2 columns';
+    is %r<stained-cells>, row(<a b y z>), 'stained replaces the glyphs under the cursor';
+    is %r<stained-fg>, 'FF0000', 'and keeps the colour that was there';
+    is %r<bare-stained>, '1', 'stained with no arguments after the format';
+    is %r<bare-aligned>, '3', 'aligned with no arguments after the format';
+    is %r<stop>, '0', 'notcurses_stop succeeds';
+};
+
+subtest 'ncdirect_printf_aligned: the C algorithm, rebuilt from public calls' => {
+    plan 13;
+    my $run = run-headless-script($prelude ~ q:to/RAKU/);
+        my $d = headless-ncdirect(:on-stdout);
+        my $cols = ncdirect_dim_x($d);
+        report 'cols', $cols;
+        # Each write is flushed before the next report so the parent sees
+        # C's buffered output in call order.
+        sub run-one(Str $key, &call) {
+            my $ret = call();
+            ncdirect_flush($d);
+            report $key, $ret;
+        }
+        run-one 'right', { ncdirect_printf_aligned($d, -1, NCALIGN_RIGHT, "%s=%lld", 'big', 2**40) };
+        run-one 'center', { ncdirect_printf_aligned($d, 3, NCALIGN_CENTER, "mid") };
+        run-one 'left', { ncdirect_printf_aligned($d, 1, NCALIGN_LEFT, "%d%%", 50) };
+        run-one 'control', { ncdirect_printf_aligned($d, 0, NCALIGN_LEFT, "a%cb", 1) };
+        report 'wide-died', died({ ncdirect_printf_aligned($d, 0, NCALIGN_LEFT, "%ls", "x") });
+        report 'undef-died', died({ ncdirect_printf_aligned(NcdirectHandle, 0, NCALIGN_LEFT, "x") });
+        ncdirect_stop($d);
+        RAKU
+    clean-exit($run, 'direct printf');
+    my %r = $run<results>;
+    my Str $out = $run<out>;
+    my Int $cols = (%r<cols> // 0).Int;
+    ok $cols > 0, "the ncdirect reports a width ($cols columns)";
+
+    # The escape sequence immediately before each text line must place it
+    # at the column ncdirect_align computes (terminfo-agnostic: either a
+    # horizontal move `[<col>G` or a full move `[<row>;<col>H`, 1-based).
+    sub placed(Str $text, Int $row, Int $col --> Bool) {
+        my $m = $out ~~ / "\e[" (\d+ ';')? (\d+) (<[GH]>) $text \n /;
+        return False without $m;
+        my Bool $col-ok = +$m[1] == $col + 1;
+        my Bool $row-ok = $row < 0 ?? !$m[0].defined || $m[2] eq 'H'
+                                   !! $m[0].defined && +$m[0].chop == $row + 1;
+        $col-ok && $row-ok
+    }
+    ok placed('big=1099511627776', -1, $cols - 17),
+        'right-aligned, the current row: %lld printed in full at cols - 17';
+    ok placed('mid', 3, ($cols - 3) div 2), 'centred on row 3 at (cols - 3) div 2';
+    ok placed('50%', 1, 0), 'left-aligned on row 1 at column 0';
+    for <right center left> -> $key {
+        ok %r{$key}.defined && %r{$key} >= 0,
+            "$key: answers puts(3)'s non-negative success value ({%r{$key} // '?'})";
+    }
+    is %r<control>, '-1', 'text ncstrwidth rejects (a control character) answers -1';
+    nok $out.contains("a\x[01]b"), 'and writes nothing';
+    ok %r<wide-died>.contains('%ls'), "a wide conversion dies: {%r<wide-died>}";
+    ok %r<undef-died>.contains('undefined'), 'an undefined handle dies instead of reaching C';
+    ok $out.index('big=') < $out.index('mid') < $out.index('50%'),
+        'the three lines arrive in call order';
+};
+
+subtest 'no variadic native binding remains' => {
+    plan 2;
+    # Every native sub the dist exports, from every module that has any:
+    # none may take a slurpy (NativeCall's marker for a variadic call).
+    use Notcurses::Native;
+    use Notcurses::Native::Plane;
+    use Notcurses::Native::Direct;
+    use Notcurses::Native::Context;
+    use Notcurses::Native::Widgets;
+    use Notcurses::Native::Visual;
+    use Notcurses::Native::Cell;
+    use Notcurses::Native::Channel;
+    use Notcurses::Native::Input;
+    my @variadic;
+    my Int $native = 0;
+    use NativeCall;
+    for Notcurses::Native, Notcurses::Native::Plane, Notcurses::Native::Direct,
+        Notcurses::Native::Context, Notcurses::Native::Widgets,
+        Notcurses::Native::Visual, Notcurses::Native::Cell,
+        Notcurses::Native::Channel, Notcurses::Native::Input -> $module {
+        for $module.WHO<EXPORT>.WHO<DEFAULT>.WHO.values -> $sym {
+            next unless $sym ~~ Routine && $sym.does(NativeCall::Native);
+            $native++;
+            @variadic.push($sym.name) if $sym.signature.params.first(*.slurpy);
+        }
+    }
+    ok $native > 400, "found the native bindings ($native)";
+    is @variadic.sort.join(', '), '', 'none of them is variadic';
+};

@@ -2,12 +2,140 @@ use NativeCall;
 
 unit module Notcurses::Native::Types;
 
-# === CStruct Str field helper ===
-# NativeCall CStruct cannot set Str fields via the constructor.
-# This helper writes a C string pointer at the given field offset.
-my @cstruct-str-refs;  # prevent GC of allocated string buffers
+use Notcurses::Native::Str :INTERNAL;
 
-sub set-cstruct-str($struct, Int $offset, Str $value) is export {
+# === Strings in option structs ===
+#
+# notcurses reads C strings out of several option structs (a plane's name,
+# a selector's title, a menu section's name, ...). Every consumer copies
+# them during the call that receives the struct — ncplane_create,
+# ncselector_create, ncmenu_create, nctabbed_create, ncuplot_create and
+# the rest strdup what they keep — so a string only has to live as long
+# as the struct holding it.
+#
+# Each such field is a private `CArray[uint8]` attribute holding a
+# NUL-terminated UTF-8 copy of the string. A CArray is pointer-sized, so
+# the C layout is exactly `const char*`; and a CArray bound into a
+# CStruct attribute is kept alive by the struct (MoarVM roots it in the
+# struct's child objects) for exactly as long as the struct, while
+# rebinding the field lets the old buffer be collected. Arrays of item
+# structs work the same way one level down: see owned-struct-array.
+#
+# This replaces set-cstruct-str (kept below, deprecated, for callers
+# outside this dist). It wrote a raw pointer into the struct and pushed
+# the buffer onto a global array so the GC could not free it — which
+# also meant it was never freed: every titled selector, named plane or
+# plot for the life of the process leaked its strings. Binding a Str
+# attribute instead is no better: MoarVM then mallocs a C copy that is
+# never freed either.
+
+# A NUL-terminated UTF-8 copy of $value in a fresh CArray, or the
+# CArray[uint8] type object (a NULL char*) for an undefined $value. Dies
+# on an embedded NUL, which C would silently read as the end of the
+# string.
+my sub owned-c-string(Str $value, Str:D $what --> CArray[uint8]) {
+	return CArray[uint8] without $value;
+	die "$what: the string contains a NUL character, which C would read "
+	  ~ "as its end: {$value.raku}"
+		if $value.contains("\x[0]");
+	my Blob $bytes = $value.encode('utf8');
+	# allocate sets the last element, which is the NUL terminator; the
+	# bytes before it are filled in one memcpy (a CArray built from a
+	# list of bytes costs a Raku call per byte).
+	my $buffer = CArray[uint8].allocate($bytes.bytes + 1);
+	copy-blob-into-native(nativecast(Pointer, $buffer), $bytes, $bytes.bytes);
+	$buffer
+}
+
+# The Str a string slot holds, or the Str type object for NULL.
+my sub c-string-value(CArray[uint8] $slot --> Str) {
+	$slot.defined ?? nativecast(Str, $slot) !! Str
+}
+
+# The address an array slot holds, as the Pointer the old `has Pointer`
+# accessors answered: the type object for NULL.
+my sub c-array-address(CArray $slot --> Pointer) {
+	$slot.defined ?? nativecast(Pointer, $slot) !! Pointer
+}
+
+# A caller-supplied raw array pointer, as a value an array slot can hold.
+# nativecast wraps the address without taking ownership of it: the
+# caller keeps the array alive, exactly as with the old Pointer fields.
+my sub borrowed-c-array(Pointer $p --> CArray[CArray[uint8]]) {
+	($p.defined && +$p)
+		?? nativecast(CArray[CArray[uint8]], $p)
+		!! CArray[CArray[uint8]]
+}
+
+# Lay out @items — instances of the CStruct class $type — as the
+# contiguous C array notcurses expects (`const struct $type*`), plus an
+# all-zero terminator element when :terminated, and answer it as the
+# owner of every string in it.
+#
+# The answer is a CArray of pointer-sized slots: one element is
+# nativesizeof($type) / nativesizeof(Pointer) slots, and slot k of
+# element i sits at byte (i * size + k * pointer-size), which is where C
+# reads that element's k-th pointer-sized word. Each element's bytes are
+# copied from the item struct; then every string slot named in
+# %string-slots (accessor name => slot index) is assigned a fresh
+# owned-c-string of the item's string. A CArray of CArrays keeps each
+# element it is assigned alive for as long as the array lives, so the
+# array owns its strings — and, through &adopt, anything else its
+# elements point at (a menu section's item array) — for as long as the
+# options struct it is bound into. &validate, when given, is called with
+# each item and its index before that item is copied, to refuse an item
+# C would misread; the half-built array is simply dropped.
+my sub owned-struct-array(@items, Mu:U $type, %string-slots, Str:D $what,
+		Bool :$terminated = False, :&adopt, :&validate --> CArray[CArray[uint8]])
+{
+	my Int $size = nativesizeof($type);
+	my Int $word = nativesizeof(Pointer);
+	die "$what: {$type.^name} is $size bytes, not a whole number of "
+	  ~ "{$word}-byte pointer slots"
+		unless $size %% $word;
+	my Int $stride = $size div $word;
+	my Int $elements = @items.elems + ($terminated ?? 1 !! 0);
+	# Every slot starts NULL — the terminator must be all zero. (Not
+	# .allocate: that fills a CArray of CArrays with empty CArrays, whose
+	# storage pointers are not NULL, so C would read a terminator
+	# element's option as an empty string rather than the end.)
+	my $array = CArray[CArray[uint8]].new;
+	$array[$_] = CArray[uint8] for ^($elements * $stride);
+	return $array unless @items;
+	my Int $base = +nativecast(Pointer, $array);
+	for @items.kv -> Int $i, $item {
+		die "$what: element $i is {$item.raku}, not a {$type.^name}"
+			unless $item.defined && $item ~~ $type;
+		validate($item, $i) with &validate;
+		copy-native-between(Pointer.new($base + $i * $size),
+			nativecast(Pointer, $item), $size);
+		for %string-slots.kv -> Str $accessor, Int $slot {
+			$array[$i * $stride + $slot] = owned-c-string(
+				$item."$accessor"(), "$what element $i $accessor");
+		}
+		adopt($array, $i * $stride, $item) with &adopt;
+	}
+	$array
+}
+
+# === Deprecated CStruct string writer ===
+
+my @cstruct-str-refs;  # every buffer ever written: never freed
+
+#|( B<Deprecated> — the option structs own their strings now: pass them
+    to C<.new> (C<NcplaneOptions.new(:name('status'))>) or to the
+    struct's C<set-*> method (C<$opts.set-name('status')>).
+
+    Writes a C string pointer into pointer-sized slot C<$offset> of
+    C<$struct> (byte offset C<$offset × sizeof(void*)>), and keeps the
+    string's buffer alive by adding it to a global list that is never
+    emptied — so every call leaks the string for the life of the
+    process. Kept, with its behaviour unchanged, for code outside this
+    distribution that still calls it; nothing in the distribution does.
+    An undefined C<$value> writes nothing. )
+sub set-cstruct-str($struct, Int $offset, Str $value) is export
+	is DEPRECATED('the option structs\' own constructors and set-* methods')
+{
 	return unless $value.defined;
 	my $buf = CArray[uint8].new($value.encode("utf8").list, 0);
 	@cstruct-str-refs.push($buf);
@@ -94,13 +222,18 @@ enum NcInputType is export (
 );
 
 # === Style masks ===
+#
+# Mirrors notcurses.h's NCSTYLE_* defines bit for bit; t/33 pins every
+# value against the header. NCSTYLE_STRUCK is 0x0001 — it was 0x0020
+# here until 0.6.7, a bit notcurses does not define, so strikethrough
+# set through this constant silently rendered as plain text.
 
 constant NCSTYLE_MASK      is export = 0xFFFF;
 constant NCSTYLE_ITALIC    is export = 0x0010;
 constant NCSTYLE_UNDERLINE is export = 0x0008;
 constant NCSTYLE_UNDERCURL is export = 0x0004;
 constant NCSTYLE_BOLD      is export = 0x0002;
-constant NCSTYLE_STRUCK    is export = 0x0020;
+constant NCSTYLE_STRUCK    is export = 0x0001;
 constant NCSTYLE_NONE      is export = 0x0000;
 
 # === Option flags ===
@@ -115,7 +248,20 @@ constant NCOPTION_NO_ALTERNATE_SCREEN is export = 0x0040;
 constant NCOPTION_NO_FONT_CHANGES     is export = 0x0080;
 constant NCOPTION_DRAIN_INPUT         is export = 0x0100;
 constant NCOPTION_SCROLLING           is export = 0x0200;
-constant NCOPTION_CLI_MODE            is export = 0x0600;  # SCROLLING | NO_ALTERNATE_SCREEN | PRESERVE_CURSOR
+# notcurses.h: NO_ALTERNATE_SCREEN | NO_CLEAR_BITMAPS | PRESERVE_CURSOR
+# | SCROLLING. It was 0x0600 here until 0.6.7 — SCROLLING plus 0x0400,
+# a bit notcurses does not define — so "CLI mode" left the alternate
+# screen up, cleared bitmaps and moved the cursor. t/42 pins it.
+constant NCOPTION_CLI_MODE            is export = 0x0252;
+
+# === Direct-mode option flags (ncdirect_init / ncdirect_core_init) ===
+
+constant NCDIRECT_OPTION_INHIBIT_SETLOCALE   is export = 0x0001;
+constant NCDIRECT_OPTION_INHIBIT_CBREAK      is export = 0x0002;
+constant NCDIRECT_OPTION_DRAIN_INPUT         is export = 0x0004;
+constant NCDIRECT_OPTION_NO_QUIT_SIGHANDLERS is export = 0x0008;
+constant NCDIRECT_OPTION_VERBOSE             is export = 0x0010;
+constant NCDIRECT_OPTION_VERY_VERBOSE        is export = 0x0020;
 
 # === Plane option flags ===
 
@@ -128,40 +274,65 @@ constant NCPLANE_OPTION_VSCROLL       is export = 0x0020;
 
 # === CStruct: notcurses_options ===
 
+#|( C<struct notcurses_options>. C<termtype> is owned by the struct:
+    C<NotcursesOptions.new(:termtype('xterm-256color'))> or
+    C<.set-termtype(...)> stores a copy that lives exactly as long as the
+    struct, and C<.termtype> reads it back (the C<Str> type object when
+    unset, which notcurses reads as "use $TERM"). )
 class NotcursesOptions is repr('CStruct') is export {
-	has Str $.termtype;          # offset 0
-	has int32 $.loglevel = 0;    # ncloglevel_e
+	has CArray[uint8] $!termtype;  # const char*, struct-owned
+	has int32 $.loglevel = 0;      # ncloglevel_e
 	has uint32 $.margin_t = 0;
 	has uint32 $.margin_r = 0;
 	has uint32 $.margin_b = 0;
 	has uint32 $.margin_l = 0;
 	has uint64 $.flags = 0;
 
-	multi method new(Str :$termtype, *%rest) {
-		my $self = callwith(|%rest);
-		set-cstruct-str($self, 0, $termtype);
-		$self
+	submethod TWEAK(Str :$termtype) {
+		self.set-termtype($termtype) with $termtype;
+	}
+
+	#| The terminal type notcurses will be told to use, or C<Str>.
+	method termtype(--> Str) { c-string-value($!termtype) }
+
+	#| Replace (or, with C<Str>, clear) the terminal type. Answers the struct.
+	method set-termtype(Str $termtype) {
+		$!termtype := owned-c-string($termtype, 'NotcursesOptions.termtype')<>;
+		self
 	}
 }
 
 # === CStruct: ncplane_options ===
 
+#|( C<struct ncplane_options>. C<name> is owned by the struct:
+    C<NcplaneOptions.new(:rows(3), :cols(20), :name('status'))> or
+    C<.set-name(...)> stores a copy that lives exactly as long as the
+    struct (C<ncplane_create> copies it), and C<.name> reads it back. A
+    struct can be reused for any number of planes; renaming it between
+    calls costs one small buffer, which the old name gives back. )
 class NcplaneOptions is repr('CStruct') is export {
 	has int32 $.y = 0;
 	has int32 $.x = 0;
 	has uint32 $.rows = 1;
 	has uint32 $.cols = 1;
 	has Pointer $.userptr;
-	has Str $.name;              # offset 3
+	has CArray[uint8] $!name;    # const char*, struct-owned
 	has Pointer $.resizecb;      # function pointer
 	has uint64 $.flags = 0;
 	has uint32 $.margin_b = 0;
 	has uint32 $.margin_r = 0;
 
-	multi method new(Str :$name, *%rest) {
-		my $self = callwith(|%rest);
-		set-cstruct-str($self, 3, $name);
-		$self
+	submethod TWEAK(Str :$name) {
+		self.set-name($name) with $name;
+	}
+
+	#| The name planes created from this struct get, or C<Str>.
+	method name(--> Str) { c-string-value($!name) }
+
+	#| Replace (or, with C<Str>, clear) the name. Answers the struct.
+	method set-name(Str $name) {
+		$!name := owned-c-string($name, 'NcplaneOptions.name')<>;
+		self
 	}
 }
 
@@ -360,6 +531,13 @@ constant NCKEY_BUTTON9   is export = 1115209;
 constant NCKEY_BUTTON10  is export = 1115210;
 constant NCKEY_BUTTON11  is export = 1115211;
 
+# Bracketed paste (m-doughty/notcurses fork, binaries r16+): rendered mode
+# asks the terminal to wrap pasted text in these two keys. Everything
+# between them is the pasted text, and a newline in it arrives as
+# NCKEY_ENTER, so a consumer treats the whole span as text, never as keys.
+constant NCKEY_PASTE_BEGIN is export = 1115300;
+constant NCKEY_PASTE_END   is export = 1115301;
+
 # Special
 constant NCKEY_SIGNAL    is export = 1115400;
 constant NCKEY_EOF       is export = 1115500;
@@ -475,9 +653,19 @@ constant NCMENU_OPTION_BOTTOM is export = 0x0001;
 constant NCMENU_OPTION_HIDING is export = 0x0002;
 
 # === CStruct: timespec (POSIX) ===
+#
+# C: `struct timespec { time_t tv_sec; long tv_nsec; }`. time_t is 64
+# bits on every supported target, but `long` is only 32 bits on
+# Windows (LLP64), so tv_sec must be int64 rather than long: with both
+# fields `long`, the Windows struct was 8 bytes with tv_nsec at offset
+# 4, while notcurses reads a 16-byte struct with tv_nsec at offset 8 —
+# every timeout handed to notcurses_get / ncdirect_get / the fade and
+# stream calls was misread there. tv_nsec stays `long`, which is what
+# C declares; alignment pads it to offset 8 on LLP64. t/34 pins the
+# size, the offsets and a round-trip.
 
 class Timespec is repr('CStruct') is export {
-	has long $.tv_sec = 0;
+	has int64 $.tv_sec = 0;
 	has long $.tv_nsec = 0;
 }
 
@@ -595,25 +783,81 @@ class NcreelOptions is repr('CStruct') is export {
 
 # === CStruct: ncselector_item ===
 
-class NcselectorItem is repr('CStruct') is export {
-	has Str $.option;            # offset 0
-	has Str $.desc;              # offset 1
+# Items notcurses would misread. A NULL option is how a C item array
+# ends, so one mid-list would silently drop every item after it. And the
+# multiselector, unlike the selector (which treats a NULL description as
+# ""), measures every description with ncstrwidth unconditionally: a
+# NULL one crashes ncmultiselector_create.
+my sub selector-item-check($item, Int $i) {
+	die "NcselectorOptions.items: element $i has no option; notcurses "
+	  ~ "would read it as the end of the list"
+		without $item.option;
+}
+my sub mselector-item-check($item, Int $i) {
+	die "NcmultiselectorOptions.items: element $i has no option; "
+	  ~ "notcurses would read it as the end of the list"
+		without $item.option;
+	die "NcmultiselectorOptions.items: element $i has no desc; notcurses's "
+	  ~ "multiselector dereferences it unconditionally (use '' for none)"
+		without $item.desc;
+}
 
-	multi method new(Str :$option, Str :$desc, *%rest) {
-		my $self = callwith(|%rest);
-		set-cstruct-str($self, 0, $option);
-		set-cstruct-str($self, 1, $desc);
-		$self
+#|( C<struct ncselector_item>: one option and its description, both
+    owned by the struct (C<NcselectorItem.new(:option('red'),
+    :desc('the colour of fire'))>, C<.set-option>, C<.set-desc>). Pass
+    items to C<ncselector_additem>, or a list of them to
+    C<NcselectorOptions.new(:items(...))>. )
+class NcselectorItem is repr('CStruct') is export {
+	has CArray[uint8] $!option;  # const char*, struct-owned
+	has CArray[uint8] $!desc;    # const char*, struct-owned
+
+	submethod TWEAK(Str :$option, Str :$desc) {
+		self.set-option($option) with $option;
+		self.set-desc($desc) with $desc;
+	}
+
+	#| The option text, or C<Str>.
+	method option(--> Str) { c-string-value($!option) }
+
+	#| The description, or C<Str>.
+	method desc(--> Str) { c-string-value($!desc) }
+
+	#| Replace (or, with C<Str>, clear) the option text. Answers the item.
+	method set-option(Str $option) {
+		$!option := owned-c-string($option, 'NcselectorItem.option')<>;
+		self
+	}
+
+	#| Replace (or, with C<Str>, clear) the description. Answers the item.
+	method set-desc(Str $desc) {
+		$!desc := owned-c-string($desc, 'NcselectorItem.desc')<>;
+		self
 	}
 }
 
 # === CStruct: ncselector_options ===
 
+#|( C<struct ncselector_options>. C<title>, C<secondary> and C<footer>
+    are owned by the struct, like C<NcplaneOptions.name>. C<items> takes
+    either a list of C<NcselectorItem>s — copied into a NULL-terminated
+    C array the struct owns, strings and all, so the items themselves
+    may go away — or a raw C<Pointer> to such an array that you own
+    (the pre-0.6.7 behaviour). C<.items> answers the array's address.
+    Every listed item needs an C<option> (a missing one is how the C
+    array ends, so it dies rather than silently dropping the rest); a
+    missing C<desc> is shown as empty.
+
+        my $opts = NcselectorOptions.new(
+            :title('Colour'),
+            :items(NcselectorItem.new(:option<red>,  :desc('warm')),
+                   NcselectorItem.new(:option<blue>, :desc('cool'))),
+        );
+        my $selector = ncselector_create($plane, $opts); )
 class NcselectorOptions is repr('CStruct') is export {
-	has Str $.title;              # offset 0
-	has Str $.secondary;          # offset 1
-	has Str $.footer;             # offset 2
-	has Pointer $.items;          # const ncselector_item*
+	has CArray[uint8] $!title;       # const char*, struct-owned
+	has CArray[uint8] $!secondary;   # const char*, struct-owned
+	has CArray[uint8] $!footer;      # const char*, struct-owned
+	has CArray[CArray[uint8]] $!items; # const ncselector_item*
 	has uint32 $.defidx = 0;
 	has uint32 $.maxdisplay = 0;
 	has uint64 $.opchannels = 0;
@@ -623,37 +867,104 @@ class NcselectorOptions is repr('CStruct') is export {
 	has uint64 $.boxchannels = 0;
 	has uint64 $.flags = 0;
 
-	multi method new(Str :$title, Str :$secondary, Str :$footer, *%rest) {
-		my $self = callwith(|%rest);
-		set-cstruct-str($self, 0, $title);
-		set-cstruct-str($self, 1, $secondary);
-		set-cstruct-str($self, 2, $footer);
-		$self
+	submethod TWEAK(Str :$title, Str :$secondary, Str :$footer, :$items) {
+		self.set-title($title) with $title;
+		self.set-secondary($secondary) with $secondary;
+		self.set-footer($footer) with $footer;
+		self.set-items($items) with $items;
+	}
+
+	#| The title, or C<Str>.
+	method title(--> Str) { c-string-value($!title) }
+	#| The secondary title, or C<Str>.
+	method secondary(--> Str) { c-string-value($!secondary) }
+	#| The footer, or C<Str>.
+	method footer(--> Str) { c-string-value($!footer) }
+	#| The address of the item array, or the C<Pointer> type object.
+	method items(--> Pointer) { c-array-address($!items) }
+
+	#| Replace (or, with C<Str>, clear) the title. Answers the struct.
+	method set-title(Str $title) {
+		$!title := owned-c-string($title, 'NcselectorOptions.title')<>;
+		self
+	}
+	#| Replace (or, with C<Str>, clear) the secondary title. Answers the struct.
+	method set-secondary(Str $secondary) {
+		$!secondary := owned-c-string($secondary, 'NcselectorOptions.secondary')<>;
+		self
+	}
+	#| Replace (or, with C<Str>, clear) the footer. Answers the struct.
+	method set-footer(Str $footer) {
+		$!footer := owned-c-string($footer, 'NcselectorOptions.footer')<>;
+		self
+	}
+
+	#| Point C<items> at a caller-owned C array (C<Pointer> type object:
+	#| NULL, no items). Answers the struct.
+	multi method set-items(Pointer $items) {
+		$!items := borrowed-c-array($items)<>;
+		self
+	}
+	#| Copy the C<NcselectorItem>s into a NULL-terminated array the struct
+	#| owns. Answers the struct.
+	multi method set-items(Iterable:D $items) {
+		$!items := owned-struct-array($items.List, NcselectorItem,
+			%(option => 0, desc => 1), 'NcselectorOptions.items',
+			:terminated, :validate(&selector-item-check))<>;
+		self
+	}
+	#| A single C<NcselectorItem>, as a one-item list.
+	multi method set-items(NcselectorItem:D $item) {
+		self.set-items(($item,))
 	}
 }
 
 # === CStruct: ncmselector_item ===
 
+#|( C<struct ncmselector_item>: an option, its description (both owned
+    by the struct, as for C<NcselectorItem>) and whether it starts
+    selected. Pass a list of them to C<NcmultiselectorOptions.new(:items(...))>. )
 class NcmselectorItem is repr('CStruct') is export {
-	has Str $.option;            # offset 0
-	has Str $.desc;              # offset 1
+	has CArray[uint8] $!option;  # const char*, struct-owned
+	has CArray[uint8] $!desc;    # const char*, struct-owned
 	has bool $.selected = False;
 
-	multi method new(Str :$option, Str :$desc, *%rest) {
-		my $self = callwith(|%rest);
-		set-cstruct-str($self, 0, $option);
-		set-cstruct-str($self, 1, $desc);
-		$self
+	submethod TWEAK(Str :$option, Str :$desc) {
+		self.set-option($option) with $option;
+		self.set-desc($desc) with $desc;
+	}
+
+	#| The option text, or C<Str>.
+	method option(--> Str) { c-string-value($!option) }
+
+	#| The description, or C<Str>.
+	method desc(--> Str) { c-string-value($!desc) }
+
+	#| Replace (or, with C<Str>, clear) the option text. Answers the item.
+	method set-option(Str $option) {
+		$!option := owned-c-string($option, 'NcmselectorItem.option')<>;
+		self
+	}
+
+	#| Replace (or, with C<Str>, clear) the description. Answers the item.
+	method set-desc(Str $desc) {
+		$!desc := owned-c-string($desc, 'NcmselectorItem.desc')<>;
+		self
 	}
 }
 
 # === CStruct: ncmultiselector_options ===
 
+#|( C<struct ncmultiselector_options>. Strings and C<items> work
+    exactly as for C<NcselectorOptions>, with C<NcmselectorItem>s — except
+    that every listed item needs a C<desc> as well as an C<option>
+    (C<''> for none): notcurses's multiselector crashes on a NULL
+    description, so a missing one dies here instead. )
 class NcmultiselectorOptions is repr('CStruct') is export {
-	has Str $.title;              # offset 0
-	has Str $.secondary;          # offset 1
-	has Str $.footer;             # offset 2
-	has Pointer $.items;          # const ncmselector_item*
+	has CArray[uint8] $!title;       # const char*, struct-owned
+	has CArray[uint8] $!secondary;   # const char*, struct-owned
+	has CArray[uint8] $!footer;      # const char*, struct-owned
+	has CArray[CArray[uint8]] $!items; # const ncmselector_item*
 	has uint32 $.maxdisplay = 0;
 	has uint64 $.opchannels = 0;
 	has uint64 $.descchannels = 0;
@@ -662,12 +973,55 @@ class NcmultiselectorOptions is repr('CStruct') is export {
 	has uint64 $.boxchannels = 0;
 	has uint64 $.flags = 0;
 
-	multi method new(Str :$title, Str :$secondary, Str :$footer, *%rest) {
-		my $self = callwith(|%rest);
-		set-cstruct-str($self, 0, $title);
-		set-cstruct-str($self, 1, $secondary);
-		set-cstruct-str($self, 2, $footer);
-		$self
+	submethod TWEAK(Str :$title, Str :$secondary, Str :$footer, :$items) {
+		self.set-title($title) with $title;
+		self.set-secondary($secondary) with $secondary;
+		self.set-footer($footer) with $footer;
+		self.set-items($items) with $items;
+	}
+
+	#| The title, or C<Str>.
+	method title(--> Str) { c-string-value($!title) }
+	#| The secondary title, or C<Str>.
+	method secondary(--> Str) { c-string-value($!secondary) }
+	#| The footer, or C<Str>.
+	method footer(--> Str) { c-string-value($!footer) }
+	#| The address of the item array, or the C<Pointer> type object.
+	method items(--> Pointer) { c-array-address($!items) }
+
+	#| Replace (or, with C<Str>, clear) the title. Answers the struct.
+	method set-title(Str $title) {
+		$!title := owned-c-string($title, 'NcmultiselectorOptions.title')<>;
+		self
+	}
+	#| Replace (or, with C<Str>, clear) the secondary title. Answers the struct.
+	method set-secondary(Str $secondary) {
+		$!secondary := owned-c-string($secondary, 'NcmultiselectorOptions.secondary')<>;
+		self
+	}
+	#| Replace (or, with C<Str>, clear) the footer. Answers the struct.
+	method set-footer(Str $footer) {
+		$!footer := owned-c-string($footer, 'NcmultiselectorOptions.footer')<>;
+		self
+	}
+
+	#| Point C<items> at a caller-owned C array (C<Pointer> type object:
+	#| NULL, no items). Answers the struct.
+	multi method set-items(Pointer $items) {
+		$!items := borrowed-c-array($items)<>;
+		self
+	}
+	#| Copy the C<NcmselectorItem>s into a NULL-terminated array the
+	#| struct owns. Answers the struct.
+	multi method set-items(Iterable:D $items) {
+		$!items := owned-struct-array($items.List, NcmselectorItem,
+			%(option => 0, desc => 1), 'NcmultiselectorOptions.items',
+			:terminated, :validate(&mselector-item-check))<>;
+		self
+	}
+	#| A single C<NcmselectorItem>, as a one-item list.
+	multi method set-items(NcmselectorItem:D $item) {
+		self.set-items(($item,))
 	}
 }
 
@@ -690,11 +1044,19 @@ class NctreeOptions is repr('CStruct') is export {
 }
 
 # === CStruct: ncmenu_item ===
-# Contains embedded Ncinput (not a pointer) — this is a large struct.
-# Ncinput is 60 bytes, so ncmenu_item is: Str(8) + Ncinput(60) = 68 bytes
+# Embeds an ncinput (not a pointer to one), flattened into shortcut_*
+# fields. ncinput is 52 bytes with 4-byte alignment, so the shortcut
+# sits at offset 8, right after desc, and ends at 60; the struct pads
+# to 64 for desc's 8-byte alignment. The ABI guard (t/42) pins every
+# offset.
 
+#|( C<struct ncmenu_item>: one menu entry. C<desc> is owned by the
+    struct (C<NcmenuItem.new(:desc('Open'))>, C<.set-desc>); an item with
+    no C<desc> is a separator. The shortcut is the flattened
+    C<shortcut_*> fields of the embedded C<ncinput>. Pass a list of items
+    to C<NcmenuSection.new(:items(...))>. )
 class NcmenuItem is repr('CStruct') is export {
-	has Str $.desc;              # offset 0
+	has CArray[uint8] $!desc;    # const char*, struct-owned; NULL = separator
 	# Embedded ncinput shortcut — inline all fields
 	has uint32 $.shortcut_id = 0;
 	has int32 $.shortcut_y = -1;
@@ -716,19 +1078,46 @@ class NcmenuItem is repr('CStruct') is export {
 	has uint32 $.shortcut_eff_text_2 = 0;
 	has uint32 $.shortcut_eff_text_3 = 0;
 
-	multi method new(Str :$desc, *%rest) {
-		my $self = callwith(|%rest);
-		set-cstruct-str($self, 0, $desc);
-		$self
+	submethod TWEAK(Str :$desc) {
+		self.set-desc($desc) with $desc;
+	}
+
+	#| The item's text, or C<Str> for a separator.
+	method desc(--> Str) { c-string-value($!desc) }
+
+	#| Replace (or, with C<Str>, clear: a separator) the text. Answers the item.
+	method set-desc(Str $desc) {
+		$!desc := owned-c-string($desc, 'NcmenuItem.desc')<>;
+		self
 	}
 }
 
 # === CStruct: ncmenu_section ===
+# name@0, itemcount@8, items@16, then the embedded 52-byte ncinput at 24,
+# padded from 76 to 80.
 
+class NcmenuOptions is repr('CStruct') is export { ... }
+
+#|( C<struct ncmenu_section>: a named section and its items. C<name> is
+    owned by the struct. C<items> takes either a list of C<NcmenuItem>s —
+    copied into a C array the section owns, strings and all, with
+    C<itemcount> set to match (a conflicting explicit C<:itemcount>
+    dies) — or a raw C<Pointer> to an array you own, with C<itemcount>
+    as you give it (the pre-0.6.7 behaviour). C<.items> answers the
+    array's address. Pass a list of sections to
+    C<NcmenuOptions.new(:sections(...))>.
+
+        my $file = NcmenuSection.new(:name<File>, :items(
+            NcmenuItem.new(:desc<Open>),
+            NcmenuItem.new,                     # separator
+            NcmenuItem.new(:desc<Quit>),
+        )); )
 class NcmenuSection is repr('CStruct') is export {
-	has Str $.name;              # offset 0
+	trusts NcmenuOptions;
+
+	has CArray[uint8] $!name;    # const char*, struct-owned
 	has int32 $.itemcount = 0;
-	has Pointer $.items;          # ncmenu_item*
+	has CArray[CArray[uint8]] $!items; # ncmenu_item*
 	# Embedded ncinput shortcut — inline all fields
 	has uint32 $.shortcut_id = 0;
 	has int32 $.shortcut_y = -1;
@@ -750,21 +1139,111 @@ class NcmenuSection is repr('CStruct') is export {
 	has uint32 $.shortcut_eff_text_2 = 0;
 	has uint32 $.shortcut_eff_text_3 = 0;
 
-	multi method new(Str :$name, *%rest) {
-		my $self = callwith(|%rest);
-		set-cstruct-str($self, 0, $name);
-		$self
+	submethod TWEAK(Str :$name, :$items, :$itemcount) {
+		self.set-name($name) with $name;
+		with $items {
+			self.set-items($items);
+			die "NcmenuSection: :itemcount($itemcount) contradicts the "
+			  ~ "{$!itemcount} items given"
+				if $itemcount.defined && $items !~~ Pointer
+					&& $itemcount != $!itemcount;
+		}
 	}
+
+	#| The section's name, or C<Str>.
+	method name(--> Str) { c-string-value($!name) }
+	#| The address of the item array, or the C<Pointer> type object.
+	method items(--> Pointer) { c-array-address($!items) }
+
+	#| Replace (or, with C<Str>, clear) the name. Answers the section.
+	method set-name(Str $name) {
+		$!name := owned-c-string($name, 'NcmenuSection.name')<>;
+		self
+	}
+
+	#| Point C<items> at a caller-owned array of C<itemcount> C<ncmenu_item>s;
+	#| C<itemcount> is left as it is. Answers the section.
+	multi method set-items(Pointer $items) {
+		$!items := borrowed-c-array($items)<>;
+		self
+	}
+	#| Copy the C<NcmenuItem>s into an array the section owns and set
+	#| C<itemcount> to their number. Answers the section.
+	multi method set-items(Iterable:D $items) {
+		my @items = $items.List;
+		$!items := owned-struct-array(@items, NcmenuItem, %(desc => 0),
+			'NcmenuSection.items')<>;
+		$!itemcount = @items.elems;
+		self
+	}
+	#| A single C<NcmenuItem>, as a one-item list.
+	multi method set-items(NcmenuItem:D $item) {
+		self.set-items(($item,))
+	}
+
+	# The item array itself, for NcmenuOptions to adopt: a sections array
+	# must keep every section's items alive along with the sections.
+	method !items-owner() { $!items }
 }
 
 # === CStruct: ncmenu_options ===
 
-class NcmenuOptions is repr('CStruct') is export {
-	has Pointer $.sections;       # ncmenu_section*
+#|( C<struct ncmenu_options>. C<sections> takes either a list of
+    C<NcmenuSection>s — copied into a C array the options struct owns,
+    together with every section's name and items, with C<sectioncount>
+    set to match (a conflicting explicit C<:sectioncount> dies) — or a
+    raw C<Pointer> to an array you own, with C<sectioncount> as you give
+    it. C<.sections> answers the array's address.
+
+        my $menu = ncmenu_create($std, NcmenuOptions.new(
+            :sections($file, $help),
+            :flags(NCMENU_OPTION_HIDING),
+        )); )
+class NcmenuOptions {
+	has CArray[CArray[uint8]] $!sections; # ncmenu_section*
 	has int32 $.sectioncount = 0;
 	has uint64 $.headerchannels = 0;
 	has uint64 $.sectionchannels = 0;
 	has uint64 $.flags = 0;
+
+	submethod TWEAK(:$sections, :$sectioncount) {
+		with $sections {
+			self.set-sections($sections);
+			die "NcmenuOptions: :sectioncount($sectioncount) contradicts "
+			  ~ "the {$!sectioncount} sections given"
+				if $sectioncount.defined && $sections !~~ Pointer
+					&& $sectioncount != $!sectioncount;
+		}
+	}
+
+	#| The address of the section array, or the C<Pointer> type object.
+	method sections(--> Pointer) { c-array-address($!sections) }
+
+	#| Point C<sections> at a caller-owned array of C<sectioncount>
+	#| C<ncmenu_section>s; C<sectioncount> is left as it is. Answers the
+	#| struct.
+	multi method set-sections(Pointer $sections) {
+		$!sections := borrowed-c-array($sections)<>;
+		self
+	}
+	#| Copy the C<NcmenuSection>s — names, items and all — into an array
+	#| the struct owns and set C<sectioncount> to their number. Answers
+	#| the struct.
+	multi method set-sections(Iterable:D $sections) {
+		my @sections = $sections.List;
+		$!sections := owned-struct-array(@sections, NcmenuSection,
+			%(name => 0), 'NcmenuOptions.sections',
+			:adopt(-> $array, Int $base, NcmenuSection $section {
+				# items is the section's third pointer-sized slot
+				$array[$base + 2] = $section!NcmenuSection::items-owner;
+			}))<>;
+		$!sectioncount = @sections.elems;
+		self
+	}
+	#| A single C<NcmenuSection>, as a one-section list.
+	multi method set-sections(NcmenuSection:D $section) {
+		self.set-sections(($section,))
+	}
 }
 
 # === CStruct: ncprogbar_options ===
@@ -779,35 +1258,58 @@ class NcprogbarOptions is repr('CStruct') is export {
 
 # === CStruct: nctabbed_options ===
 
+#|( C<struct nctabbed_options>. C<separator> (drawn between tab
+    headers) is owned by the struct: C<.new(:separator(' | '))>,
+    C<.set-separator>, C<.separator>. )
 class NctabbedOptions is repr('CStruct') is export {
 	has uint64 $.selchan = 0;
 	has uint64 $.hdrchan = 0;
 	has uint64 $.sepchan = 0;
-	has Str $.separator;         # offset 3
+	has CArray[uint8] $!separator; # const char*, struct-owned
 	has uint64 $.flags = 0;
 
-	multi method new(Str :$separator, *%rest) {
-		my $self = callwith(|%rest);
-		set-cstruct-str($self, 3, $separator);
-		$self
+	submethod TWEAK(Str :$separator) {
+		self.set-separator($separator) with $separator;
+	}
+
+	#| The separator, or C<Str>.
+	method separator(--> Str) { c-string-value($!separator) }
+
+	#| Replace (or, with C<Str>, clear) the separator. Answers the struct.
+	method set-separator(Str $separator) {
+		$!separator := owned-c-string($separator, 'NctabbedOptions.separator')<>;
+		self
 	}
 }
 
 # === CStruct: ncplot_options ===
 
+#|( C<struct ncplot_options>, shared by the uint64 and double plots.
+    C<title> is owned by the struct: C<.new(:title('load'))>,
+    C<.set-title>, C<.title>. )
 class NcplotOptions is repr('CStruct') is export {
 	has uint64 $.maxchannels = 0;
 	has uint64 $.minchannels = 0;
 	has uint16 $.legendstyle = 0;
 	has int32 $.gridtype = 0;    # ncblitter_e
 	has int32 $.rangex = 0;
-	has Str $.title;             # offset 4 (after 16 + 2+pad+4+4 = 32 bytes)
+	# title at byte 32: 16 (two channels) + 2 (legendstyle) + 2 padding
+	# (gridtype's 4-byte alignment) + 4 (gridtype) + 4 (rangex) = 28, then
+	# 4 more padding for the pointer's 8-byte alignment.
+	has CArray[uint8] $!title;   # const char*, struct-owned
 	has uint64 $.flags = 0;
 
-	multi method new(Str :$title, *%rest) {
-		my $self = callwith(|%rest);
-		set-cstruct-str($self, 4, $title);
-		$self
+	submethod TWEAK(Str :$title) {
+		self.set-title($title) with $title;
+	}
+
+	#| The plot's title, or C<Str>.
+	method title(--> Str) { c-string-value($!title) }
+
+	#| Replace (or, with C<Str>, clear) the title. Answers the struct.
+	method set-title(Str $title) {
+		$!title := owned-c-string($title, 'NcplotOptions.title')<>;
+		self
 	}
 }
 

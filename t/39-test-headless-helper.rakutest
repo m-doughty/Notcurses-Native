@@ -1,0 +1,109 @@
+use Test;
+use lib $*PROGRAM.parent.parent.add('lib').Str;
+use Notcurses::Native::Test::Headless;
+
+# The contract t/36-t/38 lean on: Notcurses::Native::Test::Headless runs a
+# child, reports how it ended, and hands back what it reported — even when
+# something else writes to the child's stdout, and without ever mistaking
+# a failed or hung child for a clean one.
+
+plan 7;
+
+subtest 'reports come back, keyed, through unrelated stdout noise' => {
+    plan 5;
+    my $run = run-headless-script(q:to/RAKU/);
+        use Notcurses::Native::Test::Headless;
+        print "\e[?25h";                    # an escape with no newline
+        report 'first', 'one';
+        report 'answer', 42;
+        say 'a line that is not a report';
+        print 'unterminated junk';
+        report 'last', 'with spaces and = signs';
+        RAKU
+    is describe-exit($run), 'exit 0', 'the child exits 0';
+    is $run<results><first>, 'one', 'a report glued behind an escape sequence is found';
+    is $run<results><answer>, '42', 'values arrive as strings';
+    is $run<results><last>, 'with spaces and = signs',
+        'a report glued behind unterminated output is found';
+    is $run<results>.elems, 3, 'nothing else is mistaken for a report';
+};
+
+subtest 'report refuses values that would break the line protocol' => {
+    plan 3;
+    for "tab\there", "line\nbreak", "carriage\rreturn" -> $value {
+        my $run = run-headless-script(
+            "use Notcurses::Native::Test::Headless; report 'k', {$value.raku};");
+        ok $run<exitcode> != 0 && $run<err>.contains('contains a tab or line break'),
+            "{$value.raku} dies in the child ({describe-exit($run)})";
+    }
+};
+
+subtest 'report refuses keys that are not identifiers' => {
+    plan 1;
+    my $run = run-headless-script(
+        q[use Notcurses::Native::Test::Headless; report 'two words', 'v';]);
+    ok $run<exitcode> != 0 && $run<err>.contains('plain identifier'),
+        "a key with a space dies in the child ({describe-exit($run)})";
+};
+
+subtest 'a failing child is reported as failing' => {
+    plan 3;
+    my $run = run-headless-script(q[note 'about to fail'; exit 7;]);
+    is $run<exitcode>, 7, 'its exit code comes back';
+    is describe-exit($run), 'exit 7', 'and is described';
+    ok $run<err>.contains('about to fail'), 'its stderr is captured';
+};
+
+subtest 'a hung child is killed at the deadline and reported as timed out' => {
+    plan 2;
+    my $started = now;
+    my $run = run-headless-script(q[sleep 60;], :timeout(3));
+    ok $run<timed-out>, 'flagged as timed out';
+    ok now - $started < 45, 'and the parent did not wait out the child';
+};
+
+subtest 'current-rss-kib measures this platform' => {
+    plan 2;
+    my $run = run-headless-script(q:to/RAKU/);
+        use Notcurses::Native::Test::Headless;
+        my $before = current-rss-kib();
+        my @hold = (^250_000).map({ "string number $_" });
+        report 'before', $before;
+        report 'after', current-rss-kib();
+        report 'held', @hold.elems;
+        RAKU
+    ok $run<results><before> ~~ /^ \d+ $/ && $run<results><before> > 0,
+        "a positive resident size in KiB ({$run<results><before> // describe-exit($run)})"
+        or diag $run<err>;
+    ok $run<results><after> > $run<results><before>,
+        'and it grows when the process allocates';
+};
+
+subtest 'headless-ncdirect starts direct mode with no terminal' => {
+    plan 6;
+    my Str $child = q:to/RAKU/;
+        use Notcurses::Native;
+        use Notcurses::Native::Direct;
+        use Notcurses::Native::Test::Headless;
+        my $d = headless-ncdirect(|(%*ENV<ON_STDOUT> ?? (:on-stdout) !! ()));
+        report 'defined', $d.defined;
+        report 'cols', ncdirect_dim_x($d);
+        ncdirect_putstr($d, 0, "direct-mode-text\n");
+        ncdirect_flush($d);
+        report 'stop', ncdirect_stop($d);
+        RAKU
+    my $quiet = run-headless-script($child);
+    is describe-exit($quiet), 'exit 0', 'on the null device: the child exits 0'
+        or diag $quiet<err>;
+    is $quiet<results><defined>, 'True', 'and answers a defined handle';
+    nok $quiet<out>.contains('direct-mode-text'), 'whose output goes nowhere';
+    my $loud = run-headless-script($child, :env(ON_STDOUT => 1));
+    is describe-exit($loud), 'exit 0', ':on-stdout: the child exits 0'
+        or diag $loud<err>;
+    # No newline in the needle: a Windows CRT writes it as CRLF, which
+    # Raku reads as one grapheme that "\n" does not match.
+    ok $loud<out>.contains('direct-mode-text'), 'and its output reaches the parent';
+    is $loud<results><stop>, '0', 'ncdirect_stop succeeds';
+};
+
+done-testing;

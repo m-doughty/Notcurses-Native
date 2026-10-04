@@ -1,0 +1,172 @@
+use Test;
+use lib $*PROGRAM.parent.parent.add('lib').Str;
+use Notcurses::Native::Test::Headless;
+
+# ncpile_render_to_buffer LENDS notcurses's own output buffer: notcurses.h
+# says the caller frees it, but the implementation hands out
+# nc->rstate.f.buf, keeps rasterizing into it on every later frame and
+# frees it itself in notcurses_stop (on Linux it is an mmap, not a malloc
+# allocation at all). The buffer also carries no NUL terminator.
+#
+# ncpile-render-to-string used to free that buffer (a use-after-free on
+# the next frame, then a double free at stop — SIGABRT/SIGSEGV depending
+# on the allocator) and to read it with strlen, so a short frame came
+# back with the tail of an earlier, longer frame attached.
+#
+# Each scenario runs in its own headless child (see
+# Notcurses::Native::Test::Headless): the failure mode is the process
+# dying, which the parent has to survive to report. A signal-killed child
+# has exit code 0, so every check asserts exit code AND signal.
+#
+# Nothing here depends on how much of a frame ncpile_render_to_buffer
+# emits. The pinned notcurses rasterizes only what changed, and can
+# answer a text change, or a whole erased plane, with zero bytes; the
+# fork's render.c from 2026-09-30 on emits the entire frame every time,
+# as render_to_file does. The assertions hold under both.
+
+my Str $prelude = q:to/RAKU/;
+    use NativeCall;
+    use Notcurses::Native;
+    use Notcurses::Native::Types;
+    use Notcurses::Native::Context;
+    use Notcurses::Native::Plane;
+    use Notcurses::Native::Test::Headless;
+
+    my $nc  = headless-notcurses();
+    my $std = notcurses_stdplane($nc);
+    RAKU
+
+sub clean-exit(Map $run, Str $what) {
+    ok !$run<timed-out> && $run<exitcode> == 0 && $run<signal> == 0,
+        "$what: child exits cleanly ({describe-exit($run)})"
+        or diag "child stderr:\n{$run<err>}";
+}
+
+plan 3;
+
+subtest 'the wrappers leave the buffer to notcurses: frames, renders and stop all survive' => {
+    plan 7;
+    my $run = run-headless-script($prelude ~ q:to/RAKU/);
+        for ^3 -> $i {
+            ncplane_putstr_yx($std, $i, 0, "frame $i " ~ ('#' x 40));
+            my Str $s = ncpile-render-to-string($std);
+            report "string-$i", $s.defined ?? 'defined' !! 'undefined';
+            ncplane_putstr_yx($std, $i + 5, 0, "to the terminal $i");
+            report "render-$i", notcurses_render($nc);
+        }
+        my $blob = ncpile-render-to-blob($std);
+        report 'blob', $blob.defined ?? 'defined' !! 'undefined';
+        report 'render-after-blob', notcurses_render($nc);
+        report 'stop', notcurses_stop($nc);
+        report 'finished', 'yes';
+        RAKU
+    clean-exit($run, 'three wrapper frames, renders between, then stop');
+    my %r = $run<results>;
+    is %r<finished>, 'yes', 'the child ran to its last line';
+    is (^3).map({ %r{"string-$_"} }).List, <defined defined defined>,
+        'every ncpile-render-to-string call answered a frame';
+    is (^3).map({ %r{"render-$_"} }).List, <0 0 0>,
+        'notcurses_render still succeeds after each in-memory frame';
+    is %r<blob>, 'defined', 'ncpile-render-to-blob answered a frame';
+    is %r<render-after-blob>, '0', 'and rendering carries on after it';
+    is %r<stop>, '0', 'notcurses_stop frees the buffer once, cleanly';
+};
+
+subtest 'the raw binding lends the same buffer on every call' => {
+    plan 5;
+    my $run = run-headless-script($prelude ~ q:to/RAKU/);
+        my $buf = CArray[Pointer].new(Pointer);
+        my $len = CArray[size_t].new(0);
+        report 'rv-1', ncpile_render_to_buffer($std, $buf, $len);
+        my $first = $buf[0].defined ?? +$buf[0] !! 0;
+        ncplane_putstr_yx($std, 0, 0, 'a second frame');
+        report 'rv-2', ncpile_render_to_buffer($std, $buf, $len);
+        my $second = $buf[0].defined ?? +$buf[0] !! 0;
+        report 'non-null', ($first != 0) ?? 'yes' !! 'no';
+        report 'same-buffer', ($first == $second) ?? 'yes' !! 'no';
+        # Not freed here, and stop must still be clean: the library owns it.
+        report 'stop', notcurses_stop($nc);
+        RAKU
+    clean-exit($run, 'two raw calls, no free, then stop');
+    my %r = $run<results>;
+    is-deeply (%r<rv-1>, %r<rv-2>), ('0', '0'), 'both raw calls succeed';
+    is %r<non-null>, 'yes', 'the raw call hands out a buffer';
+    is %r<same-buffer>, 'yes',
+        'both calls hand out the SAME buffer — it is notcurses\'s, borrowed';
+    is %r<stop>, '0', 'stop succeeds with the buffer never freed by the caller';
+};
+
+subtest 'a short frame after a long one carries no stale tail' => {
+    plan 8;
+    my $run = run-headless-script($prelude ~ q:to/RAKU/);
+        my $stats = Ncstats.new;
+        # notcurses adds every rasterized frame's exact length to
+        # raster_bytes — the only independent witness of "buflen" that
+        # does not go through the wrappers under test.
+        sub raster-bytes(--> Int) {
+            notcurses_stats($nc, $stats);
+            $stats.raster_bytes
+        }
+        # Long under either rasterizer: every cell gets a colour of its own,
+        # so every cell carries its own colour escape, and $seed changes
+        # every cell between frames, so a damage-only render re-emits them
+        # all too. A row of text in one colour was not enough: a full-frame
+        # in-memory render of it came out LONGER than the terminal frame
+        # before it, and the stale-tail case never arose.
+        sub long-frame(Int $seed --> Int) {
+            my uint32 ($rows, $cols);
+            ncplane_dim_yx($std, $rows, $cols);
+            for ^$rows -> $y {
+                for ^$cols -> $x {
+                    ncplane_set_fg_rgb($std,
+                        (($y * $cols + $x + $seed) * 0x010307) +& 0xFFFFFF);
+                    ncplane_putchar_yx($std, $y, $x, 0x41 + ($x + $seed) % 26);
+                }
+            }
+            my $before = raster-bytes();
+            notcurses_render($nc);
+            raster-bytes() - $before
+        }
+
+        # Short under either: the in-memory frame of an erased plane is a
+        # blank screen when the whole frame is emitted, and nothing at all
+        # when only damage is (zero bytes: the sharpest stale-tail case).
+        report 'long-1', long-frame(1);
+        ncplane_erase($std);
+        my $before = raster-bytes();
+        my $blob = ncpile-render-to-blob($std);
+        report 'blob-reported', raster-bytes() - $before;
+        report 'blob-bytes', $blob.bytes;
+
+        report 'long-2', long-frame(2);
+        ncplane_erase($std);
+        $before = raster-bytes();
+        my Str $text = ncpile-render-to-string($std);
+        report 'string-reported', raster-bytes() - $before;
+        report 'string-bytes', $text.encode('utf8').bytes;
+
+        report 'stop', notcurses_stop($nc);
+        # The copies are Raku-owned: still whole after notcurses_stop
+        # freed the buffer they came from.
+        report 'blob-after-stop', $blob.bytes;
+        RAKU
+    clean-exit($run, 'long frame, in-memory frame, stop');
+    my %r = $run<results>;
+
+    ok %r<long-1> > 0 && %r<long-2> > 0,
+        "the long frames really went through notcurses's buffer "
+          ~ "({%r<long-1> // '?'} and {%r<long-2> // '?'} bytes)";
+    is %r<blob-bytes>, %r<blob-reported>,
+        'ncpile-render-to-blob answers exactly the bytes notcurses reported';
+    ok %r<blob-reported> < %r<long-1>,
+        'and that frame is shorter than the one before it (the stale-tail case)';
+    is %r<string-bytes>, %r<string-reported>,
+        'ncpile-render-to-string answers exactly the bytes notcurses reported';
+    ok %r<string-reported> < %r<long-2>,
+        'and that frame is shorter than the one before it too';
+    is %r<stop>, '0', 'notcurses_stop succeeds';
+    is %r<blob-after-stop>, %r<blob-bytes>,
+        'the blob is a Raku-owned copy that outlives the library buffer';
+};
+
+done-testing;

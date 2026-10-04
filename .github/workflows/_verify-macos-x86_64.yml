@@ -18,11 +18,17 @@ env:
   LANG: en_US.UTF-8
   LC_ALL: en_US.UTF-8
   NOTCURSES_NATIVE_REQUIRE_SHIM: '1'
-  RAKUDO_VERSION: '2026.03'
 
 jobs:
   verify:
     runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        # 2026.07: last legacy-frontend release. 2026.09: RakuAST is the default.
+        raku-version: ['2026.07', '2026.09']
+    env:
+      RAKUDO_VERSION: ${{ matrix.raku-version }}
     steps:
       - uses: actions/checkout@v6
         with: { submodules: recursive }
@@ -113,14 +119,14 @@ jobs:
         run: arch -x86_64 zef install --/test App::Prove6
 
       - name: prove6 (prebuilt path)
-        run: arch -x86_64 prove6 --verbose -I lib -I t/lib t
+        run: arch -x86_64 prove6 --verbose -I lib t
 
       - name: prove (xt — terminal-dependent, prebuilt path)
         # Perl's `prove` (the orchestrator) doesn't need to be
         # x86_64 — it just forks the -e command per test file. The
         # `raku` invocation IS x86_64 via `arch -x86_64`, which is
         # what loads the bundled prebuilt under test.
-        run: prove -e 'arch -x86_64 raku -I lib -I t/lib' --verbose xt/*.rakutest
+        run: prove -e 'arch -x86_64 raku -I lib' --verbose xt/*.rakutest
 
       - name: Install x86_64 brew deps for source-build pass
         run: |
@@ -132,4 +138,4 @@ jobs:
         run: arch -x86_64 zef install --/test --force-install .
 
       - name: prove6 (source-build path)
-        run: arch -x86_64 prove6 --verbose -I lib -I t/lib t
+        run: arch -x86_64 prove6 --verbose -I lib t

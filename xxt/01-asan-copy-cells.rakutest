@@ -1,0 +1,208 @@
+use Test;
+use lib $*PROGRAM.parent.parent.add('lib').Str;
+use Notcurses::Native;
+
+# AddressSanitizer proof that notcurses_native_copy_cells reads no freed
+# memory (the B1/B2 use-after-frees described in xxt/asan/copy-cells-uaf.c
+# and t/37). t/37 pins the behaviour, but a stale read of a pool that the
+# allocator grew in place returns the right bytes, so only ASan — which
+# always moves a realloc'd block and poisons the old one — can prove the
+# reads are gone on every allocator.
+#
+# xxt/ is the tier for tests that need tooling outside the Raku ecosystem.
+# This one needs, and FAILS without (it never skips):
+#
+#   * a C compiler with AddressSanitizer: clang, or gcc with libasan, on
+#     macOS and Linux. On Windows use MSYS2's CLANG64 clang — MinGW gcc
+#     ships no ASan runtime. Chosen from $NOTCURSES_NATIVE_ASAN_CC, then
+#     $CC, then `cc`.
+#   * the notcurses headers of the pinned fork: $NOTCURSES_NATIVE_VENDOR_DIR
+#     /include, else the source cache Build.rakumod fills
+#     (<cache>/Notcurses-Native-source/<sha>/include).
+#   * an installed (staged) libnotcurses-core, found the same way the
+#     bindings find it (so $NOTCURSES_NATIVE_LIB_DIR applies).
+#
+# $NOTCURSES_NATIVE_ASAN_SHIM_SOURCE compiles a different shim source in
+# place of src/notcurses_native_shim.c — point it at an older revision to
+# watch the base and sameplane scenarios report the use-after-frees.
+#
+# Run it: prove6 -I lib xxt/
+
+my IO::Path $root       = $*PROGRAM.parent.parent;
+my IO::Path $driver-src = $root.add('xxt/asan/copy-cells-uaf.c');
+my IO::Path $shim-src   = (%*ENV<NOTCURSES_NATIVE_ASAN_SHIM_SOURCE>
+                            // $root.add('src/notcurses_native_shim.c')).IO;
+my Str      $cc         = %*ENV<NOTCURSES_NATIVE_ASAN_CC> // %*ENV<CC> // 'cc';
+my Bool     $is-mac     = $*KERNEL.name.lc.contains('darwin');
+my Bool     $is-win     = $*DISTRO.is-win;
+
+# ASan's own exit status, distinct from every code the driver uses.
+my constant ASAN-EXIT = 86;
+my Str $asan-options = "detect_leaks=0:halt_on_error=1:abort_on_error=0:exitcode={ASAN-EXIT}";
+
+sub requirement-failed(Str:D $message) {
+    plan 1;
+    flunk $message;
+    done-testing;
+    exit 1;
+}
+
+# Run a command with both streams drained concurrently (a failing sweep
+# can print far more than a pipe buffer holds) and a hard deadline.
+sub run-captured(@cmd, :%env = %*ENV, Real :$timeout = 600 --> Map) {
+    my $proc = Proc::Async.new(|@cmd);
+    my Str $out = '';
+    my Str $err = '';
+    my $lock = Lock.new;
+    $proc.stdout.tap: -> $s { $lock.protect: { $out ~= $s } }, quit => -> $ { };
+    $proc.stderr.tap: -> $s { $lock.protect: { $err ~= $s } }, quit => -> $ { };
+    my Promise $done = $proc.start(:ENV(%env));
+    my Bool $timed-out = False;
+    await Promise.anyof($done, Promise.in($timeout));
+    unless $done {
+        $timed-out = True;
+        $proc.kill(SIGKILL);
+    }
+    my $result = try await $done;
+    Map.new(
+        'exitcode'  => ($result.defined ?? $result.exitcode !! -1),
+        'signal'    => ($result.defined ?? $result.signal !! -1),
+        'timed-out' => $timed-out,
+        'spawned'   => $result.defined,
+        'out'       => $lock.protect({ $out }),
+        'err'       => $lock.protect({ $err }),
+    )
+}
+
+sub notcurses-include(--> IO::Path) {
+    with %*ENV<NOTCURSES_NATIVE_VENDOR_DIR> {
+        my IO::Path $inc = .IO.add('include');
+        return $inc if $inc.add('notcurses/notcurses.h').f;
+    }
+    my Str $sha = $root.add('NOTCURSES_FORK').lines
+        .first(*.starts-with('sha=')).substr(4).trim;
+    my Str $base = %*ENV<NOTCURSES_NATIVE_CACHE_DIR>
+        // %*ENV<XDG_CACHE_HOME>
+        // "{%*ENV<HOME> // '.'}/.cache";
+    my IO::Path $inc = "$base/Notcurses-Native-source/$sha/include".IO;
+    $inc.add('notcurses/notcurses.h').f ?? $inc !! IO::Path
+}
+
+my IO::Path $work = $*TMPDIR.add("notcurses-native-asan-{$*PID}-{(^2**31).pick}");
+$work.mkdir;
+
+# Remove the work directory this file created: binaries, sources, the
+# macOS .dSYM bundle, and the symlinks mirroring the library stage.
+# Symlinks are unlinked, never followed — they point into the real stage.
+sub remove-work-tree(IO::Path $dir) {
+    for $dir.dir -> IO::Path $entry {
+        if $entry.l || !$entry.d {
+            try $entry.unlink;
+        }
+        else {
+            remove-work-tree($entry);
+        }
+    }
+    try $dir.rmdir;
+}
+END { remove-work-tree($work) if $work.defined && $work.d && !$work.l }
+
+# --- prerequisites: each one missing is a failure, stated plainly ---
+
+{
+    my IO::Path $probe-src = $work.add('asan-probe.c');
+    my IO::Path $probe-bin = $work.add($is-win ?? 'asan-probe.exe' !! 'asan-probe');
+    $probe-src.spurt("int main(void)\{ return 0; \}\n");
+    my $built = run-captured(($cc, '-fsanitize=address', '-o', $probe-bin.Str,
+        $probe-src.Str), :timeout(120));
+    my $ran = $built<exitcode> == 0 && $probe-bin.f
+        ?? run-captured(($probe-bin.Str,), :timeout(60))
+        !! Map;
+    requirement-failed(
+        "xxt/01 needs a C compiler with AddressSanitizer; '$cc "
+      ~ "-fsanitize=address' did not build and run a trivial program. "
+      ~ "Install clang (or gcc with libasan) — on Windows, MSYS2 CLANG64 "
+      ~ "clang — or name one in NOTCURSES_NATIVE_ASAN_CC.\n"
+      ~ ($built<spawned> ?? $built<err> !! "'$cc' could not be started"))
+        unless $ran && $ran<exitcode> == 0 && $ran<signal> == 0;
+}
+
+my IO::Path $inc = notcurses-include();
+requirement-failed(
+    "xxt/01 needs the pinned notcurses headers: set "
+  ~ "NOTCURSES_NATIVE_VENDOR_DIR to a notcurses checkout, or install the "
+  ~ "dist once from source so Build.rakumod caches the pinned tree")
+    without $inc;
+
+my IO::Path $core = core-lib().IO;
+requirement-failed("xxt/01 needs a staged libnotcurses-core; resolved '$core'")
+    unless $core.e;
+requirement-failed("xxt/01: shim source '$shim-src' does not exist")
+    unless $shim-src.f;
+
+plan 4;
+diag "shim source under test: $shim-src";
+
+# --- build: driver + shim, both instrumented ---
+
+my IO::Path $libdir = $core.parent;
+my IO::Path $exe = $work.add($is-win ?? 'copy-cells-uaf.exe' !! 'copy-cells-uaf');
+my %run-env = %*ENV;
+%run-env<ASAN_OPTIONS> = $asan-options;
+%run-env<TERM> //= 'xterm' unless $is-win;
+%run-env<LANG>:delete if (%run-env<LANG> // '') eq 'C' | 'POSIX';
+
+my @link = do {
+    if $is-mac {
+        # Stage libraries are found through @loader_path (prebuilt packs)
+        # or absolute paths (source builds). Mirroring the stage into the
+        # work directory beside the executable satisfies both, without
+        # writing anything into the stage.
+        for $libdir.dir -> $entry {
+            $entry.symlink($work.add($entry.basename));
+        }
+        ($work.add($core.basename).Str,)
+    }
+    elsif $is-win {
+        # MinGW-family linkers accept a DLL directly; at run time the
+        # stage is put first on PATH.
+        my Str $key = %run-env.keys.first({ .lc eq 'path' }) // 'PATH';
+        %run-env{$key} = $libdir.Str ~ ';' ~ (%run-env{$key} // '');
+        ($core.Str,)
+    }
+    else {
+        ("-L$libdir", '-lnotcurses-core', "-Wl,-rpath,$libdir")
+    }
+};
+
+my $build = run-captured(($cc, '-fsanitize=address', '-fno-omit-frame-pointer',
+    '-g', '-O1', '-Wall', "-I$inc", '-o', $exe.Str,
+    $driver-src.Str, $shim-src.Str, |@link), :timeout(300));
+ok $build<exitcode> == 0 && $exe.f,
+    "the driver and '{$shim-src.basename}' build with -fsanitize=address"
+    or do {
+        diag $build<err>;
+        skip 'nothing to run without a driver', 3;
+        done-testing;
+        exit 1;
+    };
+
+# --- the toolchain really instruments: a known use-after-free is caught ---
+
+my $self = run-captured(($exe.Str, 'selftest'), :env(%run-env), :timeout(120));
+ok $self<exitcode> == ASAN-EXIT && $self<err>.contains('heap-use-after-free'),
+    'a deliberate use-after-free is reported by ASan (instrumentation is live)'
+    or diag "exit {$self<exitcode>}, signal {$self<signal>}:\n{$self<err>}";
+
+# --- the two copy_cells scenarios ---
+
+for <base sameplane> -> Str $scenario {
+    my $run = run-captured(($exe.Str, $scenario), :env(%run-env));
+    my Bool $clean = !$run<timed-out> && $run<exitcode> == 0
+        && $run<signal> == 0 && !$run<err>.contains('AddressSanitizer');
+    ok $clean, "$scenario: the k = 0..1700 sweep is ASan-clean and correct"
+        or diag "{$run<timed-out> ?? 'timed out' !! "exit {$run<exitcode>}, signal {$run<signal>}"}:\n"
+            ~ $run<err>.lines.head(60).join("\n");
+}
+
+done-testing;
