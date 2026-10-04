@@ -345,7 +345,7 @@ BUILD REQUIREMENTS
 
 Notcurses is vendored and built from source. You need:
 
-  * CMake 3.14+
+  * CMake 3.21+ (what the pinned notcurses source requires)
 
   * A C compiler (gcc, clang, or mingw-w64 under MSYS2)
 
@@ -389,6 +389,8 @@ macOS (Homebrew)
 ----------------
 
     brew install cmake pkg-config ffmpeg ncurses libunistring libdeflate
+
+Homebrew's `ncurses` is keg-only, so the build adds its `pkgconfig` directory itself — after any `PKG_CONFIG_PATH` you set, so yours wins — looking under `$HOMEBREW_PREFIX`, `/opt/homebrew` and `/usr/local`. The libraries have to match the architecture Raku runs as: an x86_64 Rakudo under Rosetta on Apple Silicon needs x86_64 dependencies (an x86_64 Homebrew under `/usr/local`, or a prefix of your own), not the arm64 ones in `/opt/homebrew`. The build checks the ncurses keg's architecture and passes over one that doesn't match, with a note saying so, rather than linking it.
 
 Windows (MSYS2 UCRT64)
 ----------------------
@@ -488,6 +490,8 @@ Source-build fallback
 ---------------------
 
 For platforms outside the matrix (FreeBSD, OpenBSD, i686, riscv64, ppc64le, …) or when you explicitly set `NOTCURSES_NATIVE_BUILD_FROM_SOURCE=1`, Notcurses::Native compiles notcurses from source via CMake. That path needs the system packages listed in **BUILD REQUIREMENTS**. The source build takes 5–15 minutes depending on the machine; the prebuilt download path is seconds.
+
+Dependencies in a prefix of your own are found through the usual variables, which the build passes on to CMake: `PKG_CONFIG_PATH` (ffmpeg, ncurses), `CMAKE_PREFIX_PATH` (libunistring, libdeflate) and, if you use it, `LIBRARY_PATH` — whose directories the build also records as run paths, so the installed libraries find the dependencies they link without it at run time (on Linux, those dependencies' own dependencies still need the loader's usual search path, as for any program). Every install configures from scratch, so after a failed attempt, correcting the environment and installing again is enough; nothing CMake found the first time is reused.
 
 On Windows, explicitly add the active MSYS2 target `bin` directory (UCRT64 on x86_64, CLANGARM64 on arm64) to `PATH` when running an application against a source-built install. Source builds retain ordinary MSYS2 DLL dependencies; the installer records that provenance beside the staged libraries so the runtime searches the DLL's own directory first and then the ordinary Windows search path. A later PowerShell process does not inherit the build shell's `$MINGW_PREFIX/bin`, so CI captures its Windows path with `cygpath` and prepends that validated directory for the source-load probe. Published prebuilts remain independent of MSYS2 `PATH` and are loaded only from their closed sibling DLL set plus Windows system directories.
 

@@ -2,6 +2,471 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.7.0  2026-10-04T22:20:33+01:00
+    - BUGFIX: [2026-10-04] a source build no longer links a Homebrew
+      ncurses of the wrong architecture. The build added /opt/homebrew's
+      ncurses keg whenever /opt/homebrew existed, so an x86_64 Raku under
+      Rosetta on an Apple Silicon Mac linked arm64 ncurses and failed
+      ("found architecture 'arm64'", every terminfo symbol undefined). A
+      keg -- from $HOMEBREW_PREFIX, /opt/homebrew or /usr/local -- is now
+      used only when its library carries a slice for the architecture Raku
+      runs as, read from the Mach-O header; one that doesn't is reported
+      and passed over. The keg goes after any PKG_CONFIG_PATH the user set
+      rather than ahead of it, and notcurses' own architecture-blind
+      /usr/local/opt/ncurses fallback is switched off.
+    - BUGFIX: [2026-10-04] a source build whose dependencies sit in a
+      prefix named on LIBRARY_PATH now loads. CMake treats LIBRARY_PATH
+      directories as implicit and recorded no run path for them, so a
+      dependency with an @rpath install name (a CMake-built libdeflate,
+      say) failed with "Library not loaded: @rpath/libdeflate.0.dylib",
+      and on Linux one outside the loader's default directories went
+      unfound the same way. Those directories are now handed to CMake as
+      CMAKE_BUILD_RPATH. Windows has no run paths and is unaffected.
+    - BUGFIX: [2026-10-04] every source build configures from scratch. The
+      build directory lives in the per-commit source cache, and CMake kept
+      a failed attempt's find results there, so correcting PKG_CONFIG_PATH
+      or CMAKE_PREFIX_PATH and installing again still built against the
+      cached, wrong libraries. The reset is what `cmake --fresh` does, done
+      by hand for CMake 3.21-3.23, and costs a full recompile per install.
+    - FEATURE: [2026-10-04] Bump the pinned notcurses fork (b2dadeb4e) and
+      prebuilts to binaries-notcurses-3.0.17-r16: Windows gets
+      win32-input-mode, so Ctrl+Enter, Shift+Enter, Alt+Enter and every
+      other chord reach the app with their modifiers under ConPTY, exactly
+      as a kitty terminal delivers them elsewhere, and the bracketed-paste
+      markers already bound above (2026-09-07) start arriving; the input
+      queue no longer drops events when it is full but waits for the client
+      to drain it, and the queue and read buffers are 8192 on every platform
+      instead of the platform's BUFSIZ (512 on Windows), so a
+      24,000-character paste arrives whole; notcurses_stop no longer hangs
+      on a redirected stdin whose writer stays open; sixel graphics no
+      longer leave a ghost when a plane is moved and hidden in one frame;
+      frames go out through a binary-mode console descriptor, which turns
+      second-long pane toggles into milliseconds; and the shim's permanent
+      ABI table and C-level terminal restore guard (both above) reach a
+      toolchain-less install for the first time, alongside the copy_cells
+      fix, the Windows ncsubproc/ncfdplane ports, correct wcwidth/wcswidth
+      and whole-code-point text handling, the sextant/octant fixes, the
+      ncmenu overrun fix, and notcurses_poll_geometry (all above).
+    - BUGFIX: [2026-10-01] the build no longer decides on Windows whether
+      the staged perf shim is current by file time. A pack without the
+      shim's .srchash sidecar fell back to comparing mtimes, and on
+      Windows IO::Path.modified puts every file within seconds of 1970 (a
+      MoarVM overflow), so the answer was noise. There a shim with no
+      sidecar is now refreshed from the cache or the compiler, and kept
+      only when neither can. The shim is compiled to a temporary name and
+      renamed into place once the compiler succeeds, so a failed compile
+      never replaces a working shim with a broken one; a shim a running
+      application holds open says so rather than failing the install.
+    - BUGFIX: [2026-10-01] on Windows the build's caches -- downloads,
+      fetched notcurses sources and compiled shims -- live under
+      %LOCALAPPDATA%. Windows sets no HOME, so the default came out as
+      ./.cache, inside the directory zef ran the build from: the dist's
+      own source tree for a local `zef install .`. Old stages and a
+      stale source fetch are removed in Raku rather than with `rm -rf`,
+      which a stock Windows lacks, and a link inside is removed as a
+      link, never followed.
+    - NEW: [2026-10-01] ncsubproc works on Windows (fork). It returned NULL
+      there (a FIXME in place of CreateProcess). It now launches with
+      CreateProcessW: arguments converted to UTF-16 and quoted so the
+      child's C runtime gets them back unchanged, the program looked up on
+      the search path (adding .exe) for the createvp/createvpe forms with
+      argv[0] kept as given, and createvpe's environment passed as a
+      sorted UTF-16 block. The child's stdout and stderr share one pipe and
+      its stdin is inherited, as on POSIX, and only those handles reach it
+      (an explicit inheritance list, so another child's pipe is never
+      leaked into it). A waiter reports the exit code through the done
+      callback once the output has drained, and ncsubproc_destroy ends a
+      process that is still running and returns 0 only for exit code 0. A
+      program that is nowhere on the search path is refused at once.
+    - BUGFIX: [2026-10-01] ncfdplane reads files and pipes on Windows
+      (fork). Its reader polled with WSAPoll, which takes sockets and
+      nothing else, so it failed at once on a file, a pipe or the console.
+      It now blocks in read(); a destroy from another thread cancels that
+      read (CancelSynchronousIo, since winpthreads' read() is no
+      cancellation point) and joins, and a following plane at end of file
+      waits briefly before reading again rather than spinning.
+    - BUGFIX: [2026-10-01] ncsubproc's lock is initialised (fork, every
+      platform). It was only ever zeroed, which is a valid mutex where
+      PTHREAD_MUTEX_INITIALIZER happens to be all zeroes (glibc) and not on
+      macOS or winpthreads.
+    - NEW: [2026-10-01] notcurses_ucs32_width() and notcurses_wcswidth()
+      (fork): wcwidth() for any code point and wcswidth() that takes a
+      UTF-16 surrogate pair as one character, on every platform. On MinGW,
+      whose C library has neither and whose wchar_t is 16 bits, notcurses.h
+      maps wcwidth and wcswidth to them, replacing ncport.h's stubs that
+      answered 1 for every character and the code-unit count for every
+      string -- which the header's own NCCELL_INITIALIZER and
+      ncplane_putwstr_aligned, and any program including it, were using.
+    - BUGFIX: [2026-10-01] Character widths are right on Windows (fork).
+      notcurses measured every glyph as one column under MinGW: ncport.h
+      stubs wcwidth() to 1 there, and wchar_t is 16 bits, so the UCRT's
+      mbrtowc() decoded every code point beyond the BMP to U+FFFD. Emoji
+      and CJK took one column instead of two, ncstrwidth() accepted control
+      characters, and a 😀 written by ncplane_putstr left the cursor one
+      column short. The fork now decodes, measures and encodes whole code
+      points through libunistring on MinGW (uc_width(), u8_mbtoucr(),
+      u8_uctomb()) wherever it took one character at a time: EGC
+      segmentation, puttext wrapping, menus, the reader's word breaks,
+      keyboard input (a typed or pasted non-BMP character no longer
+      arrives as U+FFFD), and the terminal capability probes, which still
+      enable braille, sextants and octants. macOS and Linux keep their C
+      library calls, unchanged. t/40 pins it from Raku. The r16 prebuilts
+      carry it; a toolchain-less install now gets it without a rebuild.
+    - BUGFIX: [2026-10-01] Sextant and octant plots and pixel read-back
+      work on Windows (fork). The blitters' glyph tables are wchar_t
+      strings, in which every sextant and octant is a surrogate pair under
+      MinGW: ncuplot/ncdplot indexed them one code unit at a time and
+      wctomb() refused the halves, so a sextant or octant plot failed to
+      draw wherever the terminal offers them (WezTerm does), and
+      ncplane_as_rgba could not find those glyphs at all. The tables are
+      now walked glyph by glyph where wchar_t is 16 bits.
+    - BUGFIX: [2026-10-01] Octant plots draw octants (fork, every
+      platform). blit.c spelled the first entry of the octant plot table
+      L"\0x20" -- a NUL followed by 'x', '2', '0' -- instead of a space,
+      which pushed every glyph three levels up and drew a literal x, 2 and
+      0 for the lowest levels. Present upstream too.
+    - BUGFIX: [2026-10-01] NCSEXBLOCKS has all 64 sextants (fork, every
+      platform). U+1FB09 was missing, so every entry from pattern 10 on
+      named the glyph for the pattern before it, and ncplane_as_rgba read
+      54 of the 64 sextants back as the wrong pixels. Image blitting was
+      unaffected (it uses its own table). Present upstream too.
+    - BUGFIX: [2026-10-01] ncmenu no longer overruns its allocation for a
+      shortcut of three or more UTF-8 bytes (fork, every platform). The
+      description was sized with wcrtomb(NULL, ...), which encodes L'\0'
+      and so always answered one byte: a CJK, emoji or NCKEY_* shortcut
+      wrote one or two bytes past the buffer. Present upstream too.
+    - MAINT: [2026-10-01] The fork's doctest suite builds and runs on
+      Windows (USE_CXX and USE_DOCTEST, in a build directory of its own;
+      the install-time build still turns both off). Three tests that
+      assumed a 32-bit wchar_t or the C library's ctype are portable now
+      (EGCpool ForceReallocation, Plane DenyControlASCII, Wide
+      PlaneAtCursorInsane), and a new Codepoints case covers the helpers,
+      both glyph tables against Unicode's pattern order, read-back of every
+      sextant and octant, and both plot glyph sets. 62 of 63 cases pass on
+      Windows, each run in its own process; FdsAndSubprocs needs
+      subprocess support there.
+    - MAINT: [2026-10-01] t/43 binds `_strdup` on Windows, where the UCRT
+      exports no `strdup`. t/36 no longer depends on how much of a frame
+      ncpile_render_to_buffer emits: the fork from 2026-09-30 emits the
+      whole frame where the pinned one emitted only damage, so the
+      "short frame after a long one" case it relies on never arose. Its
+      long frames give every cell its own colour, and the plane is erased
+      before each in-memory frame.
+    - BUGFIX: [2026-09-30] The printf family no longer goes through
+      NativeCall's variadic support, which cannot call a C variadic
+      function safely: any call with no arguments after the format died
+      ("cannot unbox to an unsigned native int") on every platform, and
+      on Windows every integer vararg travelled as a 32-bit `long`, so
+      `%lld` of anything past 2**32 printed garbage there.
+      `ncplane_printf`, `ncplane_printf_yx`, `ncplane_printf_aligned`,
+      `ncplane_printf_stained` and `ncdirect_printf_aligned` keep their
+      names, argument order and return values, but are Raku subs now:
+      they format with Raku's sprintf and write through the fixed-arity
+      call notcurses's own vprintf_* use after formatting (putstr_yx,
+      putstr_aligned, putstr_stained). `ncdirect_printf_aligned`
+      rebuilds ncdirect_vprintf_aligned from public calls (ncdirect_align
+      is static in direct.c): ncstrwidth, the same column arithmetic,
+      ncdirect_cursor_move_yx, then puts(3), whose value it answers;
+      -1 when the text has no width, the cursor cannot move or puts
+      fails. C formats work unchanged: length modifiers (hh h l ll j z t
+      L q) are accepted and dropped, `%n`, `%p` and the wide-character
+      conversions die with a message saying what to do instead, a
+      format/argument mismatch dies instead of printing garbage, and
+      widths count characters rather than bytes. An undefined plane or
+      ncdirect handle dies instead of reaching C. This also removes the
+      dist's only `**@args` native declaration, which Rakudo before
+      2025.12 refused to precompile. The masking fallback in
+      xt/12-plane-exhaustive, which quietly swapped in ncplane_putstr
+      when the zero-argument printf died, is gone. Pinned by t/40.
+    - BUGFIX: [2026-09-30] The option structs own their strings. Every
+      `const char*` field of NotcursesOptions, NcplaneOptions,
+      NcselectorItem, NcselectorOptions, NcmselectorItem,
+      NcmultiselectorOptions, NcmenuItem, NcmenuSection, NctabbedOptions
+      and NcplotOptions is a private buffer the struct keeps alive for
+      exactly its own lifetime. They used to go through set-cstruct-str,
+      which wrote a raw pointer and pushed the buffer onto a global list
+      that was never emptied, so every name, title or separator ever set
+      leaked for the life of the process. `.new(field => 'str')` and the
+      accessors are unchanged; each field gains a `set-<field>` method
+      (answering the struct; `Str` clears it) so one struct can be
+      reused, and a string with an embedded NUL dies, naming the field.
+      Pinned by t/41, including 10,000 rebinds of ~11 KiB with RSS flat
+      and real widgets reading the strings back through the C API.
+    - FEATURE: [2026-09-30] Item arrays the options structs own.
+      `NcselectorOptions.new(:items(...))` and
+      `NcmultiselectorOptions.new(:items(...))` take a list of items and
+      build the NULL-terminated C array themselves; `NcmenuSection` takes
+      a list of NcmenuItems (setting itemcount) and `NcmenuOptions` a
+      list of sections (setting sectioncount), nested item arrays
+      included. The struct owns the array and every string in it, so the
+      item objects may go. A raw `Pointer` is still accepted for an array
+      the caller manages, and `.items` / `.sections` still answer the
+      address. Items notcurses would misread die up front: an item with
+      no option (a NULL option ends a C item array, silently dropping the
+      rest) and a multiselector item with no desc (ncmultiselector_create
+      dereferences it unconditionally and crashes).
+    - NOTE: [2026-09-30] `set-cstruct-str` is deprecated (`is
+      DEPRECATED`), its behaviour unchanged for code outside the dist
+      that still calls it; nothing in the dist does.
+    - FEATURE: [2026-09-30] A permanent ABI guard. The shim exports its
+      ABI table through three fixed-arity calls,
+      `notcurses_native_abi_count`, `notcurses_native_abi_key` (static
+      strings) and `notcurses_native_abi_value`: the size of every struct
+      a Raku CStruct mirrors, the offset and width of every mirrored
+      field, and the value of every mirrored constant, all computed by
+      the compiler from the headers the shim is built against.
+      t/42-abi-guard discovers every CStruct class and exported integer
+      constant in the dist, measures each field from the Raku side, and
+      fails on any difference from C, on any struct, field or constant
+      the table does not cover, and on any table entry nothing accounts
+      for. With no shim carrying the table installed it compares against
+      t/fixtures/abi-table.tsv, printed from the same source by
+      scripts/abi/abi-probe.c (regenerate with
+      scripts/abi/regenerate-fixture.raku; the table is identical on
+      every supported target except C `long` widths, which the test
+      reads per platform); it never skips. xxt/02 checks the committed
+      fixture against a freshly compiled probe.
+    - BUGFIX: [2026-09-30] `NCOPTION_CLI_MODE` is 0x0252, as notcurses.h
+      defines it: NO_ALTERNATE_SCREEN | NO_CLEAR_BITMAPS |
+      PRESERVE_CURSOR | SCROLLING. It was 0x0600: SCROLLING plus 0x0400,
+      a bit notcurses does not define. Found by the new ABI guard, which
+      found no struct layout problem.
+    - FEATURE: [2026-09-30] `NCDIRECT_OPTION_*` constants for
+      ncdirect_init / ncdirect_core_init flags.
+    - CI: [2026-09-30] Every build lane now asserts all ten shim exports
+      by name — the ABI accessors, and the owned terminal-guard calls
+      (reserve, arm_owned, disarm_owned, release) the lists had been
+      missing. xt/20 fails if a lane's list and the shim source's exports
+      ever differ, and t/15 checks, from the same source, that the staged
+      shim resolves every export (required under
+      NOTCURSES_NATIVE_REQUIRE_SHIM; reported otherwise).
+    - BUGFIX: [2026-09-30] Notcurses::Native::Test::Helper chose the null
+      device by matching the kernel name against /win/, which "darwin"
+      satisfies: on macOS the xt/ suite redirected its stdout into, and
+      handed notcurses, a file literally named NUL in the working
+      directory. It uses `$*DISTRO.is-win` now, and dies if the null
+      device cannot be opened rather than passing notcurses a NULL
+      FILE* through a variable (a NativeCall site that sees an undefined
+      value that way first passes NULL for good). Pinned by t/43.
+    - BUGFIX: [2026-09-30] `ncplane-as-rgba` answers the `buf32` type
+      object and a 0x0 geometry for an undefined plane instead of handing
+      notcurses a NULL plane to dereference.
+    - MAINT: [2026-09-30] A sweep of every native call site in lib/ for
+      the NativeCall NULL-pin trap (see the NOTE below) found the
+      Test::Helper sites above and nothing else: every other site takes
+      parameters, return values, native-typed lexicals or values
+      checked defined first. t/43 pins the pointer-accepting wrappers in
+      the order that exposes the trap — undefined through a variable
+      first, then real values — with a leak loop on
+      strdup-copy-and-free, whose free would silently stop.
+    - MAINT: [2026-09-30] Notcurses::Native::Test::Headless gains
+      `headless-ncdirect` (direct mode with no terminal, optionally
+      writing to the child's stdout), `native-getenv` (the environment
+      as C sees it), a `:termtype` for `headless-notcurses` and a `:cwd`
+      for `run-headless-script`. Notcurses::Native::Str gains two
+      `:INTERNAL` helpers, `c-sprintf` and `copy-blob-into-native`.
+    - MAINT: [2026-09-30] xt/04 and xt/15 no longer leak the structs they
+      get from notcurses_stats_alloc: they read through
+      `notcurses-stats-snapshot`, and free the raw allocation they test
+      with `notcurses-stats-free`. xt/04's fade-context subtest no longer
+      segfaults on a terminal that cannot fade (headless Linux with an
+      8-colour xterm entry): notcurses answers NULL there, which the test
+      handed straight to ncfadectx_iterations; it now asserts the NULL
+      where fade.c's own capability test says there is nothing to fade.
+      The NcmenuItem and NcplotOptions layout comments now give C's
+      numbers (ncinput is 52 bytes, the menu item 64; the plot title
+      sits at 32 after 4 bytes of padding).
+    - NOTE: [2026-09-30] The NativeCall NULL-pin trap described below is
+      broader than pointers: an undefined boxed `Int` or `Str` reaching a
+      native call site through a variable or attribute on its first call
+      pins 0 or NULL the same way. The README's MEMORY OWNERSHIP section
+      says so. Two upstream notcurses defects surfaced while testing the
+      struct-owned arrays: ncmultiselector_selected never writes flag 0
+      (its loop is `while(--count)`), and ncmultiselector_create crashes
+      on an item with a NULL description where the selector substitutes
+      "".
+    - BUGFIX: [2026-09-30] `ncpile-render-to-string` no longer frees
+      notcurses's output buffer. `ncpile_render_to_buffer` does not hand
+      the caller a fresh allocation, whatever notcurses.h says: it lends
+      out `nc->rstate.f.buf`, which notcurses keeps rasterizing into on
+      every later frame and frees itself in `notcurses_stop` (on Linux it
+      is an mmap, not a malloc block at all). Freeing it here was a
+      use-after-free on the next render and a double free at stop —
+      confirmed under AddressSanitizer on macOS, a crash on Linux. The
+      wrapper also read the frame with strlen, but the buffer carries no
+      NUL terminator, so a frame shorter than an earlier one came back
+      with the earlier frame's tail attached. It now copies exactly the
+      reported length and decodes it strictly as UTF-8; `''` for an empty
+      frame, `Str` on failure as before. This corrects the 0.4.0 entry
+      below that called the buffer malloc'd and caller-freed, and the raw
+      binding's comment that said the same: it is documented as BORROWED
+      now, valid only until the next render, rasterize, refresh or stop.
+      Pinned by t/36.
+    - FEATURE: [2026-09-30] `ncpile-render-to-blob`, the byte-exact
+      sibling of `ncpile-render-to-string`: the frame as a Raku-owned
+      `buf8`, for diffing, hashing or replaying frames without the
+      normalisation a `Str` applies.
+    - BUGFIX: [2026-09-30] `notcurses_native_copy_cells` (perf shim) read
+      freed memory in two places, both confirmed under AddressSanitizer.
+      It held the source plane's base-cell cluster as a pointer into the
+      source egcpool for the whole copy, and every cell it read
+      duplicates into that pool; once a duplicate grew the pool, the next
+      empty cell was written from freed memory (any source whose base
+      cell holds a cluster longer than four bytes). And when src == dst
+      it wrote each cell straight from its pool pointer, while the write
+      stashes into the same pool and `ncplane_putstr_yx` re-reads the
+      string afterwards. Every cluster is now copied into shim-owned
+      storage (inline up to 127 bytes, a reused heap spill beyond) and
+      the pool reference released before the next notcurses call.
+      Rendering is unchanged: same calls, same order, same styles and
+      channels, same base substitution and wide-glyph handling. The
+      function now answers -1 if a heap spill cannot be allocated
+      (previously it could only answer 0). Pinned by t/37 and by the
+      new ASan driver, xxt/01-asan-copy-cells, which fails on the old
+      source and passes on the new. The r16 prebuilts carry the fixed
+      shim; a toolchain-less install no longer needs a rebuild to get
+      it.
+    - BUGFIX: [2026-09-30] `NCSTYLE_STRUCK` is 0x0001, as notcurses.h
+      defines it. It was bound as 0x0020, a bit notcurses does not
+      define, so strikethrough requested through the constant rendered
+      as plain text — and code testing a stylemask read back from
+      notcurses with `+& NCSTYLE_STRUCK` could never see it. t/33 pins
+      every NCSTYLE_* value against the header.
+    - BUGFIX: [2026-09-30] `Timespec` has C's layout on Windows.
+      `struct timespec` is `{ time_t tv_sec; long tv_nsec; }`, 16 bytes
+      with tv_nsec at offset 8 everywhere we build; with both fields
+      bound as `long`, Windows (where `long` is 32-bit) got an 8-byte
+      struct with tv_nsec at offset 4, and every timeout passed to
+      `notcurses_get`, `ncdirect_get`, the fade calls or the stream calls
+      was misread there. tv_sec is `int64` now. Pinned by t/34.
+    - BUGFIX: [2026-09-30] `ncplane_name` leaked a copy of the name on
+      every call. notcurses returns a strdup'd name; the binding was a
+      bare `--> Str`, listed as library-owned in the 0.4.0 entry below
+      and in Notcurses::Native::Str's Pod — both wrong. It now frees the
+      copy through `strdup-copy-and-free`. A plane created without a
+      name answers `''`, one whose name was cleared answers `Str`.
+    - FEATURE: [2026-09-30] Safe receivers for the other heap returns,
+      each copying into Raku-owned storage and freeing the C allocation:
+      `ncplane-as-rgba` (the pixels as a `buf32`; the raw
+      `ncplane_as_rgba` Pointer is documented as caller-frees),
+      `notcurses-stats-snapshot` (allocates through
+      `notcurses_stats_alloc` so notcurses sizes the struct, copies, and
+      frees; `:into` reuses one struct per frame) with
+      `notcurses-stats-free` for callers of the raw allocator,
+      `ncselector-destroy-selected` and `ncreader-destroy-contents` (the
+      string notcurses hands over through the destroy call's `char**`,
+      which the existing Pointer bindings could only pass as NULL — the
+      selector wrapper also avoids notcurses's out-of-bounds read on a
+      selector with no items), and `borrowed-buf-from-pointer` in
+      Notcurses::Native::Str. Every raw binding keeps its signature.
+      Pinned by t/35 and t/38, including RSS-bounded leak loops.
+    - NOTE: [2026-09-30] A NativeCall trap found while writing
+      `ncplane-as-rgba`, present in Rakudo 2025.05 through 2026.08: a
+      native call site that first receives a type object through a
+      Scalar container (a `my` variable or an attribute; typed or not;
+      Pointer or any CPointer class) passes NULL on every later call
+      through that site. A `LEAVE c-free($pixels)` that ran once for a
+      failed call therefore stopped freeing anything afterwards. The
+      wrappers here decontainerise and guard their frees; the README's
+      MEMORY OWNERSHIP section tells callers of the raw bindings how.
+    - MAINT: [2026-09-30] Notcurses::Native::Test::Headless (test
+      support, shipped under `::Test` like Test::Helper): runs a Raku
+      script in a child with notcurses started on no terminal at all —
+      setsid(2) on POSIX, piped standard handles on Windows — and
+      collects tagged results, so t/ can assert on memory-safety
+      behaviour without a TTY and survive a crashing child. A new xxt/
+      tier holds the ASan driver, which needs a C compiler with
+      AddressSanitizer and the pinned notcurses headers and fails
+      loudly without them. The README gains a MEMORY OWNERSHIP section.
+    - FEATURE: [2026-09-19] A C-level terminal restore guard in the perf
+      shim: `notcurses_native_arm_terminal_guard(cleanup)` captures the
+      terminal as it stands (termios on POSIX, both console modes on
+      Windows), copies a cleanup escape sequence into static storage and
+      registers one `atexit(3)` handler that puts both back;
+      `notcurses_native_disarm_terminal_guard()` stands it down. The
+      exit it exists for is the one no Raku sees: a MoarVM panic prints
+      its line and calls C `exit(3)` from the runtime, so no END phaser,
+      no LEAVE and no signal tap runs, and a TUI's terminal is abandoned
+      in raw mode with the alternate screen up — a shell the user has to
+      blind-type `reset` into. An `atexit` handler still runs there.
+      SIGSEGV, SIGKILL and `_exit(2)` remain out of reach by
+      construction, and are documented as such. Arming with no terminal
+      is a supported no-op that arms nothing and answers a non-zero
+      code; the handler never allocates, never aborts, and tolerates a
+      second entry. Pinned by t/31.
+    - CI: [2026-09-19] Every build lane now asserts by name that the
+      shim it packs exports `notcurses_native_copy_cells`,
+      `notcurses_native_arm_terminal_guard` and
+      `notcurses_native_disarm_terminal_guard`. The checks it replaces
+      named one symbol (macOS) or matched the `notcurses_native_`
+      prefix (Linux, Windows), and a bundle whose terminal guard had
+      silently failed to compile in satisfies both. Nothing downstream
+      catches that: Build.rakumod recompiles the shim locally wherever
+      a C toolchain exists, CI runners all have one, so the verify
+      lanes' shim check inspects that fresh copy rather than the
+      archive's — the build lanes are the only place a pack's own
+      contents are ever tested. Windows also links kernel32 explicitly
+      now; the guard's Win32 branch calls GetStdHandle, GetConsoleMode,
+      SetConsoleMode, WriteConsoleA and WriteFile, and had been
+      relying on MinGW pulling that library in by default.
+    - FEATURE: [2026-09-19] `ensure-shim-loadable`, which puts
+      libnotcurses in the process and answers whether the shim can now
+      be loaded. macOS builds the shim with `-undefined dynamic_lookup`,
+      and dyld4 resolves flat-namespace symbols eagerly, so a `dlopen`
+      of the shim fails outright until something has loaded
+      libnotcurses. NativeCall binds one sub at a time on first call, so
+      a consumer whose first shim call precedes its first notcurses call
+      — arming the terminal guard before `notcurses_init`, exactly — met
+      that every time. Every shim binding's Pod now names it as the
+      prerequisite. Linux and Windows link the core library properly and
+      only pay a version read.
+    - FEATURE: [2026-09-10] Bind `notcurses_poll_geometry`, the fork's
+      nonpainting owner-thread geometry poll. Windows runtime CSI 6
+      reports refresh cell pixel dimensions, including font-only zoom.
+      The r16 prebuilts carry the fork commit with this symbol, so a
+      toolchain-less install gets it without a rebuild.
+    - FEATURE: [2026-09-07] `NCKEY_PASTE_BEGIN` and `NCKEY_PASTE_END`
+      (preterunicode 300 and 301), the two keys the m-doughty/notcurses
+      fork delivers around a bracketed paste from binaries r16 on. They
+      sit in the synthesized range like every other NCKEY, so a consumer
+      can name them today and treat everything between them as text once
+      the library that sends them is in place.
+    - BUGFIX: [2026-08-27] the library-path resolvers are no longer
+      racy on first touch. nc-lib, ffi-lib, core-lib, shim-lib and
+      libc-name each memoised their lookup in a bare
+      `state $r = <probe>`, and a `state` initialiser is not atomic —
+      the slot is flagged initialised independently of the value
+      landing in it, so a thread arriving mid-initialisation read
+      `Any` and NativeCall was handed a `Str` type object as a
+      library name. The probe is a directory walk (plus a
+      LoadLibraryExW on Windows), so the window is milliseconds wide
+      on a cold page cache — and a TUI's startup is exactly a burst
+      of threads binding native subs for the first time. Measured
+      before the fix: 64 threads released together saw ~180 of 448
+      resolver calls answer `Any`, on 25 of 25 cold launches; after
+      it, 0 of 50. What a consumer saw was a native binding failing
+      to load for no reason on some runs and not others. Resolution
+      now happens under a lock, and every resolver is primed once
+      from the module mainline on the loading thread, so the
+      concurrent first touch cannot arise at all. Priming is
+      per-resolver `try`-guarded so Windows' load-time failure for an
+      unloadable optional shim still surfaces lazily at first use,
+      exactly as before. New regression test
+      (t/29-cold-start-race) drives 64 real OS threads through a
+      cold resolver burst across ten child processes; it needs no
+      terminal.
+    - MAINT: [2026-08-27] moved the C<xt/> terminal-redirect test
+      support from C<t/lib/TestHelper.rakumod> into
+      C<lib/Notcurses/Native/Test/Helper.rakumod>
+      (C<Notcurses::Native::Test::Helper>). A C<t/lib> directory is
+      its own CompUnit repo that starts cold on a fresh C<zef
+      install>, and parallel test files pulling the fixture's
+      dependency chain into that cold store can race and fail the
+      install outright. C<lib/> is staged and precompiled before the
+      test phase runs, so shipping test support inside the dist's own
+      namespace dissolves the race. This is the fleet-wide convention
+      going forward.
+
 0.6.6  2026-08-26T09:43:42+01:00
 
     - Fixed a test in t/ referencing path outside of the dist
