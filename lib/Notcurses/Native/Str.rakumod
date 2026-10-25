@@ -44,6 +44,16 @@ unless PROCESS::<$KERNEL>:exists {
 		if $kernel ~~ Kernel:D && !(PROCESS::<$KERNEL>:exists);
 }
 
+# MSYS2 exports COMSPEC, but Rakudo's Windows shell() reads the case-sensitive
+# %*ENV<ComSpec>. A failed launch makes $*KERNEL.arch return an empty string,
+# which its cache treats as unset, so every read retries and retains handles.
+# Restore the casing for callers too, not just CI. Preserve an existing value
+# and do not invent a shell path when neither spelling is present.
+if $*DISTRO ~~ Distro:D && $*DISTRO.is-win
+	&& !(%*ENV<ComSpec>:exists) && (%*ENV<COMSPEC>:exists) {
+	%*ENV<ComSpec> = %*ENV<COMSPEC>;
+}
+
 #|( Helpers for safely transferring C-allocated char* across the
     NativeCall boundary into Raku-owned C<Str>s.
 

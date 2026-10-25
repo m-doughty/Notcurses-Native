@@ -1,0 +1,73 @@
+use v6.d;
+use Test;
+
+# Load Str for the first time in a fresh process after setting the environment.
+# This exercises module initialization even when Str is already precompiled.
+# No CI export or test harness normalization may supply the missing alias.
+my $lib = $*PROGRAM.parent.parent.add('lib').absolute;
+my constant IS-WIN = $*DISTRO.is-win;
+
+sub check-process(Str:D $code, Str:D $expected) {
+	plan 3;
+	my $proc = run $*EXECUTABLE, '-I', $lib, '-e', $code, :out, :err;
+	my $out = $proc.out.slurp(:close);
+	my $err = $proc.err.slurp(:close);
+	is $proc.exitcode, 0, 'The child exits successfully';
+	is $out, $expected, 'The environment and shell results are exact';
+	is $err, '', 'No failed-spawn or uninitialized-value diagnostics';
+}
+
+plan 4;
+
+subtest 'an uppercase-only environment supports Windows shell calls after loading' => {
+	my $expected = IS-WIN
+		?? "True\nTrue\nTrue\nnotcurses-shell-ok\n\"\"\n0\n"
+		!! "True\nFalse\n";
+	check-process q:to/RAKU/, $expected;
+		my $windows = $*DISTRO.is-win;
+		my $command = %*ENV<ComSpec> // %*ENV<COMSPEC> // 'unused-on-posix';
+		%*ENV<ComSpec>:delete;
+		%*ENV<COMSPEC> = $command;
+		require ::('Notcurses::Native::Str');
+		say %*ENV<COMSPEC> eq $command;
+		say %*ENV<ComSpec>:exists;
+		if $windows {
+			say %*ENV<ComSpec> eq $command;
+			my $proc = shell('echo notcurses-shell-ok', :out, :err);
+			say $proc.out.slurp(:close).chomp;
+			say $proc.err.slurp(:close).raku;
+			say $proc.exitcode;
+		}
+		RAKU
+};
+
+subtest 'an existing mixed-case value is preserved' => {
+	check-process q:to/RAKU/, "existing-command\nuppercase-command\n";
+		%*ENV<ComSpec> = 'existing-command';
+		%*ENV<COMSPEC> = 'uppercase-command';
+		require ::('Notcurses::Native::Str');
+		say %*ENV<ComSpec>;
+		say %*ENV<COMSPEC>;
+		RAKU
+};
+
+subtest 'an explicitly empty mixed-case value is preserved' => {
+	check-process q:to/RAKU/, "True\n\"\"\nuppercase-command\n";
+		%*ENV<ComSpec> = '';
+		%*ENV<COMSPEC> = 'uppercase-command';
+		require ::('Notcurses::Native::Str');
+		say %*ENV<ComSpec>:exists;
+		say %*ENV<ComSpec>.raku;
+		say %*ENV<COMSPEC>;
+		RAKU
+};
+
+subtest 'no command processor is invented when both keys are absent' => {
+	check-process q:to/RAKU/, "False\nFalse\n";
+		%*ENV<ComSpec>:delete;
+		%*ENV<COMSPEC>:delete;
+		require ::('Notcurses::Native::Str');
+		say %*ENV<ComSpec>:exists;
+		say %*ENV<COMSPEC>:exists;
+		RAKU
+};
