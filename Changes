@@ -2,6 +2,125 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
 
+0.8.0  2026-10-25T15:11:01Z
+    - BUGFIX: [2026-10-25] restore ComSpec from COMSPEC at module load
+      on Windows when the mixed-case key is absent. MSYS2 supplies
+      COMSPEC, while Rakudo 2026.09's shell() reads ComSpec. The missing
+      key made uname -p fail and $*KERNEL.arch stay empty, causing
+      repeated failed launches and handle growth even with the Kernel
+      object correctly cached. Existing ComSpec values are preserved.
+    - BUGFIX: [2026-10-25] also cache $*KERNEL under the key Rakudo's
+      lookup reads. Rakudo 2026.09 stores it under 'KERNEL' instead of
+      '$KERNEL', so .arch kept launching uname -p despite the $*DISTRO
+      fix, accumulating Windows process handles until collection and
+      failing t/45. Both platform objects now retain their identity;
+      existing cache entries and dynamic stand-ins remain respected.
+    - BUGFIX: [2026-10-24] on Rakudo 2026.09 under macOS, loading the
+      module no longer leaks about seventeen file descriptors per
+      process, and no later read of the platform does either. That
+      Rakudo builds $*DISTRO afresh on every read, and on macOS each
+      build runs sw_vers and leaves a pipe open for good; $*KERNEL.name
+      and .arch ask $*DISTRO for their answer, so they leaked too. The
+      module read them about seventeen times while loading, which cost
+      every process that many descriptors before it did anything, and a
+      TUI at macOS's default limit of 256 had that much less room for
+      the files and sockets it opens while it runs. The first module the
+      dist loads, Notcurses::Native::Str, now files the one $*DISTRO
+      under the key Rakudo's lookup reads, so every read after it
+      returns the same object; where the key is already there, which is
+      every Rakudo without the bug, nothing is filed, and a stand-in
+      $*DISTRO in force while the module loads is never filed. t/45
+      counts the process's open handles across 300 reads each of
+      $*DISTRO.name, $*KERNEL.name and $*KERNEL.arch, and t/46 loads the
+      module under a stand-in.
+    - BUGFIX: [2026-10-24] the prebuilt packs' licensing kit gives every
+      notice the packs' licences ask for. Packs built from this tree
+      carry the GNU GPL v3 text beside GNU libunistring's LGPL v3 text
+      (the LGPL v3 is a set of permissions added to the GPL v3, and
+      earlier packs shipped it alone); the mingw-w64 runtime's notice
+      file, LICENSES/COPYING.MinGW-w64-runtime.txt, in both Windows
+      packs, every DLL of which statically links that runtime;
+      winpthreads' own COPYING, which is MIT plus Lockless Inc.'s
+      BSD-3-Clause, where earlier packs gave MIT alone; libvpx in the
+      Windows THIRD-PARTY.md, listed as embedded in avcodec-62.dll, the
+      library it is compiled into, where earlier Windows kits left it
+      out; and the acknowledgement the Independent JPEG Group's licence
+      requires for FFmpeg's inverse DCT, in
+      LICENSES/FFmpeg-IJG-notice.txt and in FFmpeg's entry. Both
+      mingw-w64 texts are upstream's, verbatim, from the v14.0.0 tag of
+      mingw-w64's repository; the manifest records each one's URL, tag
+      and hashes, and t/17-third-party-manifest checks every licence
+      text that is not a stock SPDX text against the git blob recorded
+      for it, so a copy that gets reflowed fails the suite.
+    - FEATURE: [2026-10-24] THIRD-PARTY.md describes the archive it is
+      in rather than its platform. Each component is listed with the
+      files that are actually in that archive (the x86_64 Windows pack
+      no longer names the arm64 pack's LLVM runtime DLLs), an optional
+      component a pack does not hold is named under "Not in this
+      archive" so every text in LICENSES/ is accounted for, and the
+      document names its archive and release and links the release page
+      and the build scripts at the release tag. Every pack also carries
+      third-party.json, the manifest the kit was generated from, with a
+      `pack` block giving the pack's platform, release tag, the files
+      each component matched, the files each embedded component is
+      compiled into, and the components that are absent, so a tool that
+      bundles the pack into an application no longer has to parse
+      THIRD-PARTY.md.
+    - MAINT: [2026-10-24] resources/third-party.json gains a per-platform
+      `embedded` / `embedded-in` pair for a component that is compiled
+      into other files rather than shipped as one, and a `license-texts`
+      map recording where every non-stock licence text came from. The
+      component that was `mingw-w64-runtime` (winpthreads) is now
+      `mingw-w64-winpthreads`, and the runtime itself is the new
+      `mingw-w64-crt`.
+    - CI: [2026-10-24] the build lanes fail rather than pack an archive
+      whose kit is wrong. The kit emitter stops on a required component
+      with no file in the pack, on an embedded component whose host file
+      is missing (the audit gate checks that too), and on a missing or
+      malformed BINARY_TAG, or one that differs from the tag a release
+      run is building. A new step, scripts/ci/assert-third-party-kit.sh,
+      checks the finished archive for THIRD-PARTY.md, third-party.json
+      and every licence text before it is uploaded: the audit gate alone
+      would pass a pack that had lost its kit, because the perf shim
+      satisfies the same component. xt/22-third-party-kit runs all three
+      scripts over mock packs named exactly as the eight lanes' archives
+      are, and over broken ones.
+    - CI: [2026-10-25] the release workflow publishes only on a pushed
+      binaries-* tag. The publish job's condition,
+      .github/workflows/_release-publish.yml, now also requires
+      github.event_name == 'push'; it used to test the ref alone, so a
+      manually dispatched run started on a binaries-* tag (where
+      github.ref is that tag) satisfied it and would have overwritten
+      the published archives that every installed dist checksum-verifies
+      against. A dispatch run now builds and smokes all eight lanes and
+      stops, whatever ref it is started on.
+    - CI: [2026-10-25] the release notes link the manifest and the build
+      scripts at the release tag rather than at main. The link to
+      resources/third-party.json used to point at the main branch, which
+      moves on after the release; it now points at the file as it stood
+      at that tag, and a new link to scripts/ci at the same tag is
+      added beside it, so the manifest and the scripts that built the
+      archives are the ones the release was made from.
+    - CI: [2026-10-25] the musl verify lanes install jq, zip and unzip,
+      and the glibc aarch64 lane declares them. xt/22 runs the
+      licence-kit scripts the build lanes run and stops when those
+      tools are missing, which it did in the alpine containers.
+    - MAINT: [2026-10-25] the Raku code is re-indented with tabs
+      throughout (tabs for indentation, spaces only for alignment), the
+      continuation lines of multi-line expressions included. Only
+      leading whitespace changed; there is no behaviour change.
+    - FEATURE: [2026-10-25] Bump the pinned notcurses fork (7152070f1) and
+      prebuilts to binaries-notcurses-3.0.17-r17. A sixel image moved so
+      that its old position starts above or left of the screen no longer
+      scrubs that position through negative coordinates, which read and
+      wrote outside the frame's cell array. On Windows, every buffered
+      write to a console now goes out through WriteFile in one call: the
+      C runtime's text-mode console path writes one character per system
+      call under a UTF-8 locale, and r16 only took the frame and query
+      descriptors off it, so other console output (the direct-mode API's
+      included) still paid that cost. The r17 packs are also the first to
+      carry the licence-notice fixes above.
+
 0.7.0  2026-10-04T22:20:33+01:00
     - BUGFIX: [2026-10-04] a source build no longer links a Homebrew
       ncurses of the wrong architecture. The build added /opt/homebrew's
