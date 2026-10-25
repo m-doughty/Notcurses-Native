@@ -28,6 +28,10 @@ RAKUDO_VERSION="${RAKUDO_VERSION:?RAKUDO_VERSION must be set, e.g. 2026.09}"
 
 # Test-phase deps:
 #   * bash, coreutils, findutils, tar, git, curl — script + zef + xt.
+#   * jq, zip, unzip — xt/22 runs the licence-kit scripts the build
+#     lanes run (emit, audit, assert), which read third-party.json
+#     with jq and pack and list the archives with zip/unzip; it bails
+#     out without them.
 #   * perl, perl-utils — `prove` (Perl 5's harness) for the xt/
 #     pass; matches arm64-mac reference lane.
 #   * python3 — xt/'s PTY terminal-guard test drives a real
@@ -41,6 +45,7 @@ RAKUDO_VERSION="${RAKUDO_VERSION:?RAKUDO_VERSION must be set, e.g. 2026.09}"
 #     NOTCURSES_NATIVE_BUILD_FROM_SOURCE.
 apk add --no-cache \
     bash coreutils findutils tar git curl ca-certificates \
+    jq zip unzip \
     perl perl-utils build-base make \
     python3 \
     cmake pkgconf patchelf \

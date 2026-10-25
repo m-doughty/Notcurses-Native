@@ -19,12 +19,16 @@ unit module Notcurses::Native::Str;
 # every module that reads $*DISTRO at load time `use` this one before their
 # own mainline runs.
 #
-# Only a real Distro is filed.  A module loaded inside a test's stand-in
-# $*DISTRO (`my $*DISTRO = class { method is-win { True } }.new`, the usual
-# way to exercise a Windows branch on another OS) reads the stand-in here,
-# and filing that would make it the whole process's for good; such a process
-# is left to Rakudo's own behaviour instead.  A stand-in declared after the
-# dist has loaded still wins: a dynamic variable in scope is found before
+# The same release files $*KERNEL under 'KERNEL' instead of '$KERNEL'.
+# Each read therefore builds a new Kernel, losing its cached architecture;
+# .arch runs uname -p again, accumulating child-process handles on Windows
+# until garbage collection.  File the Kernel under its lookup key too.
+#
+# Only real Distro and Kernel objects are filed.  A module loaded inside a
+# test's unrelated stand-in $*DISTRO or $*KERNEL reads that stand-in here;
+# filing it would make it the whole process's for good.  Such a cache entry
+# is left to Rakudo's own behaviour instead.  Stand-ins declared after the
+# dist has loaded still win: a dynamic variable in scope is found before
 # PROCESS is ever consulted.
 #
 # The bug came in with rakudo/rakudo a22cab8f9 (2026-09-02); delete this
@@ -33,6 +37,11 @@ unless PROCESS::<$DISTRO>:exists {
 	my $distro := $*DISTRO;
 	PROCESS::<$DISTRO> := $distro
 		if $distro ~~ Distro:D && !(PROCESS::<$DISTRO>:exists);
+}
+unless PROCESS::<$KERNEL>:exists {
+	my $kernel := $*KERNEL;
+	PROCESS::<$KERNEL> := $kernel
+		if $kernel ~~ Kernel:D && !(PROCESS::<$KERNEL>:exists);
 }
 
 #|( Helpers for safely transferring C-allocated char* across the

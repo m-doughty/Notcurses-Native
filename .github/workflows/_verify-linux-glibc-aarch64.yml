@@ -35,7 +35,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            build-essential perl curl git ca-certificates
+            build-essential perl curl git ca-certificates \
+            jq zip unzip
 
       - name: Restore source-built Rakudo
         # restore + save split (not actions/cache@v4) so a downstream

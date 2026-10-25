@@ -10,7 +10,10 @@ use Notcurses::Native;
 # good.  Loading this dist reads them about seventeen times, and a TUI built
 # on it runs at macOS's default limit of 256 descriptors.  The dist files the
 # first $*DISTRO under the key the lookup reads (see the top of
-# Notcurses::Native::Str); this file counts.
+# Notcurses::Native::Str).  Rakudo also files $*KERNEL under the wrong key;
+# without that cache, .arch launches uname -p on every read, accumulating
+# process handles on Windows until collection.  The dist files $*KERNEL too;
+# this file checks both identities and counts handles without forcing GC.
 #
 # The counts come from the kernel: the descriptor listing on Linux and macOS,
 # GetProcessHandleCount on Windows.  Every comparison is between two readings
@@ -19,7 +22,7 @@ use Notcurses::Native;
 # for is per read, so a few hundred reads show it in the hundreds; SLACK is
 # the most the count may drift by.
 
-plan 3;
+plan 5;
 
 # Read once, here: a counter that read $*DISTRO on every call would, on the
 # Rakudo this file is about, be counting its own leak.
@@ -62,6 +65,23 @@ sub drift(&work --> Int:D) {
 }
 
 ok $*DISTRO === $*DISTRO, 'Two reads of $*DISTRO return the same object';
+ok $*KERNEL === $*KERNEL, 'Two reads of $*KERNEL return the same object';
+
+subtest 'dynamic platform bindings still override the process cache' => {
+	plan 4;
+	my $distro := $*DISTRO;
+	my $kernel := $*KERNEL;
+	my $stand-in-distro = Distro.new(:name<fixture-distro>);
+	my $stand-in-kernel = Kernel.new(:name<fixture-kernel>);
+	{
+		my $*DISTRO = $stand-in-distro;
+		my $*KERNEL = $stand-in-kernel;
+		ok $*DISTRO === $stand-in-distro, 'The dynamic distro wins';
+		ok $*KERNEL === $stand-in-kernel, 'The dynamic kernel wins';
+	}
+	ok $*DISTRO === $distro, 'The original process distro is unchanged';
+	ok $*KERNEL === $kernel, 'The original process kernel is unchanged';
+};
 
 subtest 'reads of $*DISTRO and $*KERNEL hold no handle open' => {
 	plan 3;
