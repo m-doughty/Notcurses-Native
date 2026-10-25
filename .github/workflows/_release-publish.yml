@@ -37,8 +37,11 @@ jobs:
     # clobber its assets and break every existing install's download.
     # Dispatch now builds and smokes all eight lanes and stops, the same
     # contract as the app release workflows downstream; only pushing the
-    # binaries-* tag itself publishes.
-    if: startsWith(github.ref, 'refs/tags/binaries-')
+    # binaries-* tag itself publishes. The event check is what makes that
+    # true for a dispatch run ON a tag ref, which `github.ref` alone
+    # cannot tell apart from the push (a called workflow sees its
+    # caller's event). Same gate as Vips-Native's build-binaries.yml.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/binaries-')
     steps:
       - uses: actions/checkout@v6
 
@@ -166,9 +169,9 @@ jobs:
             `libnotcurses-ffi`, plus ffmpeg sibling dylibs/sos/DLLs
             that notcurses dyn-links — with relocated loader paths on
             macOS/Linux and a flat, runtime-enabled DLL search directory
-            on Windows — and a
-            `THIRD-PARTY.md` + `LICENSES/` licensing kit describing
-            everything in that particular archive.
+            on Windows — and a licensing kit (`THIRD-PARTY.md`,
+            `LICENSES/` and the machine-readable `third-party.json`)
+            describing everything in that particular archive.
 
             Linux glibc archives are built in
             `quay.io/pypa/manylinux_2_28_*` containers (glibc 2.28
@@ -187,9 +190,14 @@ jobs:
 
             These archives redistribute third-party binaries. Every one
             of them is inventoried in
-            [`resources/third-party.json`](https://github.com/m-doughty/Notcurses-Native/blob/main/resources/third-party.json),
-            and each archive carries the subset relevant to it as
-            `THIRD-PARTY.md` plus full licence texts in `LICENSES/`.
+            [`resources/third-party.json`](https://github.com/m-doughty/Notcurses-Native/blob/${{ steps.prep.outputs.tag }}/resources/third-party.json),
+            and each archive carries a `THIRD-PARTY.md` naming every
+            file in it under the component it belongs to, full licence
+            texts in `LICENSES/`, and a copy of the manifest as
+            `third-party.json`. The scripts that built the archives
+            from the source below are at
+            [`scripts/ci`](https://github.com/m-doughty/Notcurses-Native/tree/${{ steps.prep.outputs.tag }}/scripts/ci)
+            for this tag.
 
             Copyleft, and therefore attached as source below:
 
@@ -203,11 +211,18 @@ jobs:
               and carry no copy of it.
 
             Permissive: **notcurses** (Apache-2.0), **dav1d** (BSD-2),
-            **libvpx** and **Opus** (BSD-3), **libdeflate** (MIT),
-            **ncursesw** (X11-style), **zlib** (Zlib), and on Windows
-            the MSYS2 toolchain runtimes (MIT /
-            GPL-3.0-with-GCC-exception / Apache-2.0-with-LLVM-exception,
-            as listed per-archive).
+            **libvpx** and **Opus** (BSD-3; on Windows libvpx is
+            statically linked into `avcodec-<N>.dll`), **libdeflate**
+            (MIT), **ncursesw** (X11-style), **zlib** (Zlib), and on
+            Windows the **mingw-w64 runtime**, which the MSYS2
+            toolchains link statically into every DLL (its notices are
+            in `LICENSES/COPYING.MinGW-w64-runtime.txt`), and
+            **winpthreads** (MIT and BSD-3-Clause), as listed
+            per-archive.
+
+            FFmpeg's JPEG decoding uses the Independent JPEG Group's
+            inverse DCT. This software is based in part on the work of
+            the Independent JPEG Group.
 
             The `*.tar.gz` / `*.tar.xz` / `*.tar.bz2` assets on this
             release are the exact upstream source tarballs these

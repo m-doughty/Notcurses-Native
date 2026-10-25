@@ -2,6 +2,39 @@ use NativeCall;
 
 unit module Notcurses::Native::Str;
 
+# Rakudo 2026.09 builds $*DISTRO afresh on every read instead of once per
+# process: its lazy initialiser files the object it built under the key
+# '$*DISTRO', and the lookup only ever asks for '$DISTRO'.  On macOS each
+# build runs sw_vers and leaves the pipe it read the answer from open, so
+# every read costs a process and a file descriptor that is never given back
+# -- and so does every $*KERNEL.name or .arch, which ask $*DISTRO for their
+# answer.  Loading Notcurses::Native alone reads $*DISTRO or $*KERNEL some
+# seventeen times, so every process that used it started with that many
+# descriptors fewer, and a TUI at macOS's default limit of 256 had that much
+# less room for the files, pipes and sockets it opens while it runs.  Filing
+# the object under the key the lookup reads makes it the one every later read
+# returns, as on every other release; where the key is already there, which
+# is everywhere the bug is not, nothing is filed.  It is done here because
+# this is the first module of the dist to load: Notcurses::Native::Types and
+# every module that reads $*DISTRO at load time `use` this one before their
+# own mainline runs.
+#
+# Only a real Distro is filed.  A module loaded inside a test's stand-in
+# $*DISTRO (`my $*DISTRO = class { method is-win { True } }.new`, the usual
+# way to exercise a Windows branch on another OS) reads the stand-in here,
+# and filing that would make it the whole process's for good; such a process
+# is left to Rakudo's own behaviour instead.  A stand-in declared after the
+# dist has loaded still wins: a dynamic variable in scope is found before
+# PROCESS is ever consulted.
+#
+# The bug came in with rakudo/rakudo a22cab8f9 (2026-09-02); delete this
+# once no supported Rakudo has it.
+unless PROCESS::<$DISTRO>:exists {
+	my $distro := $*DISTRO;
+	PROCESS::<$DISTRO> := $distro
+		if $distro ~~ Distro:D && !(PROCESS::<$DISTRO>:exists);
+}
+
 #|( Helpers for safely transferring C-allocated char* across the
     NativeCall boundary into Raku-owned C<Str>s.
 
@@ -61,44 +94,44 @@ my Bool $libc-name-resolved = False;
 # The probe itself, unchanged — split out of libc-name so the memo
 # around it stays readable.
 my sub _probe-libc-name(--> Str) {
-    if $*DISTRO.is-win {
-        # Windows prebuilts and source builds use the Universal CRT.
-        # Heap pointers returned by notcurses must be released by the
-        # same CRT family that allocated them; msvcrt.dll's free() can
-        # corrupt the process heap when handed a UCRT allocation.
-        'ucrtbase.dll'
-    }
-    elsif $*KERNEL.name.lc.contains('darwin') {
-        'libc.dylib'
-    }
-    elsif '/lib/ld-musl-x86_64.so.1'.IO.e {
-        # musl Alpine / distroless — libc is the dynamic linker
-        # itself, exposed under architecture-specific filenames.
-        'libc.musl-x86_64.so.1'
-    }
-    elsif '/lib/ld-musl-aarch64.so.1'.IO.e {
-        'libc.musl-aarch64.so.1'
-    }
-    else {
-        'libc.so.6'
-    }
+	if $*DISTRO.is-win {
+		# Windows prebuilts and source builds use the Universal CRT.
+		# Heap pointers returned by notcurses must be released by the
+		# same CRT family that allocated them; msvcrt.dll's free() can
+		# corrupt the process heap when handed a UCRT allocation.
+		'ucrtbase.dll'
+	}
+	elsif $*KERNEL.name.lc.contains('darwin') {
+		'libc.dylib'
+	}
+	elsif '/lib/ld-musl-x86_64.so.1'.IO.e {
+		# musl Alpine / distroless — libc is the dynamic linker
+		# itself, exposed under architecture-specific filenames.
+		'libc.musl-x86_64.so.1'
+	}
+	elsif '/lib/ld-musl-aarch64.so.1'.IO.e {
+		'libc.musl-aarch64.so.1'
+	}
+	else {
+		'libc.so.6'
+	}
 }
 
 sub libc-name(--> Str) is export {
-    # `//=` on the lock as well as the mainline initialiser above:
-    # a unit's INIT phasers run before its mainline, so a dependent
-    # unit's INIT could in principle call in before the assignment.
-    ($libc-name-lock //= Lock.new).protect: {
-        unless $libc-name-resolved {
-            $libc-name = _probe-libc-name();
-            $libc-name-resolved = True;
-        }
-        $libc-name
-    }
+	# `//=` on the lock as well as the mainline initialiser above:
+	# a unit's INIT phasers run before its mainline, so a dependent
+	# unit's INIT could in principle call in before the assignment.
+	($libc-name-lock //= Lock.new).protect: {
+		unless $libc-name-resolved {
+			$libc-name = _probe-libc-name();
+			$libc-name-resolved = True;
+		}
+		$libc-name
+	}
 }
 
 sub c-free(Pointer $p) is export
-    is native(&libc-name) is symbol('free') { * }
+	is native(&libc-name) is symbol('free') { * }
 
 #|( Decode a malloc'd C string into a Raku-owned C<Str> and free the
     original pointer. Returns the type object C<Str> on a null pointer.
@@ -108,10 +141,10 @@ sub c-free(Pointer $p) is export
     with C«--> Pointer» instead of C«--> Str» so NativeCall doesn't
     auto-decode-and-leak. )
 sub strdup-copy-and-free(Pointer $p --> Str) is export {
-    return Str unless $p.defined && +$p;
-    my $s = nativecast(Str, $p);
-    c-free($p);
-    $s
+	return Str unless $p.defined && +$p;
+	my $s = nativecast(Str, $p);
+	c-free($p);
+	$s
 }
 
 #|( Decode a borrowed C-string pointer into a Raku-owned C<Str> WITHOUT
@@ -119,8 +152,8 @@ sub strdup-copy-and-free(Pointer $p --> Str) is export {
     buffer or library-owned storage. Returns C<Str> (type object) on
     null. )
 sub borrowed-str-from-pointer(Pointer $p --> Str) is export {
-    return Str unless $p.defined && +$p;
-    nativecast(Str, $p)
+	return Str unless $p.defined && +$p;
+	nativecast(Str, $p)
 }
 
 # void *memcpy(void *dest, const void *src, size_t n), bound once per
@@ -137,11 +170,11 @@ sub borrowed-str-from-pointer(Pointer $p --> Str) is export {
 # Windows it resolves against the raku executable's own export table,
 # which has no memcpy. libc-name answers 'ucrtbase.dll' there.
 sub _memcpy-into-blob(Blob, Pointer, size_t --> Pointer)
-    is native(&libc-name) is symbol('memcpy') { * }
+	is native(&libc-name) is symbol('memcpy') { * }
 sub _memcpy-between-pointers(Pointer, Pointer, size_t --> Pointer)
-    is native(&libc-name) is symbol('memcpy') { * }
+	is native(&libc-name) is symbol('memcpy') { * }
 sub _memcpy-from-blob(Pointer, Blob, size_t --> Pointer)
-    is native(&libc-name) is symbol('memcpy') { * }
+	is native(&libc-name) is symbol('memcpy') { * }
 
 #|( Copy the first C<$bytes> bytes of the Raku-owned C<$src> (any
     C<Blob>/C<Buf>) into native memory at C<$dest>, which the caller
@@ -151,18 +184,18 @@ sub _memcpy-from-blob(Pointer, Blob, size_t --> Pointer)
     it to fill their string buffers in one call rather than a Raku loop
     over the bytes. Exported under the C<:INTERNAL> tag only. )
 sub copy-blob-into-native(Pointer $dest, Blob:D $src, Int:D $bytes --> Nil)
-    is export(:INTERNAL)
+	is export(:INTERNAL)
 {
-    die "copy-blob-into-native: byte count must be non-negative, got $bytes"
-        if $bytes < 0;
-    return if $bytes == 0;
-    die "copy-blob-into-native: source holds {$src.bytes} bytes, "
-      ~ "cannot supply $bytes"
-        if $src.bytes < $bytes;
-    die "copy-blob-into-native: NULL destination for a {$bytes}-byte copy"
-        unless $dest.defined && +$dest;
-    _memcpy-from-blob($dest, $src, $bytes);
-    Nil
+	die "copy-blob-into-native: byte count must be non-negative, got $bytes"
+		if $bytes < 0;
+	return if $bytes == 0;
+	die "copy-blob-into-native: source holds {$src.bytes} bytes, "
+	  ~ "cannot supply $bytes"
+		if $src.bytes < $bytes;
+	die "copy-blob-into-native: NULL destination for a {$bytes}-byte copy"
+		unless $dest.defined && +$dest;
+	_memcpy-from-blob($dest, $src, $bytes);
+	Nil
 }
 
 #|( Copy C<$bytes> bytes from native memory at C<$src> into the storage
@@ -174,18 +207,18 @@ sub copy-blob-into-native(Pointer $dest, Blob:D $src, Int:D $bytes --> Nil)
     either pointer. Internal plumbing for the dist's own copy-out
     wrappers, so it is exported under the C<:INTERNAL> tag only. )
 sub copy-native-into-blob(Blob:D $dest, Pointer $src, Int:D $bytes --> Nil)
-    is export(:INTERNAL)
+	is export(:INTERNAL)
 {
-    die "copy-native-into-blob: byte count must be non-negative, got $bytes"
-        if $bytes < 0;
-    return if $bytes == 0;
-    die "copy-native-into-blob: destination holds {$dest.bytes} bytes, "
-      ~ "cannot receive $bytes"
-        if $dest.bytes < $bytes;
-    die "copy-native-into-blob: NULL source for a {$bytes}-byte copy"
-        unless $src.defined && +$src;
-    _memcpy-into-blob($dest, $src, $bytes);
-    Nil
+	die "copy-native-into-blob: byte count must be non-negative, got $bytes"
+		if $bytes < 0;
+	return if $bytes == 0;
+	die "copy-native-into-blob: destination holds {$dest.bytes} bytes, "
+	  ~ "cannot receive $bytes"
+		if $dest.bytes < $bytes;
+	die "copy-native-into-blob: NULL source for a {$bytes}-byte copy"
+		unless $src.defined && +$src;
+	_memcpy-into-blob($dest, $src, $bytes);
+	Nil
 }
 
 #|( Copy C<$bytes> bytes between two native allocations — for example
@@ -195,17 +228,17 @@ sub copy-native-into-blob(Blob:D $dest, Pointer $src, Int:D $bytes --> Nil)
     that both regions hold C<$bytes> bytes and do not overlap.
     Exported under the C<:INTERNAL> tag only. )
 sub copy-native-between(Pointer $dest, Pointer $src, Int:D $bytes --> Nil)
-    is export(:INTERNAL)
+	is export(:INTERNAL)
 {
-    die "copy-native-between: byte count must be non-negative, got $bytes"
-        if $bytes < 0;
-    return if $bytes == 0;
-    die "copy-native-between: NULL destination for a {$bytes}-byte copy"
-        unless $dest.defined && +$dest;
-    die "copy-native-between: NULL source for a {$bytes}-byte copy"
-        unless $src.defined && +$src;
-    _memcpy-between-pointers($dest, $src, $bytes);
-    Nil
+	die "copy-native-between: byte count must be non-negative, got $bytes"
+		if $bytes < 0;
+	return if $bytes == 0;
+	die "copy-native-between: NULL destination for a {$bytes}-byte copy"
+		unless $dest.defined && +$dest;
+	die "copy-native-between: NULL source for a {$bytes}-byte copy"
+		unless $src.defined && +$src;
+	_memcpy-between-pointers($dest, $src, $bytes);
+	Nil
 }
 
 #|( Copy exactly C<$bytes> bytes starting at the borrowed pointer C<$p>
@@ -227,14 +260,14 @@ sub copy-native-between(Pointer $dest, Pointer $src, Int:D $bytes --> Nil)
     both are contract violations by whatever produced the pair, and
     answering an empty buf would hide a real bug. )
 sub borrowed-buf-from-pointer(Pointer $p, Int:D $bytes --> buf8) is export {
-    die "borrowed-buf-from-pointer: byte count must be non-negative, got $bytes"
-        if $bytes < 0;
-    return buf8.new if $bytes == 0;
-    die "borrowed-buf-from-pointer: NULL pointer paired with $bytes bytes"
-        unless $p.defined && +$p;
-    my $out = buf8.allocate($bytes);
-    _memcpy-into-blob($out, $p, $bytes);
-    $out
+	die "borrowed-buf-from-pointer: byte count must be non-negative, got $bytes"
+		if $bytes < 0;
+	return buf8.new if $bytes == 0;
+	die "borrowed-buf-from-pointer: NULL pointer paired with $bytes bytes"
+		unless $p.defined && +$p;
+	my $out = buf8.allocate($bytes);
+	_memcpy-into-blob($out, $p, $bytes);
+	$out
 }
 
 # One C printf conversion specification, per C99 7.19.6.1 plus the POSIX
@@ -242,16 +275,16 @@ sub borrowed-buf-from-pointer(Pointer $p, Int:D $bytes --> buf8) is export {
 # conversion letter. `%%` is matched as its own alternative so a literal
 # percent sign is never mistaken for the start of a conversion.
 my regex c-conversion {
-    '%'
-    [
-    | $<literal>='%'
-    | $<argnum>=[ \d+ '$' ]?
-      $<flags>=[ <[\-+#0\x20']>* ]
-      $<width>=[ \d+ | '*' [ \d+ '$' ]? ]?
-      $<precision>=[ '.' [ \d+ | '*' [ \d+ '$' ]? ]? ]?
-      $<length>=[ 'hh' | 'h' | 'll' | 'l' | 'j' | 'z' | 't' | 'L' | 'q' ]?
-      $<conversion>=<[a..zA..Z]>
-    ]
+	'%'
+	[
+	| $<literal>='%'
+	| $<argnum>=[ \d+ '$' ]?
+	  $<flags>=[ <[\-+#0\x20']>* ]
+	  $<width>=[ \d+ | '*' [ \d+ '$' ]? ]?
+	  $<precision>=[ '.' [ \d+ | '*' [ \d+ '$' ]? ]? ]?
+	  $<length>=[ 'hh' | 'h' | 'll' | 'l' | 'j' | 'z' | 't' | 'L' | 'q' ]?
+	  $<conversion>=<[a..zA..Z]>
+	]
 }
 
 #|( Format C<@args> with the C printf-style C<$format> and answer the
@@ -281,33 +314,33 @@ my regex c-conversion {
     C<$caller> names the function in error messages. Exported under the
     C<:INTERNAL> tag. )
 sub c-sprintf(Str:D $format, @args, Str:D :$caller = 'c-sprintf' --> Str:D)
-    is export(:INTERNAL)
+	is export(:INTERNAL)
 {
-    my Str $raku-format = $format.subst(&c-conversion, -> $m {
-        if $m<literal> {
-            '%%'
-        }
-        else {
-            my Str $conversion = ~$m<conversion>;
-            my Str $length     = ~$m<length>;
-            die "$caller: '%n' is not supported in the format '$format' — "
-              ~ "it writes through a pointer argument, which has no meaning "
-              ~ "for a Raku value. The call answers the columns it wrote; "
-              ~ "use that instead."
-                if $conversion eq 'n';
-            die "$caller: '%p' is not supported in the format '$format' — "
-              ~ "format the address explicitly, e.g. sprintf('0x%x', +\$pointer)."
-                if $conversion eq 'p';
-            die "$caller: the wide-character conversion '{$m.Str}' is not "
-              ~ "supported in the format '$format' — pass a Str to '%s' "
-              ~ "(or a codepoint to '%c') instead."
-                if $conversion eq 'S' | 'C'
-                    || ($length eq 'l' && $conversion eq 's' | 'c');
-            '%' ~ $m<argnum> ~ $m<flags> ~ $m<width> ~ $m<precision>
-                ~ $conversion
-        }
-    }, :g);
-    sprintf($raku-format, |@args)
+	my Str $raku-format = $format.subst(&c-conversion, -> $m {
+		if $m<literal> {
+			'%%'
+		}
+		else {
+			my Str $conversion = ~$m<conversion>;
+			my Str $length     = ~$m<length>;
+			die "$caller: '%n' is not supported in the format '$format' — "
+			  ~ "it writes through a pointer argument, which has no meaning "
+			  ~ "for a Raku value. The call answers the columns it wrote; "
+			  ~ "use that instead."
+				if $conversion eq 'n';
+			die "$caller: '%p' is not supported in the format '$format' — "
+			  ~ "format the address explicitly, e.g. sprintf('0x%x', +\$pointer)."
+				if $conversion eq 'p';
+			die "$caller: the wide-character conversion '{$m.Str}' is not "
+			  ~ "supported in the format '$format' — pass a Str to '%s' "
+			  ~ "(or a codepoint to '%c') instead."
+				if $conversion eq 'S' | 'C'
+					|| ($length eq 'l' && $conversion eq 's' | 'c');
+			'%' ~ $m<argnum> ~ $m<flags> ~ $m<width> ~ $m<precision>
+				~ $conversion
+		}
+	}, :g);
+	sprintf($raku-format, |@args)
 }
 
 # Prime the memo on the loading thread, so no consumer thread ever

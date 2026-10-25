@@ -45,20 +45,20 @@ my Bool $require-shim = (%*ENV<NOTCURSES_NATIVE_REQUIRE_SHIM> // '').chars > 0;
 my Str  $resolved     = shim-lib() // '';
 
 unless $resolved.chars && $resolved.IO.e {
-    if $require-shim {
-        plan 1;
-        flunk "perf shim not staged at '$resolved' — "
-            ~ "NOTCURSES_NATIVE_REQUIRE_SHIM=1 enforced, so copy_cells "
-            ~ "cannot be exercised.";
-        done-testing;
-        exit 0;
-    }
-    plan 1;
-    skip "perf shim not present at '$resolved' — copy_cells has nothing to "
-       ~ "bind to; install with a C toolchain or set "
-       ~ "NOTCURSES_NATIVE_REQUIRE_SHIM=1 to enforce", 1;
-    done-testing;
-    exit 0;
+	if $require-shim {
+		plan 1;
+		flunk "perf shim not staged at '$resolved' — "
+			~ "NOTCURSES_NATIVE_REQUIRE_SHIM=1 enforced, so copy_cells "
+			~ "cannot be exercised.";
+		done-testing;
+		exit 0;
+	}
+	plan 1;
+	skip "perf shim not present at '$resolved' — copy_cells has nothing to "
+	   ~ "bind to; install with a C toolchain or set "
+	   ~ "NOTCURSES_NATIVE_REQUIRE_SHIM=1 to enforce", 1;
+	done-testing;
+	exit 0;
 }
 
 # Shared by every child: headless notcurses, the shim made loadable, a
@@ -103,17 +103,17 @@ my Str $prelude = q:to/RAKU/;
     RAKU
 
 sub clean-exit(Map $run, Str $what) {
-    ok !$run<timed-out> && $run<exitcode> == 0 && $run<signal> == 0,
-        "$what: child exits cleanly ({describe-exit($run)})"
-        or diag "child stderr:\n{$run<err>}";
+	ok !$run<timed-out> && $run<exitcode> == 0 && $run<signal> == 0,
+		"$what: child exits cleanly ({describe-exit($run)})"
+		or diag "child stderr:\n{$run<err>}";
 }
 
 sub utf8-ready(Map $run) {
-    is $run<results><utf8>, 'yes',
-        'the headless child runs notcurses in a UTF-8 locale'
-        or diag 'notcurses could not switch the child to a UTF-8 locale '
-            ~ '(LANG/LC_ALL name a non-UTF-8 locale and C.UTF-8 is '
-            ~ 'unavailable); the copy_cells scenarios need one.';
+	is $run<results><utf8>, 'yes',
+		'the headless child runs notcurses in a UTF-8 locale'
+		or diag 'notcurses could not switch the child to a UTF-8 locale '
+			~ '(LANG/LC_ALL name a non-UTF-8 locale and C.UTF-8 is '
+			~ 'unavailable); the copy_cells scenarios need one.';
 }
 
 # Scribble freed memory in the child, so a stale read shows as garbage.
@@ -122,8 +122,8 @@ my %scribble = MallocScribble => '1', MALLOC_PERTURB_ => '165';
 plan 5;
 
 subtest 'B2: a long base cluster survives source-pool growth (src != dst)' => {
-    plan 6;
-    my $run = run-headless-script(:env(%scribble), $prelude ~ q:to/RAKU/);
+	plan 6;
+	my $run = run-headless-script(:env(%scribble), $prelude ~ q:to/RAKU/);
         my ($bad, $first-bad, $rcs) = 0, '', 0;
         for 0..1700 -> $k {
             my $src = plane($k + 4);
@@ -154,20 +154,20 @@ subtest 'B2: a long base cluster survives source-pool growth (src != dst)' => {
         report 'first-mismatch', $first-bad || 'none';
         report 'stop', notcurses_stop($nc);
         RAKU
-    clean-exit($run, 'k = 0..1700 base-cluster copies');
-    utf8-ready($run);
-    my %r = $run<results>;
-    is %r<nonzero-rc>, '0', 'copy_cells answered 0 every time';
-    is %r<mismatches>, '0',
-        'every copied cell and every base substitution kept glyph, styles and channels'
-        or diag "first mismatch: {%r<first-mismatch>}";
-    is %r<first-mismatch>, 'none', 'no mismatch at any k';
-    is %r<stop>, '0', 'notcurses_stop succeeds afterwards';
+	clean-exit($run, 'k = 0..1700 base-cluster copies');
+	utf8-ready($run);
+	my %r = $run<results>;
+	is %r<nonzero-rc>, '0', 'copy_cells answered 0 every time';
+	is %r<mismatches>, '0',
+		'every copied cell and every base substitution kept glyph, styles and channels'
+		or diag "first mismatch: {%r<first-mismatch>}";
+	is %r<first-mismatch>, 'none', 'no mismatch at any k';
+	is %r<stop>, '0', 'notcurses_stop succeeds afterwards';
 };
 
 subtest 'B1: copying within one plane survives its own pool growth (src == dst)' => {
-    plan 6;
-    my $run = run-headless-script(:env(%scribble), $prelude ~ q:to/RAKU/);
+	plan 6;
+	my $run = run-headless-script(:env(%scribble), $prelude ~ q:to/RAKU/);
         my ($bad, $first-bad, $rcs) = 0, '', 0;
         for 0..1700 -> $k {
             my $n = plane($k + 12);
@@ -205,20 +205,20 @@ subtest 'B1: copying within one plane survives its own pool growth (src == dst)'
         report 'first-mismatch', $first-bad || 'none';
         report 'stop', notcurses_stop($nc);
         RAKU
-    clean-exit($run, 'k = 0..1700 same-plane copies');
-    utf8-ready($run);
-    my %r = $run<results>;
-    is %r<nonzero-rc>, '0', 'copy_cells answered 0 every time';
-    is %r<mismatches>, '0',
-        'the target got the cluster, its neighbours stayed empty, the source kept it'
-        or diag "first mismatch: {%r<first-mismatch>}";
-    is %r<first-mismatch>, 'none', 'no mismatch at any k';
-    is %r<stop>, '0', 'notcurses_stop succeeds afterwards';
+	clean-exit($run, 'k = 0..1700 same-plane copies');
+	utf8-ready($run);
+	my %r = $run<results>;
+	is %r<nonzero-rc>, '0', 'copy_cells answered 0 every time';
+	is %r<mismatches>, '0',
+		'the target got the cluster, its neighbours stayed empty, the source kept it'
+		or diag "first mismatch: {%r<first-mismatch>}";
+	is %r<first-mismatch>, 'none', 'no mismatch at any k';
+	is %r<stop>, '0', 'notcurses_stop succeeds afterwards';
 };
 
 subtest 'clusters beyond the inline buffer round-trip through the heap spill' => {
-    plan 8;
-    my $run = run-headless-script(:env(%scribble), $prelude ~ q:to/RAKU/);
+	plan 8;
+	my $run = run-headless-script(:env(%scribble), $prelude ~ q:to/RAKU/);
         # 1 + 70 * 2 = 141 bytes: over the shim's 127-byte inline limit.
         my $huge-cell = 'y' ~ ("\x[301]\x[302]" x 35);
         my $huge-base = 'z' ~ ("\x[300]\x[303]" x 35);
@@ -240,22 +240,22 @@ subtest 'clusters beyond the inline buffer round-trip through the heap spill' =>
             && cell($src, 0, 5)[0] eq $huge-base) ?? 'yes' !! 'no';
         report 'stop', notcurses_stop($nc);
         RAKU
-    clean-exit($run, 'oversized cluster copies');
-    utf8-ready($run);
-    my %r = $run<results>;
-    ok %r<cell-bytes> > 127 && %r<base-bytes> > 127,
-        "both clusters exceed the inline buffer ({%r<cell-bytes> // '?'} "
-          ~ "and {%r<base-bytes> // '?'} bytes)";
-    is %r<rc-cross>, '0', 'cross-plane copy answers 0';
-    is %r<cross>, 'yes', 'cross-plane: long cells, a long base substitution and ASCII all arrive';
-    is %r<rc-same>, '0', 'same-plane copy answers 0';
-    is %r<same>, 'yes', 'same-plane: the long cell and the long base both arrive';
-    is %r<stop>, '0', 'notcurses_stop succeeds afterwards';
+	clean-exit($run, 'oversized cluster copies');
+	utf8-ready($run);
+	my %r = $run<results>;
+	ok %r<cell-bytes> > 127 && %r<base-bytes> > 127,
+		"both clusters exceed the inline buffer ({%r<cell-bytes> // '?'} "
+		  ~ "and {%r<base-bytes> // '?'} bytes)";
+	is %r<rc-cross>, '0', 'cross-plane copy answers 0';
+	is %r<cross>, 'yes', 'cross-plane: long cells, a long base substitution and ASCII all arrive';
+	is %r<rc-same>, '0', 'same-plane copy answers 0';
+	is %r<same>, 'yes', 'same-plane: the long cell and the long base both arrive';
+	is %r<stop>, '0', 'notcurses_stop succeeds afterwards';
 };
 
 subtest 'wide glyphs, ZWJ sequences and out-of-bounds cells behave as before' => {
-    plan 9;
-    my $run = run-headless-script($prelude ~ q:to/RAKU/);
+	plan 9;
+	my $run = run-headless-script($prelude ~ q:to/RAKU/);
         # Wide glyphs: a CJK ideograph (inline) and a ZWJ emoji sequence
         # (11 bytes, pooled). How many columns notcurses gives them is
         # the platform's business — MinGW builds count every glyph as
@@ -290,26 +290,26 @@ subtest 'wide glyphs, ZWJ sequences and out-of-bounds cells behave as before' =>
         report 'oob', (^5).map({ cell($wide, 0, $_)[0] }).join('|');
         report 'stop', notcurses_stop($nc);
         RAKU
-    clean-exit($run, 'wide and out-of-bounds copies');
-    utf8-ready($run);
-    my %r = $run<results>;
-    is %r<rc-wide>, '0', 'copying wide glyphs answers 0';
-    is %r<wide-same>, 'yes',
-        'every column of the copy matches the source, continuation cells included'
-        or diag "source {%r<wide-src> // '?'}\ncopy   {%r<wide-dst> // '?'}";
-    is %r<wide-first>, "\x[6F22]".raku, 'the ideograph arrives in the first column';
-    is %r<wide-last>, 'b'.raku, 'the narrow glyph after the wide ones lands in its column';
-    is %r<rc-oob>, '0', 'an out-of-bounds tail answers 0';
-    is %r<oob>, 'a|b|Z|Z|Z', 'in-bounds cells copy, out-of-bounds ones are skipped';
-    is %r<stop>, '0', 'notcurses_stop succeeds afterwards';
+	clean-exit($run, 'wide and out-of-bounds copies');
+	utf8-ready($run);
+	my %r = $run<results>;
+	is %r<rc-wide>, '0', 'copying wide glyphs answers 0';
+	is %r<wide-same>, 'yes',
+		'every column of the copy matches the source, continuation cells included'
+		or diag "source {%r<wide-src> // '?'}\ncopy   {%r<wide-dst> // '?'}";
+	is %r<wide-first>, "\x[6F22]".raku, 'the ideograph arrives in the first column';
+	is %r<wide-last>, 'b'.raku, 'the narrow glyph after the wide ones lands in its column';
+	is %r<rc-oob>, '0', 'an out-of-bounds tail answers 0';
+	is %r<oob>, 'a|b|Z|Z|Z', 'in-bounds cells copy, out-of-bounds ones are skipped';
+	is %r<stop>, '0', 'notcurses_stop succeeds afterwards';
 };
 
 subtest 'the binding keeps its exported signature' => {
-    plan 2;
-    use Notcurses::Native::Plane;
-    my $sig = &notcurses_native_copy_cells.signature;
-    is $sig.params.elems, 8, 'eight parameters';
-    is $sig.returns.^name, 'int32', 'answers int32';
+	plan 2;
+	use Notcurses::Native::Plane;
+	my $sig = &notcurses_native_copy_cells.signature;
+	is $sig.params.elems, 8, 'eight parameters';
+	is $sig.returns.^name, 'int32', 'answers int32';
 };
 
 done-testing;

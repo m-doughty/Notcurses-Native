@@ -43,14 +43,14 @@ unit module Notcurses::Native::Plane;
     the fix. Call C<ensure-shim-loadable> before the first call in
     a process. )
 sub notcurses_native_copy_cells(
-    NcplaneHandle $src,
-    NcplaneHandle $dst,
-    int32 $src-y, int32 $src-x,
-    int32 $dst-y, int32 $dst-x,
-    uint32 $rows, uint32 $cols
-    --> int32
+	NcplaneHandle $src,
+	NcplaneHandle $dst,
+	int32 $src-y, int32 $src-x,
+	int32 $dst-y, int32 $dst-x,
+	uint32 $rows, uint32 $cols
+	--> int32
 )
-    is native(&shim-lib) is export { * }
+	is native(&shim-lib) is export { * }
 
 #|( Reserve process-wide ownership of the terminal restore guard for
     C<$owner-token>. Tokens are caller-generated, process-unique,
@@ -59,7 +59,7 @@ sub notcurses_native_copy_cells(
     terminal state prevents a second terminal owner from replacing or
     disarming the first owner's guard. )
 sub notcurses_native_reserve_terminal_guard(uint64 $owner-token --> int32)
-    is native(&shim-lib) is export { * }
+	is native(&shim-lib) is export { * }
 
 #|( Arm the C-level terminal restore guard for C<$owner-token>, and
     hand it the escape sequence to write on the way out.
@@ -98,34 +98,34 @@ sub notcurses_native_reserve_terminal_guard(uint64 $owner-token --> int32)
     unreadable, 5 C<atexit> refused, 6 another owner holds or is
     exiting the guard, 7 token mismatch, 8 invalid token. )
 sub notcurses_native_arm_terminal_guard_owned(uint64 $owner-token, Str $cleanup --> int32)
-    is native(&shim-lib) is export { * }
+	is native(&shim-lib) is export { * }
 
 #|( Disarm the guard only if C<$owner-token> is the current owner. The
     owner reservation remains held. Returns 0 on success, 6 if the
     exit handler has already claimed the snapshot, 7 for an owner
     mismatch, and 8 for an invalid token. )
 sub notcurses_native_disarm_terminal_guard_owned(uint64 $owner-token --> int32)
-    is native(&shim-lib) is export { * }
+	is native(&shim-lib) is export { * }
 
 #|( Release C<$owner-token>'s reservation. This also disarms and closes
     any unclaimed snapshot for that owner. A non-zero return means the
     reservation was not released; a caller must not assume another TUI
     may now take ownership. )
 sub notcurses_native_release_terminal_guard(uint64 $owner-token --> int32)
-    is native(&shim-lib) is export { * }
+	is native(&shim-lib) is export { * }
 
 #|( Compatibility wrapper around the owned API. It uses an internal
     legacy owner token, so it returns 6 if a tokenized owner has
     already reserved the guard. New terminal owners should use the
     reserve/owned-arm/release calls above. )
 sub notcurses_native_arm_terminal_guard(Str $cleanup --> int32)
-    is native(&shim-lib) is export { * }
+	is native(&shim-lib) is export { * }
 
 #|( Compatibility release for the internal legacy owner token. It will
     not disarm a tokenized owner. New code should call
     C<notcurses_native_release_terminal_guard>. )
 sub notcurses_native_disarm_terminal_guard()
-    is native(&shim-lib) is export { * }
+	is native(&shim-lib) is export { * }
 
 sub ncplane_notcurses(NcplaneHandle $n --> NotcursesHandle)
 	is native(&core-lib) is export { * }

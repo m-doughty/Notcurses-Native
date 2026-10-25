@@ -37,104 +37,104 @@ my Str  $ext    = $darwin ?? 'dylib' !! 'so';
 #| Platform-correct library filename: flat, or with a version alias
 #| component (suffix on Linux/ELF, infix on macOS).
 sub lib-name(Str:D $lib, Str $v = '' --> Str) {
-    $v
-        ?? ($darwin ?? "$lib.$v.$ext" !! "$lib.$ext.$v")
-        !! "$lib.$ext";
+	$v
+		?? ($darwin ?? "$lib.$v.$ext" !! "$lib.$ext.$v")
+		!! "$lib.$ext";
 }
 
 #| Run &code with $*OUT pointed at the null device so `say` narration
 #| from Build methods can't leak into the TAP stream.
 sub silenced(&code) {
-    my $devnull = open $*SPEC.devnull, :w;
-    LEAVE $devnull.close;
-    temp $*OUT = $devnull;
-    code();
+	my $devnull = open $*SPEC.devnull, :w;
+	LEAVE $devnull.close;
+	temp $*OUT = $devnull;
+	code();
 }
 
 sub scratch-stage(--> IO::Path) {
-    my $dir = $*TMPDIR.add("nn-alias-norm-{$*PID}-{(^1_000_000).pick}");
-    $dir.mkdir;
-    $dir;
+	my $dir = $*TMPDIR.add("nn-alias-norm-{$*PID}-{(^1_000_000).pick}");
+	$dir.mkdir;
+	$dir;
 }
 
 sub remove-tree(IO::Path:D $path --> Nil) {
-    return unless $path.e || $path.l;
-    if $path.d && !$path.l {
-        remove-tree($_) for $path.dir;
-        $path.rmdir;
-    }
-    else {
-        $path.unlink;
-    }
+	return unless $path.e || $path.l;
+	if $path.d && !$path.l {
+		remove-tree($_) for $path.dir;
+		$path.rmdir;
+	}
+	else {
+		$path.unlink;
+	}
 }
 
 plan 3;
 
 subtest 'single real file per library is left untouched' => {
-    plan 3;
-    my $stage = scratch-stage;
-    LEAVE remove-tree($stage);
-    $stage.add(lib-name('libnotcurses')).spurt('AAAA');
-    $stage.add(lib-name('libnotcurses-core')).spurt('BBBB');
-    $stage.add(lib-name('libnotcurses-ffi')).spurt('CCCC');
-    lives-ok { silenced { $b.normalize-alias-chains($stage) } },
-        'normalization is a no-op on an already-flat stage';
-    is $stage.dir.grep({ !.l }).elems, 3, 'all three files still real';
-    is $stage.add(lib-name('libnotcurses-core')).slurp, 'BBBB',
-        'contents untouched';
+	plan 3;
+	my $stage = scratch-stage;
+	LEAVE remove-tree($stage);
+	$stage.add(lib-name('libnotcurses')).spurt('AAAA');
+	$stage.add(lib-name('libnotcurses-core')).spurt('BBBB');
+	$stage.add(lib-name('libnotcurses-ffi')).spurt('CCCC');
+	lives-ok { silenced { $b.normalize-alias-chains($stage) } },
+		'normalization is a no-op on an already-flat stage';
+	is $stage.dir.grep({ !.l }).elems, 3, 'all three files still real';
+	is $stage.add(lib-name('libnotcurses-core')).slurp, 'BBBB',
+		'contents untouched';
 };
 
 subtest 'two differing real files for one library refuse to collapse' => {
-    plan 2;
-    my $stage = scratch-stage;
-    LEAVE remove-tree($stage);
-    $stage.add(lib-name('libnotcurses')).spurt('AAAA');
-    $stage.add(lib-name('libnotcurses-core')).spurt('BBBB');
-    $stage.add(lib-name('libnotcurses-core', '3')).spurt('DIFFERENT');
-    $stage.add(lib-name('libnotcurses-ffi')).spurt('CCCC');
-    throws-like { silenced { $b.normalize-alias-chains($stage) } },
-        Exception, message => /'differing real files'/,
-        'differing duplicates die instead of silently discarding one';
-    ok $stage.add(lib-name('libnotcurses-core')).e
-        && $stage.add(lib-name('libnotcurses-core', '3')).e,
-        'both files survive the refusal';
+	plan 2;
+	my $stage = scratch-stage;
+	LEAVE remove-tree($stage);
+	$stage.add(lib-name('libnotcurses')).spurt('AAAA');
+	$stage.add(lib-name('libnotcurses-core')).spurt('BBBB');
+	$stage.add(lib-name('libnotcurses-core', '3')).spurt('DIFFERENT');
+	$stage.add(lib-name('libnotcurses-ffi')).spurt('CCCC');
+	throws-like { silenced { $b.normalize-alias-chains($stage) } },
+		Exception, message => /'differing real files'/,
+		'differing duplicates die instead of silently discarding one';
+	ok $stage.add(lib-name('libnotcurses-core')).e
+		&& $stage.add(lib-name('libnotcurses-core', '3')).e,
+		'both files survive the refusal';
 };
 
 if $*DISTRO.is-win {
-    # The collapse path never runs on Windows (flat DLL names, no
-    # version-alias chain, and the extract path guards the call) — and
-    # NTFS symlinks need elevation we can't assume. Same reasoning as
-    # t/27's Windows arm.
-    pass 'symlink collapse not applicable to Windows DLL naming';
+	# The collapse path never runs on Windows (flat DLL names, no
+	# version-alias chain, and the extract path guards the call) — and
+	# NTFS symlinks need elevation we can't assume. Same reasoning as
+	# t/27's Windows arm.
+	pass 'symlink collapse not applicable to Windows DLL naming';
 }
 else {
-    subtest 'identical duplicate reals collapse to one real + relative symlink' => {
-        plan 6;
-        my $stage = scratch-stage;
-        LEAVE remove-tree($stage);
-        # The r15 Linux pack shape: core shipped as two identical real
-        # files, the other two libraries flat.
-        $stage.add(lib-name('libnotcurses')).spurt('AAAA');
-        $stage.add(lib-name('libnotcurses-core')).spurt('BBBB');
-        $stage.add(lib-name('libnotcurses-core', '3')).spurt('BBBB');
-        $stage.add(lib-name('libnotcurses-ffi')).spurt('CCCC');
-        lives-ok { silenced { $b.normalize-alias-chains($stage) } },
-            'collapse runs';
+	subtest 'identical duplicate reals collapse to one real + relative symlink' => {
+		plan 6;
+		my $stage = scratch-stage;
+		LEAVE remove-tree($stage);
+		# The r15 Linux pack shape: core shipped as two identical real
+		# files, the other two libraries flat.
+		$stage.add(lib-name('libnotcurses')).spurt('AAAA');
+		$stage.add(lib-name('libnotcurses-core')).spurt('BBBB');
+		$stage.add(lib-name('libnotcurses-core', '3')).spurt('BBBB');
+		$stage.add(lib-name('libnotcurses-ffi')).spurt('CCCC');
+		lives-ok { silenced { $b.normalize-alias-chains($stage) } },
+			'collapse runs';
 
-        my @variants = $stage.dir.grep(
-            *.basename.starts-with('libnotcurses-core.'));
-        is @variants.grep({ !.l }).elems, 1, 'exactly one real file remains';
-        ok $stage.add(lib-name('libnotcurses-core', '3')).e
-            && !$stage.add(lib-name('libnotcurses-core', '3')).l,
-            'the most-versioned name is the real file';
-        ok $stage.add(lib-name('libnotcurses-core')).l,
-            'the bare name became a symlink';
-        is @variants.map({ .resolve.absolute }).unique.elems, 1,
-            'both names resolve to the same real path';
-        my $shown = run(:out, 'readlink',
-            $stage.add(lib-name('libnotcurses-core')).absolute)
-            .out.slurp(:close).trim;
-        nok $shown.starts-with('/'),
-            "the alias is a relative symlink ($shown)";
-    };
+		my @variants = $stage.dir.grep(
+			*.basename.starts-with('libnotcurses-core.'));
+		is @variants.grep({ !.l }).elems, 1, 'exactly one real file remains';
+		ok $stage.add(lib-name('libnotcurses-core', '3')).e
+			&& !$stage.add(lib-name('libnotcurses-core', '3')).l,
+			'the most-versioned name is the real file';
+		ok $stage.add(lib-name('libnotcurses-core')).l,
+			'the bare name became a symlink';
+		is @variants.map({ .resolve.absolute }).unique.elems, 1,
+			'both names resolve to the same real path';
+		my $shown = run(:out, 'readlink',
+			$stage.add(lib-name('libnotcurses-core')).absolute)
+			.out.slurp(:close).trim;
+		nok $shown.starts-with('/'),
+			"the alias is a relative symlink ($shown)";
+	};
 }

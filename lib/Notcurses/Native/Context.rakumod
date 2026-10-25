@@ -9,8 +9,8 @@ unit module Notcurses::Native::Context;
 # Returns 0 with latest known geometry, -1 with outputs unchanged on failure.
 # Requires the fork's runtime geometry API; missing symbols are not suppressed.
 sub notcurses_poll_geometry(NotcursesHandle $nc, uint32 $rows is rw,
-    uint32 $cols is rw, uint32 $cell-y is rw, uint32 $cell-x is rw --> int32)
-    is native(&core-lib) is export { * }
+	uint32 $cols is rw, uint32 $cell-y is rw, uint32 $cell-x is rw --> int32)
+	is native(&core-lib) is export { * }
 
 # Context, pile, palette, capabilities, stats, fade, metric, utility bindings
 

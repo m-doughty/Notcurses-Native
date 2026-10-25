@@ -1,10 +1,11 @@
 name: package-and-upload
 description: >-
-  Write the third-party licensing kit into `bundle/`, gate the result
-  against `resources/third-party.json`, then tar/zip `bundle/` into a
-  platform-specific archive, compute its SHA256, stage everything
-  under `artefacts/`, and upload as a GHA artifact for the
-  release-publish job to collect.
+  Write the third-party licensing kit (THIRD-PARTY.md, LICENSES/,
+  third-party.json) into `bundle/`, gate the result against
+  `resources/third-party.json`, then tar/zip `bundle/` into a
+  platform-specific archive, compute its SHA256, check the kit made it
+  into the archive, stage everything under `artefacts/`, and upload as
+  a GHA artifact for the release-publish job to collect.
 
   The licensing steps live here rather than in each build workflow on
   purpose: this action is the single choke point every lane goes
@@ -47,13 +48,21 @@ runs:
   steps:
     # Order is load-bearing: the kit is written INTO bundle/ first, so
     # the audit that follows sees exactly the file set the archive will
-    # contain — including THIRD-PARTY.md and LICENSES/ themselves,
-    # which the manifest accounts for under the notcurses-native
-    # component. Auditing before generation would leave the two
-    # documents unchecked, which is the one part of a licensing kit
-    # nobody would notice going stale.
+    # contain — including THIRD-PARTY.md, LICENSES/ and the
+    # third-party.json manifest copy themselves, which the manifest
+    # accounts for under the notcurses-native component. Auditing
+    # before generation would leave the kit unchecked, which is the one
+    # part of a licensing kit nobody would notice going stale.
+    #
+    # The emitter takes the release tag from the BINARY_TAG file in the
+    # checkout (THIRD-PARTY.md links the build scripts at that tag) and
+    # fails if it is missing, or if this is a tag-push run for some
+    # other tag. The archive name is passed so the document can say
+    # which of the two packs sharing a platform key it describes.
     - name: Write third-party licensing kit into the bundle
       shell: ${{ inputs.shell }}
+      env:
+        THIRD_PARTY_ARCHIVE_NAME: ${{ inputs.artifact-name }}
       run: bash scripts/ci/emit-third-party-kit.sh '${{ inputs.platform }}' bundle
 
     # Release gate. Fails the lane if the pack contains a file no
@@ -91,6 +100,19 @@ runs:
         sha256sum "$artifact" | tee "${artifact}.sha256"
         mkdir -p artefacts
         mv "$artifact" "${artifact}.sha256" artefacts/
+
+    # Release gate, between packaging and upload. The audit above cannot
+    # see a missing kit: its `required` passes on any one matching file,
+    # and notcurses-native's patterns match the perf shim too. This
+    # checks THIRD-PARTY.md, third-party.json and every LICENSES/ text
+    # by name, in bundle/ and in the archive itself, which is what a
+    # user receives. A failure here leaves nothing to upload.
+    - name: Assert the licensing kit is in the archive (release gate)
+      shell: ${{ inputs.shell }}
+      run: >-
+        bash scripts/ci/assert-third-party-kit.sh
+        '${{ inputs.platform }}' bundle
+        'artefacts/${{ inputs.artifact-name }}.${{ inputs.format }}'
 
     - uses: actions/upload-artifact@v6
       with:

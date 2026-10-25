@@ -67,6 +67,11 @@ if [[ ! -f "$MANIFEST" ]]; then
     echo "❌ Manifest not found at '$MANIFEST'." >&2
     exit 1
 fi
+# `bundle/` and `bundle` must name the same pack-relative paths: BSD
+# find prints `bundle//x` for the former.
+while [[ "$BUNDLE_DIR" == */ && "$BUNDLE_DIR" != / ]]; do
+    BUNDLE_DIR="${BUNDLE_DIR%/}"
+done
 if [[ ! -d "$BUNDLE_DIR" ]]; then
     echo "❌ Bundle directory '$BUNDLE_DIR' does not exist." >&2
     exit 1
@@ -91,34 +96,45 @@ if (( ${#files[@]} == 0 )); then
     exit 1
 fi
 
-# Parallel arrays, index-aligned: id / required flag / space-separated
-# patterns for this platform / running match count.
+# Parallel arrays, index-aligned: id / required flag / embedded flag /
+# space-separated patterns for this platform / space-separated
+# embedded-in globs / running match count.
 #
-# Field order is deliberate. `patterns` is the field that is legally
-# empty (a component absent on this platform) and it is LAST because
-# tab is an IFS-whitespace character: with IFS=$'\t', `read` collapses
-# runs of tabs into one delimiter, so an empty field in the MIDDLE of
-# the line silently shifts every field after it left by one. Putting
-# the empty-able field last means the worst case is `read` assigning
-# it the empty remainder, which is exactly what we want. (Spaces are
-# not in IFS here, so the pattern list survives intact.)
+# The field separator is US (0x1f), not tab. Two fields are legally
+# empty — `patterns` for a component absent on this platform or
+# embedded in another file, `embedded-in` for every component that is
+# not embedded — and tab is an IFS-whitespace character: with
+# IFS=$'\t', `read` collapses runs of tabs into one delimiter, so an
+# empty field in the middle of the line silently shifts every field
+# after it left by one. US is not whitespace, so each one delimits
+# exactly one field and empty fields survive. (Spaces are not in IFS
+# either, so the pattern lists come through intact.)
+US=$'\037'
 comp_ids=()
 comp_required=()
+comp_embedded=()
 comp_patterns=()
+comp_hosts=()
 comp_matches=()
-while IFS=$'\t' read -r id required patterns; do
+while IFS="$US" read -r id required embedded patterns hosts; do
+    [[ -n "$id" ]] || continue
     comp_ids+=( "$id" )
     comp_required+=( "$required" )
+    comp_embedded+=( "$embedded" )
     comp_patterns+=( "$patterns" )
+    comp_hosts+=( "$hosts" )
     comp_matches+=( 0 )
 done < <(
     jq -r --arg p "$PLATFORM" '
         .components[]
+        | (.binaries[$p] // {}) as $b
         | [ .id,
-            ((.binaries[$p].required // false) | tostring),
-            ((.binaries[$p].patterns // []) | join(" "))
+            (($b.required // false) | tostring),
+            (($b.embedded // false) | tostring),
+            (($b.patterns // []) | join(" ")),
+            (($b["embedded-in"] // []) | join(" "))
           ]
-        | @tsv
+        | join("\u001f")
     ' "$MANIFEST"
 )
 
@@ -209,11 +225,36 @@ i=0
 while (( i < ${#comp_ids[@]} )); do
     id="${comp_ids[$i]}"
     patterns="${comp_patterns[$i]}"
+    hosts="${comp_hosts[$i]}"
     count="${comp_matches[$i]}"
     required="${comp_required[$i]}"
+    embedded="${comp_embedded[$i]}"
     # Incremented here, not at the bottom: several branches below
     # `continue`, and a bottom increment would loop forever on them.
     i=$(( i + 1 ))
+    # Embedded: compiled into other files of the pack (libvpx inside
+    # avcodec on Windows), so it has no file to match. What can go
+    # missing is its host, and a kit saying "libvpx, inside
+    # avcodec-*.dll" over a pack with no avcodec would be describing a
+    # different pack — so the host has to be here.
+    if [[ "$embedded" == "true" ]]; then
+        hosted=""
+        for rel in ${files[@]+"${files[@]}"}; do
+            for pat in $hosts; do
+                if path_matches "$rel" "$pat"; then
+                    hosted="${hosted:+$hosted, }$rel"
+                    break
+                fi
+            done
+        done
+        if [[ -n "$hosted" ]]; then
+            printf 'ok:     %-22s embedded in %s\n' "$id" "$hosted"
+        else
+            echo "::error::component '$id' is embedded in $hosts on $PLATFORM but nothing in $BUNDLE_DIR matches that"
+            fail=1
+        fi
+        continue
+    fi
     if [[ -z "${patterns// /}" ]]; then
         printf 'skip:   %-22s (not shipped on %s)\n' "$id" "$PLATFORM"
         continue

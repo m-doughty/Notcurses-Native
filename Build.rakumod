@@ -105,88 +105,88 @@
 
 class Build {
 
-    # --- Constants ------------------------------------------------------
+	# --- Constants ------------------------------------------------------
 
-    constant $DEFAULT-BASE-URL =
-        'https://github.com/m-doughty/Notcurses-Native/releases/download';
+	constant $DEFAULT-BASE-URL =
+		'https://github.com/m-doughty/Notcurses-Native/releases/download';
 
-    # Source-built Windows DLLs retain ordinary MSYS2 runtime dependencies,
-    # unlike release archives whose dependency closure is self-contained.
-    # Keep that provenance beside the staged libraries so runtime loading can
-    # select the corresponding Win32 search contract in a fresh process.
-    constant $SOURCE-BUILD-MARKER = '.notcurses-native-source-build';
+	# Source-built Windows DLLs retain ordinary MSYS2 runtime dependencies,
+	# unlike release archives whose dependency closure is self-contained.
+	# Keep that provenance beside the staged libraries so runtime loading can
+	# select the corresponding Win32 search contract in a fresh process.
+	constant $SOURCE-BUILD-MARKER = '.notcurses-native-source-build';
 
-    # Minimum glibc the prebuilt Linux archives are compatible with.
-    # The CI workflow builds inside manylinux_2_28 containers (RHEL 8
-    # baseline, glibc 2.28); libnotcurses + sibling ffmpeg dylibs only
-    # reference GLIBC_2.28-or-older versioned symbols, so they load
-    # on every glibc Linux distro under active maintenance in 2026
-    # (RHEL 8+ / Ubuntu 18.10+ / Debian 10+). Bump in lockstep with
-    # the manylinux baseline if we ever rebase onto manylinux_2_34
-    # (RHEL 9, glibc 2.34).
-    constant $MIN-GLIBC = v2.28;
+	# Minimum glibc the prebuilt Linux archives are compatible with.
+	# The CI workflow builds inside manylinux_2_28 containers (RHEL 8
+	# baseline, glibc 2.28); libnotcurses + sibling ffmpeg dylibs only
+	# reference GLIBC_2.28-or-older versioned symbols, so they load
+	# on every glibc Linux distro under active maintenance in 2026
+	# (RHEL 8+ / Ubuntu 18.10+ / Debian 10+). Bump in lockstep with
+	# the manylinux baseline if we ever rebase onto manylinux_2_34
+	# (RHEL 9, glibc 2.34).
+	constant $MIN-GLIBC = v2.28;
 
-    # Map (platform key) → platform slug used in release artefact
-    # filenames + cache paths.
-    #
-    # Key shape:
-    #   * non-Linux: "<os>-<hardware>"           (e.g. "darwin-arm64")
-    #   * Linux:     "<os>-<hardware>-<libc>"    (e.g. "linux-x86_64-musl")
-    # `!detect-libc` only inspects the libc on Linux; everywhere else
-    # the key is just `os-hardware`.
-    #
-    # macOS x86_64 is built on an arm64 GHA runner under Rosetta 2
-    # (GitHub's `macos-13` native-x86_64 runner is deprecated and
-    # arm64-with-Rosetta is the long-lived option); clang under
-    # Rosetta emits ordinary x86_64 Mach-O that runs natively on real
-    # Intel Macs and Hackintoshes. macOS x86_64 deployment target is
-    # pinned at 10.15 (Catalina) so the artefact loads on every Intel
-    # Mac Apple supports back to ~2012 hardware.
-    #
-    # Linux glibc lanes use manylinux_2_28 (RHEL 8, glibc 2.28 floor);
-    # musl lanes use alpine:3.20 (musl 1.2.5 headers, 1.20+ runtime
-    # floor).
-    # Typed `Str` so missing-key lookups return the Str type object
-    # (not Any), which satisfies `detect-platform`'s `--> Str` return
-    # constraint and lets `without $plat { ... }` fire for any
-    # genuinely-novel platform combo we don't ship binaries for.
-    my Str %PLATFORM-SLUGS =
-        'darwin-arm64'          => 'macos-arm64',
-        'darwin-x86_64'         => 'macos-x86_64',
-        'linux-x86_64-glibc'    => 'linux-x86_64-glibc',
-        'linux-x86_64-musl'     => 'linux-x86_64-musl',
-        'linux-aarch64-glibc'   => 'linux-aarch64-glibc',
-        'linux-aarch64-musl'    => 'linux-aarch64-musl',
-        'win32-x86_64'          => 'windows-x86_64',
-        'win32-aarch64'         => 'windows-arm64',
-        'mswin32-x86_64'        => 'windows-x86_64',
-        'mswin32-aarch64'       => 'windows-arm64',
-    ;
+	# Map (platform key) → platform slug used in release artefact
+	# filenames + cache paths.
+	#
+	# Key shape:
+	#   * non-Linux: "<os>-<hardware>"           (e.g. "darwin-arm64")
+	#   * Linux:     "<os>-<hardware>-<libc>"    (e.g. "linux-x86_64-musl")
+	# `!detect-libc` only inspects the libc on Linux; everywhere else
+	# the key is just `os-hardware`.
+	#
+	# macOS x86_64 is built on an arm64 GHA runner under Rosetta 2
+	# (GitHub's `macos-13` native-x86_64 runner is deprecated and
+	# arm64-with-Rosetta is the long-lived option); clang under
+	# Rosetta emits ordinary x86_64 Mach-O that runs natively on real
+	# Intel Macs and Hackintoshes. macOS x86_64 deployment target is
+	# pinned at 10.15 (Catalina) so the artefact loads on every Intel
+	# Mac Apple supports back to ~2012 hardware.
+	#
+	# Linux glibc lanes use manylinux_2_28 (RHEL 8, glibc 2.28 floor);
+	# musl lanes use alpine:3.20 (musl 1.2.5 headers, 1.20+ runtime
+	# floor).
+	# Typed `Str` so missing-key lookups return the Str type object
+	# (not Any), which satisfies `detect-platform`'s `--> Str` return
+	# constraint and lets `without $plat { ... }` fire for any
+	# genuinely-novel platform combo we don't ship binaries for.
+	my Str %PLATFORM-SLUGS =
+		'darwin-arm64'          => 'macos-arm64',
+		'darwin-x86_64'         => 'macos-x86_64',
+		'linux-x86_64-glibc'    => 'linux-x86_64-glibc',
+		'linux-x86_64-musl'     => 'linux-x86_64-musl',
+		'linux-aarch64-glibc'   => 'linux-aarch64-glibc',
+		'linux-aarch64-musl'    => 'linux-aarch64-musl',
+		'win32-x86_64'          => 'windows-x86_64',
+		'win32-aarch64'         => 'windows-arm64',
+		'mswin32-x86_64'        => 'windows-x86_64',
+		'mswin32-aarch64'       => 'windows-arm64',
+	;
 
-    # --- Entry point ----------------------------------------------------
+	# --- Entry point ----------------------------------------------------
 
-    method build($dist-path) {
-        my Bool $force-source = ?%*ENV<NOTCURSES_NATIVE_BUILD_FROM_SOURCE>;
-        my Bool $binary-only  = ?%*ENV<NOTCURSES_NATIVE_BINARY_ONLY>;
+	method build($dist-path) {
+		my Bool $force-source = ?%*ENV<NOTCURSES_NATIVE_BUILD_FROM_SOURCE>;
+		my Bool $binary-only  = ?%*ENV<NOTCURSES_NATIVE_BINARY_ONLY>;
 
-        my Str $binary-tag = self!binary-tag($dist-path);
-        my Str $plat = self.detect-platform;
+		my Str $binary-tag = self!binary-tag($dist-path);
+		my Str $plat = self.detect-platform;
 
-        # Make BINARY_TAG available via %?RESOURCES so Native.rakumod
-        # can find the corresponding staged-libs dir at runtime. This
-        # is a tiny text file so it survives zef's resource-hashing
-        # rename intact (we only ever read its contents).
-        self!stage-binary-tag($dist-path);
+		# Make BINARY_TAG available via %?RESOURCES so Native.rakumod
+		# can find the corresponding staged-libs dir at runtime. This
+		# is a tiny text file so it survives zef's resource-hashing
+		# rename intact (we only ever read its contents).
+		self!stage-binary-tag($dist-path);
 
-        # Where the libs actually go. Stable XDG-style location, NOT
-        # under the dist's resources/ — see header comment for why.
-        my IO::Path $stage = self!staged-lib-dir($binary-tag);
+		# Where the libs actually go. Stable XDG-style location, NOT
+		# under the dist's resources/ — see header comment for why.
+		my IO::Path $stage = self!staged-lib-dir($binary-tag);
 
-        without $plat {
-            my Str $tried = self.detect-platform-key;
-            my Str $known = self.known-platform-keys.join(', ');
-            my Str $libc = self.detect-libc // 'n/a';
-            note qq:to/MSG/;
+		without $plat {
+			my Str $tried = self.detect-platform-key;
+			my Str $known = self.known-platform-keys.join(', ');
+			my Str $libc = self.detect-libc // 'n/a';
+			note qq:to/MSG/;
                 ⚠️  Notcurses::Native has no prebuilt binary for this platform.
                     Tried lookup key: '$tried'
                         (\$*KERNEL.name='{$*KERNEL.name}',
@@ -195,56 +195,56 @@ class Build {
                     Known platforms:  $known
                     Falling back to building notcurses from source via CMake.
                 MSG
-            self!compile-from-source($dist-path, $stage);
-            self!try-compile-shim($dist-path, $stage);
-            return True;
-        }
+			self!compile-from-source($dist-path, $stage);
+			self!try-compile-shim($dist-path, $stage);
+			return True;
+		}
 
-        # Guard: prebuilt Linux archives are built on ubuntu-22.04
-        # (glibc $MIN-GLIBC). On older glibc the downloaded libs load
-        # but die at first symbol use with "GLIBC_2.xx not found".
-        # Detect here and fall back to CMake source build before the
-        # download even happens.
-        if !$force-source && $plat.ends-with('-glibc') {
-            my Version $have = self!detect-glibc-version;
-            if $have.defined && $have cmp $MIN-GLIBC == Less {
-                if $binary-only {
-                    die "NOTCURSES_NATIVE_BINARY_ONLY=1 set but system "
-                      ~ "glibc $have is older than prebuilt target "
-                      ~ "$MIN-GLIBC ($plat / $binary-tag).";
-                }
-                note "⚠️  System glibc $have is older than prebuilt "
-                   ~ "target $MIN-GLIBC — falling back to source build "
-                   ~ "to avoid runtime loader errors.";
-                self!compile-from-source($dist-path, $stage);
-                say "✅ Compiled Notcurses from vendored source → $stage.";
-                self!try-compile-shim($dist-path, $stage);
-                return True;
-            }
-        }
+		# Guard: prebuilt Linux archives are built on ubuntu-22.04
+		# (glibc $MIN-GLIBC). On older glibc the downloaded libs load
+		# but die at first symbol use with "GLIBC_2.xx not found".
+		# Detect here and fall back to CMake source build before the
+		# download even happens.
+		if !$force-source && $plat.ends-with('-glibc') {
+			my Version $have = self!detect-glibc-version;
+			if $have.defined && $have cmp $MIN-GLIBC == Less {
+				if $binary-only {
+					die "NOTCURSES_NATIVE_BINARY_ONLY=1 set but system "
+					  ~ "glibc $have is older than prebuilt target "
+					  ~ "$MIN-GLIBC ($plat / $binary-tag).";
+				}
+				note "⚠️  System glibc $have is older than prebuilt "
+				   ~ "target $MIN-GLIBC — falling back to source build "
+				   ~ "to avoid runtime loader errors.";
+				self!compile-from-source($dist-path, $stage);
+				say "✅ Compiled Notcurses from vendored source → $stage.";
+				self!try-compile-shim($dist-path, $stage);
+				return True;
+			}
+		}
 
-        unless $force-source {
-            if self!try-prebuilt($dist-path, $plat, $binary-tag, $stage) {
-                say "✅ Installed prebuilt Notcurses binaries ($plat) for "
-                  ~ "$binary-tag → $stage.";
-                self!try-compile-shim($dist-path, $stage);
-                self!cleanup-old-stages($stage);
-                return True;
-            }
-            if $binary-only {
-                die "NOTCURSES_NATIVE_BINARY_ONLY=1 set but prebuilt download "
-                  ~ "failed for $plat ($binary-tag).";
-            }
-            note "⚠️  Prebuilt archive unavailable for $plat ($binary-tag) "
-               ~ "— compiling from source via CMake.";
-        }
+		unless $force-source {
+			if self!try-prebuilt($dist-path, $plat, $binary-tag, $stage) {
+				say "✅ Installed prebuilt Notcurses binaries ($plat) for "
+				  ~ "$binary-tag → $stage.";
+				self!try-compile-shim($dist-path, $stage);
+				self!cleanup-old-stages($stage);
+				return True;
+			}
+			if $binary-only {
+				die "NOTCURSES_NATIVE_BINARY_ONLY=1 set but prebuilt download "
+				  ~ "failed for $plat ($binary-tag).";
+			}
+			note "⚠️  Prebuilt archive unavailable for $plat ($binary-tag) "
+			   ~ "— compiling from source via CMake.";
+		}
 
-        self!compile-from-source($dist-path, $stage);
-        say "✅ Compiled Notcurses from vendored source → $stage.";
-        self!try-compile-shim($dist-path, $stage);
-        self!cleanup-old-stages($stage);
-        True;
-    }
+		self!compile-from-source($dist-path, $stage);
+		say "✅ Compiled Notcurses from vendored source → $stage.";
+		self!try-compile-shim($dist-path, $stage);
+		self!cleanup-old-stages($stage);
+		True;
+	}
 
     #|( Remove sibling staged dirs for older BINARY_TAGs. zef has no
         uninstall hook, and Build.rakumod is the only place we can
@@ -258,178 +258,178 @@ class Build {
         upgrade where two libgio.dylibs got registered side-by-side).
 
         Set NOTCURSES_NATIVE_KEEP_OLD_STAGES=1 to disable. )
-    method !cleanup-old-stages(IO::Path $current-stage --> Nil) {
-        return if %*ENV<NOTCURSES_NATIVE_KEEP_OLD_STAGES>;
+	method !cleanup-old-stages(IO::Path $current-stage --> Nil) {
+		return if %*ENV<NOTCURSES_NATIVE_KEEP_OLD_STAGES>;
 
-        # $current-stage layout is …/Notcurses-Native/<binary-tag>/lib.
-        # The *tag* dir is one level up, the *root* (where sibling
-        # tag dirs live) is two levels up.
-        my $current-tag-dir = $current-stage.parent;
-        my $root            = $current-tag-dir.parent;
-        return unless $root.d;
-        return unless $root.basename eq 'Notcurses-Native';
+		# $current-stage layout is …/Notcurses-Native/<binary-tag>/lib.
+		# The *tag* dir is one level up, the *root* (where sibling
+		# tag dirs live) is two levels up.
+		my $current-tag-dir = $current-stage.parent;
+		my $root            = $current-tag-dir.parent;
+		return unless $root.d;
+		return unless $root.basename eq 'Notcurses-Native';
 
-        my Str $current-abs = $current-tag-dir.absolute;
+		my Str $current-abs = $current-tag-dir.absolute;
 
-        for $root.dir -> $entry {
-            next if $entry.l;
-            next unless $entry.d;
-            next unless $entry.basename.starts-with('binaries-notcurses-');
-            next if $entry.absolute eq $current-abs;
-            say "🧹 Removing orphaned staged dir: { $entry }";
-            # In Raku, not `rm -rf` (a stock Windows has none); a link
-            # inside is removed as a link, never followed.
-            try {
-                self!remove-stage-entry($entry);
-                CATCH { default { note "  (failed to remove: { .message })" } }
-            };
-        }
-    }
+		for $root.dir -> $entry {
+			next if $entry.l;
+			next unless $entry.d;
+			next unless $entry.basename.starts-with('binaries-notcurses-');
+			next if $entry.absolute eq $current-abs;
+			say "🧹 Removing orphaned staged dir: { $entry }";
+			# In Raku, not `rm -rf` (a stock Windows has none); a link
+			# inside is removed as a link, never followed.
+			try {
+				self!remove-stage-entry($entry);
+				CATCH { default { note "  (failed to remove: { .message })" } }
+			};
+		}
+	}
 
-    # The XDG-style staged-libs dir for a given binary-tag. Versioned
-    # so a downgrade lines up with the right libs and parallel-installed
-    # versions (mid-upgrade etc.) don't trample each other.
-    method !staged-lib-dir(Str $binary-tag --> IO::Path) {
-        my Str $base = %*ENV<NOTCURSES_NATIVE_DATA_DIR>
-            // %*ENV<XDG_DATA_HOME>
-            // ($*DISTRO.is-win
-                    ?? (%*ENV<LOCALAPPDATA>
-                            // "{%*ENV<USERPROFILE> // '.'}\\AppData\\Local")
-                    !! "{%*ENV<HOME> // '.'}/.local/share");
-        "$base/Notcurses-Native/$binary-tag/lib".IO;
-    }
+	# The XDG-style staged-libs dir for a given binary-tag. Versioned
+	# so a downgrade lines up with the right libs and parallel-installed
+	# versions (mid-upgrade etc.) don't trample each other.
+	method !staged-lib-dir(Str $binary-tag --> IO::Path) {
+		my Str $base = %*ENV<NOTCURSES_NATIVE_DATA_DIR>
+			// %*ENV<XDG_DATA_HOME>
+			// ($*DISTRO.is-win
+					?? (%*ENV<LOCALAPPDATA>
+							// "{%*ENV<USERPROFILE> // '.'}\\AppData\\Local")
+					!! "{%*ENV<HOME> // '.'}/.local/share");
+		"$base/Notcurses-Native/$binary-tag/lib".IO;
+	}
 
-    method !stage-binary-tag($dist-path) {
-        my IO::Path $src = "$dist-path/BINARY_TAG".IO;
-        my IO::Path $dst = "$dist-path/resources/BINARY_TAG".IO;
-        $dst.parent.mkdir;
-        copy $src, $dst;
-    }
+	method !stage-binary-tag($dist-path) {
+		my IO::Path $src = "$dist-path/BINARY_TAG".IO;
+		my IO::Path $dst = "$dist-path/resources/BINARY_TAG".IO;
+		$dst.parent.mkdir;
+		copy $src, $dst;
+	}
 
-    method !remove-stage-entry(IO::Path $entry --> Nil) {
-        if $entry.d && !$entry.l {
-            self!remove-stage-entry($_) for $entry.dir;
-            $entry.rmdir;
-        }
-        elsif $entry.e || $entry.l {
-            $entry.unlink;
-        }
-    }
+	method !remove-stage-entry(IO::Path $entry --> Nil) {
+		if $entry.d && !$entry.l {
+			self!remove-stage-entry($_) for $entry.dir;
+			$entry.rmdir;
+		}
+		elsif $entry.e || $entry.l {
+			$entry.unlink;
+		}
+	}
 
-    # A binary tag can be reinstalled through the other provenance path.
-    # Always start either install from an empty stage so a source build cannot
-    # inherit a prebuilt FFmpeg closure, and a prebuilt cannot retain the
-    # source marker (or any ordinary-PATH assumptions it represents).
-    method !reset-stage(IO::Path $stage --> Nil) {
-        if $stage.d {
-            self!remove-stage-entry($_) for $stage.dir;
-        }
-        elsif $stage.e || $stage.l {
-            die "❌ Staged library path exists but is not a directory: $stage";
-        }
-        $stage.mkdir;
-    }
+	# A binary tag can be reinstalled through the other provenance path.
+	# Always start either install from an empty stage so a source build cannot
+	# inherit a prebuilt FFmpeg closure, and a prebuilt cannot retain the
+	# source marker (or any ordinary-PATH assumptions it represents).
+	method !reset-stage(IO::Path $stage --> Nil) {
+		if $stage.d {
+			self!remove-stage-entry($_) for $stage.dir;
+		}
+		elsif $stage.e || $stage.l {
+			die "❌ Staged library path exists but is not a directory: $stage";
+		}
+		$stage.mkdir;
+	}
 
-    method !mark-source-build(IO::Path $stage --> Nil) {
-        $stage.add($SOURCE-BUILD-MARKER).spurt("source-build\n");
-    }
+	method !mark-source-build(IO::Path $stage --> Nil) {
+		$stage.add($SOURCE-BUILD-MARKER).spurt("source-build\n");
+	}
 
-    # --- Prebuilt binary pathing ----------------------------------------
+	# --- Prebuilt binary pathing ----------------------------------------
 
-    method !try-prebuilt($dist-path, Str $plat, Str $binary-tag, IO::Path $stage --> Bool) {
-        my Str $artifact = self!artifact-name($plat);
-        my IO::Path $cache-dir = self!cache-dir($binary-tag);
-        my IO::Path $cached = $cache-dir.add($artifact);
-        my Str $base-url = %*ENV<NOTCURSES_NATIVE_BINARY_URL> // $DEFAULT-BASE-URL;
-        my Str $url = "$base-url/$binary-tag/$artifact";
+	method !try-prebuilt($dist-path, Str $plat, Str $binary-tag, IO::Path $stage --> Bool) {
+		my Str $artifact = self!artifact-name($plat);
+		my IO::Path $cache-dir = self!cache-dir($binary-tag);
+		my IO::Path $cached = $cache-dir.add($artifact);
+		my Str $base-url = %*ENV<NOTCURSES_NATIVE_BINARY_URL> // $DEFAULT-BASE-URL;
+		my Str $url = "$base-url/$binary-tag/$artifact";
 
-        unless $cached.e {
-            $cache-dir.mkdir;
-            say "⬇️  Fetching $artifact from $url";
-            my $rc = run 'curl', '-fL', '--progress-bar',
-                         '-o', $cached.Str, $url;
-            unless $rc.exitcode == 0 {
-                $cached.unlink if $cached.e;
-                return False;
-            }
-        }
+		unless $cached.e {
+			$cache-dir.mkdir;
+			say "⬇️  Fetching $artifact from $url";
+			my $rc = run 'curl', '-fL', '--progress-bar',
+			             '-o', $cached.Str, $url;
+			unless $rc.exitcode == 0 {
+				$cached.unlink if $cached.e;
+				return False;
+			}
+		}
 
-        my Str $expected = self!expected-sha($dist-path, $artifact);
-        without $expected {
-            note "No checksum recorded for $artifact in resources/checksums.txt "
-                ~ "— refusing prebuilt (bundled checksums are a hard security boundary).";
-            return False;
-        }
+		my Str $expected = self!expected-sha($dist-path, $artifact);
+		without $expected {
+			note "No checksum recorded for $artifact in resources/checksums.txt "
+				~ "— refusing prebuilt (bundled checksums are a hard security boundary).";
+			return False;
+		}
 
-        my Str $actual = self!sha256($cached);
-        unless $actual.defined && $actual.lc eq $expected.lc {
-            my Str $tried = $actual.defined
-                ?? ''
-                !! ($*DISTRO.is-win
-                        ?? ' (tried: certutil)'
-                        !! ' (tried: sha256sum, shasum)');
-            note "Checksum mismatch for $artifact "
-                ~ "(expected $expected, got {$actual // 'unknown'}$tried).";
-            $cached.unlink;
-            return False;
-        }
+		my Str $actual = self!sha256($cached);
+		unless $actual.defined && $actual.lc eq $expected.lc {
+			my Str $tried = $actual.defined
+				?? ''
+				!! ($*DISTRO.is-win
+						?? ' (tried: certutil)'
+						!! ' (tried: sha256sum, shasum)');
+			note "Checksum mismatch for $artifact "
+				~ "(expected $expected, got {$actual // 'unknown'}$tried).";
+			$cached.unlink;
+			return False;
+		}
 
-        self!extract-archive($cached, $stage);
-        True;
-    }
+		self!extract-archive($cached, $stage);
+		True;
+	}
 
-    method !artifact-name(Str $plat --> Str) {
-        my Str $archive-ext = $plat.starts-with('windows') ?? 'zip' !! 'tar.gz';
-        "notcurses-$plat.$archive-ext";
-    }
+	method !artifact-name(Str $plat --> Str) {
+		my Str $archive-ext = $plat.starts-with('windows') ?? 'zip' !! 'tar.gz';
+		"notcurses-$plat.$archive-ext";
+	}
 
-    method !extract-archive(IO::Path $archive, IO::Path $dest) {
-        # Wipe + recreate: avoid mixing files from a prior install of
-        # the same tag (eg if the user manually swapped archives). Tag
-        # dir is versioned so other versions are unaffected.
-        self!reset-stage($dest);
+	method !extract-archive(IO::Path $archive, IO::Path $dest) {
+		# Wipe + recreate: avoid mixing files from a prior install of
+		# the same tag (eg if the user manually swapped archives). Tag
+		# dir is versioned so other versions are unaffected.
+		self!reset-stage($dest);
 
-        if $archive.Str.ends-with('.zip') {
-            # Windows zip extraction via PowerShell. We deliberately
-            # avoid `tar` here even though Win10+ ships bsdtar that
-            # handles zips: if the user (or the install env, like
-            # msys2 under CI) has GNU tar first on PATH, GNU tar
-            # parses `D:\...` as a remote host (`host:path` syntax)
-            # and bombs with "Cannot connect to D: resolve failed".
-            # Expand-Archive has no such quirk and is available on
-            # every Windows we support.
-            my $rc = run 'powershell', '-NoProfile', '-Command',
-                "Expand-Archive -LiteralPath '$archive' -DestinationPath '$dest' -Force";
-            die "❌ Failed to extract $archive." unless $rc.exitcode == 0;
-        }
-        else {
-            # .tar.gz — portable across macOS/Linux.
-            my $rc = run 'tar', '-xzf', $archive.Str, '-C', $dest.Str;
-            die "❌ Failed to extract $archive." unless $rc.exitcode == 0;
-        }
+		if $archive.Str.ends-with('.zip') {
+			# Windows zip extraction via PowerShell. We deliberately
+			# avoid `tar` here even though Win10+ ships bsdtar that
+			# handles zips: if the user (or the install env, like
+			# msys2 under CI) has GNU tar first on PATH, GNU tar
+			# parses `D:\...` as a remote host (`host:path` syntax)
+			# and bombs with "Cannot connect to D: resolve failed".
+			# Expand-Archive has no such quirk and is available on
+			# every Windows we support.
+			my $rc = run 'powershell', '-NoProfile', '-Command',
+				"Expand-Archive -LiteralPath '$archive' -DestinationPath '$dest' -Force";
+			die "❌ Failed to extract $archive." unless $rc.exitcode == 0;
+		}
+		else {
+			# .tar.gz — portable across macOS/Linux.
+			my $rc = run 'tar', '-xzf', $archive.Str, '-C', $dest.Str;
+			die "❌ Failed to extract $archive." unless $rc.exitcode == 0;
+		}
 
-        # Sanity-check: the three notcurses libs must be present post-extract.
-        # Allow either the unversioned name or any versioned variant
-        # (e.g. libnotcurses.3.dylib, libnotcurses.so.3) since the
-        # archive is allowed to ship versioned files alongside the
-        # unversioned symlinks. The runtime resolver in Native.rakumod
-        # knows how to pick the right one.
-        my Str $ext = $*KERNEL.name.lc ~~ /darwin/ ?? 'dylib'
-                   !! $*DISTRO.is-win ?? 'dll'
-                   !! 'so';
-        for <libnotcurses libnotcurses-core libnotcurses-ffi> -> Str $lib {
-            my @found = $dest.dir.grep({
-                my $bn = .basename;
-                $bn eq "$lib.$ext"
-                    || ($bn.starts-with("$lib.") && $bn.contains(".$ext"))
-                    || ($bn.starts-with("$lib-") && $bn.ends-with(".$ext"));
-            });
-            die "❌ Prebuilt archive missing expected lib: $lib.$ext"
-                unless @found;
-        }
+		# Sanity-check: the three notcurses libs must be present post-extract.
+		# Allow either the unversioned name or any versioned variant
+		# (e.g. libnotcurses.3.dylib, libnotcurses.so.3) since the
+		# archive is allowed to ship versioned files alongside the
+		# unversioned symlinks. The runtime resolver in Native.rakumod
+		# knows how to pick the right one.
+		my Str $ext = $*KERNEL.name.lc ~~ /darwin/ ?? 'dylib'
+		           !! $*DISTRO.is-win ?? 'dll'
+		           !! 'so';
+		for <libnotcurses libnotcurses-core libnotcurses-ffi> -> Str $lib {
+			my @found = $dest.dir.grep({
+				my $bn = .basename;
+				$bn eq "$lib.$ext"
+					|| ($bn.starts-with("$lib.") && $bn.contains(".$ext"))
+					|| ($bn.starts-with("$lib-") && $bn.ends-with(".$ext"));
+			});
+			die "❌ Prebuilt archive missing expected lib: $lib.$ext"
+				unless @found;
+		}
 
-        self.normalize-alias-chains($dest) unless $*DISTRO.is-win;
-    }
+		self.normalize-alias-chains($dest) unless $*DISTRO.is-win;
+	}
 
     #| Collapse a staged POSIX lib dir to one real file per logical
     #| library, every other name variant a RELATIVE symlink to it.
@@ -445,53 +445,53 @@ class Build {
     #| notcurses_blitters — see !find-lib), so the extract path enforces
     #| the invariant itself instead of trusting the archive. Public so
     #| t/28 can drive it against a scratch stage.
-    method normalize-alias-chains(IO::Path $stage --> Nil) {
-        my Str $ext = $*KERNEL.name.lc ~~ /darwin/ ?? 'dylib' !! 'so';
-        for <libnotcurses libnotcurses-core libnotcurses-ffi> -> Str $lib {
-            # Same separator discipline as the resolver and t/27: only
-            # '.' after the name, so 'libnotcurses' never claims
-            # 'libnotcurses-core.*'.
-            my @variants = $stage.dir.grep({
-                my $bn = .basename;
-                $bn eq "$lib.$ext"
-                    || ($bn.starts-with("$lib.") && $bn.contains(".$ext"))
-            });
-            my @real = @variants.grep({ !.l });
-            next unless @real > 1;
+	method normalize-alias-chains(IO::Path $stage --> Nil) {
+		my Str $ext = $*KERNEL.name.lc ~~ /darwin/ ?? 'dylib' !! 'so';
+		for <libnotcurses libnotcurses-core libnotcurses-ffi> -> Str $lib {
+			# Same separator discipline as the resolver and t/27: only
+			# '.' after the name, so 'libnotcurses' never claims
+			# 'libnotcurses-core.*'.
+			my @variants = $stage.dir.grep({
+				my $bn = .basename;
+				$bn eq "$lib.$ext"
+					|| ($bn.starts-with("$lib.") && $bn.contains(".$ext"))
+			});
+			my @real = @variants.grep({ !.l });
+			next unless @real > 1;
 
-            # Keep the most-versioned name as the real file, matching the
-            # `make install` convention (libX.so.3.0.17 real; libX.so.3
-            # and libX.so aliases). Longest basename is most versioned
-            # under both the Linux (suffix) and macOS (infix) schemes.
-            my IO::Path $canonical =
-                @real.sort({ (.basename.chars, .basename) }).tail;
-            my $canonical-bytes = $canonical.slurp(:bin);
+			# Keep the most-versioned name as the real file, matching the
+			# `make install` convention (libX.so.3.0.17 real; libX.so.3
+			# and libX.so aliases). Longest basename is most versioned
+			# under both the Linux (suffix) and macOS (infix) schemes.
+			my IO::Path $canonical =
+				@real.sort({ (.basename.chars, .basename) }).tail;
+			my $canonical-bytes = $canonical.slurp(:bin);
 
-            for @real.grep(* !=== $canonical) -> IO::Path $dup {
-                # Byte-identical or bust: two DIFFERING real files under
-                # one library's name chain means a corrupt or mispacked
-                # archive, and silently discarding one would ship
-                # whichever file the packer happened to duplicate.
-                die "❌ Staged archive has two differing real files for "
-                  ~ "$lib ({$canonical.basename} vs {$dup.basename}); "
-                  ~ "refusing to collapse them."
-                    unless $dup.slurp(:bin) eqv $canonical-bytes;
-                $dup.unlink;
-                # Relative symlink via ln, same as !find-lib: Raku's
-                # &symlink absolutizes its target, which would break
-                # stage relocatability.
-                my $ln = run 'ln', '-sfn', $canonical.basename,
-                    $stage.add($dup.basename).absolute, :out, :err;
-                $ln.out.slurp(:close);
-                my Str $ln-err = $ln.err.slurp(:close);
-                die "❌ Could not symlink {$dup.basename} -> "
-                  ~ "{$canonical.basename} in $stage:\n$ln-err"
-                    unless $ln.exitcode == 0;
-                say "  Normalized: {$dup.basename} -> "
-                  ~ "{$canonical.basename} (symlink)";
-            }
-        }
-    }
+			for @real.grep(* !=== $canonical) -> IO::Path $dup {
+				# Byte-identical or bust: two DIFFERING real files under
+				# one library's name chain means a corrupt or mispacked
+				# archive, and silently discarding one would ship
+				# whichever file the packer happened to duplicate.
+				die "❌ Staged archive has two differing real files for "
+				  ~ "$lib ({$canonical.basename} vs {$dup.basename}); "
+				  ~ "refusing to collapse them."
+					unless $dup.slurp(:bin) eqv $canonical-bytes;
+				$dup.unlink;
+				# Relative symlink via ln, same as !find-lib: Raku's
+				# &symlink absolutizes its target, which would break
+				# stage relocatability.
+				my $ln = run 'ln', '-sfn', $canonical.basename,
+					$stage.add($dup.basename).absolute, :out, :err;
+				$ln.out.slurp(:close);
+				my Str $ln-err = $ln.err.slurp(:close);
+				die "❌ Could not symlink {$dup.basename} -> "
+				  ~ "{$canonical.basename} in $stage:\n$ln-err"
+					unless $ln.exitcode == 0;
+				say "  Normalized: {$dup.basename} -> "
+				  ~ "{$canonical.basename} (symlink)";
+			}
+		}
+	}
 
     #|( Where downloads, fetched notcurses sources and compiled shims are
         kept between installs. Windows sets no HOME, so the POSIX default
@@ -499,78 +499,78 @@ class Build {
         whatever directory zef ran the build from, which for a local
         C<zef install .> is the dist's own source tree. It is
         C<%LOCALAPPDATA%> there. )
-    method !cache-dir(Str $binary-tag --> IO::Path) {
-        "{self!cache-base}/Notcurses-Native-binaries/$binary-tag".IO;
-    }
+	method !cache-dir(Str $binary-tag --> IO::Path) {
+		"{self!cache-base}/Notcurses-Native-binaries/$binary-tag".IO;
+	}
 
     #| The cache root both caches live under: see !cache-dir.
-    method !cache-base(--> Str) {
-        %*ENV<NOTCURSES_NATIVE_CACHE_DIR>
-            // %*ENV<XDG_CACHE_HOME>
-            // ($*DISTRO.is-win
-                    ?? (%*ENV<LOCALAPPDATA>
-                            // "{%*ENV<USERPROFILE> // '.'}\\AppData\\Local")
-                    !! "{%*ENV<HOME> // '.'}/.cache");
-    }
+	method !cache-base(--> Str) {
+		%*ENV<NOTCURSES_NATIVE_CACHE_DIR>
+			// %*ENV<XDG_CACHE_HOME>
+			// ($*DISTRO.is-win
+					?? (%*ENV<LOCALAPPDATA>
+							// "{%*ENV<USERPROFILE> // '.'}\\AppData\\Local")
+					!! "{%*ENV<HOME> // '.'}/.cache");
+	}
 
-    method !binary-tag($dist-path --> Str) {
-        my IO::Path $file = "$dist-path/BINARY_TAG".IO;
-        unless $file.e {
-            die "❌ Missing BINARY_TAG file at { $file }. This file must "
-              ~ "contain the pinned binary release tag "
-              ~ "(e.g. 'binaries-notcurses-3.0.17-r1').";
-        }
-        my Str $tag = $file.slurp.trim;
-        die "❌ BINARY_TAG file is empty." unless $tag.chars;
-        $tag;
-    }
+	method !binary-tag($dist-path --> Str) {
+		my IO::Path $file = "$dist-path/BINARY_TAG".IO;
+		unless $file.e {
+			die "❌ Missing BINARY_TAG file at { $file }. This file must "
+			  ~ "contain the pinned binary release tag "
+			  ~ "(e.g. 'binaries-notcurses-3.0.17-r1').";
+		}
+		my Str $tag = $file.slurp.trim;
+		die "❌ BINARY_TAG file is empty." unless $tag.chars;
+		$tag;
+	}
 
     #| Parse NOTCURSES_FORK at the dist root for the source-build pin.
     #| Returns a Map with `url` (fork repo URL) and `sha` (40-char hex
     #| commit). Lines starting with `#` and blank lines are ignored;
     #| every other line must be `key=value`. Dies if the file is missing,
     #| malformed, or the SHA is the wrong shape.
-    method !notcurses-fork-pin($dist-path --> Map) {
-        my IO::Path $file = "$dist-path/NOTCURSES_FORK".IO;
-        unless $file.e {
-            die "❌ Missing NOTCURSES_FORK file at { $file }. This file "
-              ~ "must contain `url=…` and `sha=…` lines naming the "
-              ~ "upstream fork and pinned commit used for source builds.";
-        }
-        my %pin;
-        for $file.slurp.lines -> Str $line {
-            my Str $trimmed = $line.trim;
-            next if $trimmed eq '' || $trimmed.starts-with('#');
-            unless $trimmed ~~ /^ (<-[=]>+) '=' (.+) $/ {
-                die "❌ Malformed line in NOTCURSES_FORK: '$line' "
-                  ~ "(expected `key=value`).";
-            }
-            %pin{ ~$0.trim } = ~$1.trim;
-        }
-        for <url sha> -> Str $k {
-            unless %pin{$k}:exists && %pin{$k}.chars {
-                die "❌ NOTCURSES_FORK missing required key `$k`.";
-            }
-        }
-        unless %pin<sha> ~~ /^ <[0..9a..f]> ** 40 $/ {
-            die "❌ NOTCURSES_FORK sha=… must be a 40-char lowercase hex "
-              ~ "commit SHA, got '%pin<sha>'.";
-        }
-        %pin.Map;
-    }
+	method !notcurses-fork-pin($dist-path --> Map) {
+		my IO::Path $file = "$dist-path/NOTCURSES_FORK".IO;
+		unless $file.e {
+			die "❌ Missing NOTCURSES_FORK file at { $file }. This file "
+			  ~ "must contain `url=…` and `sha=…` lines naming the "
+			  ~ "upstream fork and pinned commit used for source builds.";
+		}
+		my %pin;
+		for $file.slurp.lines -> Str $line {
+			my Str $trimmed = $line.trim;
+			next if $trimmed eq '' || $trimmed.starts-with('#');
+			unless $trimmed ~~ /^ (<-[=]>+) '=' (.+) $/ {
+				die "❌ Malformed line in NOTCURSES_FORK: '$line' "
+				  ~ "(expected `key=value`).";
+			}
+			%pin{ ~$0.trim } = ~$1.trim;
+		}
+		for <url sha> -> Str $k {
+			unless %pin{$k}:exists && %pin{$k}.chars {
+				die "❌ NOTCURSES_FORK missing required key `$k`.";
+			}
+		}
+		unless %pin<sha> ~~ /^ <[0..9a..f]> ** 40 $/ {
+			die "❌ NOTCURSES_FORK sha=… must be a 40-char lowercase hex "
+			  ~ "commit SHA, got '%pin<sha>'.";
+		}
+		%pin.Map;
+	}
 
-    method !expected-sha($dist-path, Str $artifact --> Str) {
-        my IO::Path $file = "$dist-path/resources/checksums.txt".IO;
-        return Str unless $file.e;
-        for $file.slurp.lines -> Str $line {
-            my Str $trimmed = $line.trim;
-            next if $trimmed eq '' || $trimmed.starts-with('#');
-            my @parts = $trimmed.words;
-            next unless @parts.elems >= 2;
-            return @parts[0] if @parts[1] eq $artifact;
-        }
-        Str;
-    }
+	method !expected-sha($dist-path, Str $artifact --> Str) {
+		my IO::Path $file = "$dist-path/resources/checksums.txt".IO;
+		return Str unless $file.e;
+		for $file.slurp.lines -> Str $line {
+			my Str $trimmed = $line.trim;
+			next if $trimmed eq '' || $trimmed.starts-with('#');
+			my @parts = $trimmed.words;
+			next unless @parts.elems >= 2;
+			return @parts[0] if @parts[1] eq $artifact;
+		}
+		Str;
+	}
 
     #| Compute a file's SHA-256 hex digest, shelling out to whatever
     #| the platform actually ships. On POSIX this is a fallback chain,
@@ -596,36 +596,36 @@ class Build {
     #| layout — GNU coreutils prefixes a bare `\` fused to the hex
     #| when the input path contains a backslash (irrelevant on POSIX
     #| paths, but harmless to tolerate rather than choke on).
-    method !sha256(IO::Path $file --> Str) {
-        if $*DISTRO.is-win {
-            my $proc = run 'certutil', '-hashfile', $file.Str, 'SHA256',
-                           :out, :err;
-            my $out = $proc.out.slurp(:close);
-            $proc.err.slurp(:close);
-            for $out.lines -> Str $line {
-                my Str $t = $line.subst(/\s+/, '', :g).lc;
-                return $t if $t.chars == 64 && $t ~~ /^ <[0..9a..f]>+ $/;
-            }
-            return Str;
-        }
+	method !sha256(IO::Path $file --> Str) {
+		if $*DISTRO.is-win {
+			my $proc = run 'certutil', '-hashfile', $file.Str, 'SHA256',
+			               :out, :err;
+			my $out = $proc.out.slurp(:close);
+			$proc.err.slurp(:close);
+			for $out.lines -> Str $line {
+				my Str $t = $line.subst(/\s+/, '', :g).lc;
+				return $t if $t.chars == 64 && $t ~~ /^ <[0..9a..f]>+ $/;
+			}
+			return Str;
+		}
 
-        for ('sha256sum', $file.Str), ('shasum', '-a', '256', $file.Str)
-            -> @cmd
-        {
-            my $proc = try run |@cmd, :out, :err;
-            next without $proc;
-            my Str $out = $proc.out.slurp(:close);
-            $proc.err.slurp(:close);
-            next unless $proc.exitcode == 0;
-            my Str $first = $out.lines.head // '';
-            if $first ~~ / (<[0..9a..f]> ** 64) / {
-                return ~$0;
-            }
-        }
-        Str;
-    }
+		for ('sha256sum', $file.Str), ('shasum', '-a', '256', $file.Str)
+			-> @cmd
+		{
+			my $proc = try run |@cmd, :out, :err;
+			next without $proc;
+			my Str $out = $proc.out.slurp(:close);
+			$proc.err.slurp(:close);
+			next unless $proc.exitcode == 0;
+			my Str $first = $out.lines.head // '';
+			if $first ~~ / (<[0..9a..f]> ** 64) / {
+				return ~$0;
+			}
+		}
+		Str;
+	}
 
-    # --- Source compile path (CMake, ffmpeg, etc.) ----------------------
+	# --- Source compile path (CMake, ffmpeg, etc.) ----------------------
 
     #| Resolve the notcurses source tree to build from. Two paths:
     #|
@@ -642,96 +642,96 @@ class Build {
     #|      `checkout FETCH_HEAD`, then verifies HEAD matches the
     #|      pinned SHA. Cached per-SHA so bumping the pin invalidates
     #|      the cache automatically.
-    method !ensure-notcurses-source($dist-path --> IO::Path) {
-        with %*ENV<NOTCURSES_NATIVE_VENDOR_DIR> -> Str $local {
-            my IO::Path $dir = $local.IO;
-            unless $dir.d && "$dir/CMakeLists.txt".IO.e {
-                die "❌ NOTCURSES_NATIVE_VENDOR_DIR=$local is not a "
-                  ~ "notcurses source tree (no CMakeLists.txt found).";
-            }
-            say "Using NOTCURSES_NATIVE_VENDOR_DIR=$local as source tree.";
-            return $dir;
-        }
+	method !ensure-notcurses-source($dist-path --> IO::Path) {
+		with %*ENV<NOTCURSES_NATIVE_VENDOR_DIR> -> Str $local {
+			my IO::Path $dir = $local.IO;
+			unless $dir.d && "$dir/CMakeLists.txt".IO.e {
+				die "❌ NOTCURSES_NATIVE_VENDOR_DIR=$local is not a "
+				  ~ "notcurses source tree (no CMakeLists.txt found).";
+			}
+			say "Using NOTCURSES_NATIVE_VENDOR_DIR=$local as source tree.";
+			return $dir;
+		}
 
-        my %pin = self!notcurses-fork-pin($dist-path);
-        my Str $sha = %pin<sha>;
-        my Str $url = %pin<url>;
+		my %pin = self!notcurses-fork-pin($dist-path);
+		my Str $sha = %pin<sha>;
+		my Str $url = %pin<url>;
 
-        my IO::Path $src-dir =
-            "{self!cache-base}/Notcurses-Native-source/$sha".IO;
+		my IO::Path $src-dir =
+			"{self!cache-base}/Notcurses-Native-source/$sha".IO;
 
-        if $src-dir.d && "$src-dir/CMakeLists.txt".IO.e {
-            # Verify HEAD still matches the pin (defends against an
-            # aborted earlier fetch that left a partial tree on disk).
-            my Str $head = self!git-rev-parse-head($src-dir) // '';
-            if $head eq $sha {
-                say "Reusing cached notcurses source at $src-dir.";
-                return $src-dir;
-            }
-            note "⚠️  Cached source at $src-dir has wrong HEAD "
-               ~ "($head), re-cloning.";
-            self!remove-stage-entry($src-dir);
-        }
+		if $src-dir.d && "$src-dir/CMakeLists.txt".IO.e {
+			# Verify HEAD still matches the pin (defends against an
+			# aborted earlier fetch that left a partial tree on disk).
+			my Str $head = self!git-rev-parse-head($src-dir) // '';
+			if $head eq $sha {
+				say "Reusing cached notcurses source at $src-dir.";
+				return $src-dir;
+			}
+			note "⚠️  Cached source at $src-dir has wrong HEAD "
+			   ~ "($head), re-cloning.";
+			self!remove-stage-entry($src-dir);
+		}
 
-        $src-dir.mkdir;
-        say "Fetching notcurses source from $url @ $sha...";
+		$src-dir.mkdir;
+		say "Fetching notcurses source from $url @ $sha...";
 
-        my @git-steps = (
-            ('git', 'init', '--quiet', $src-dir.Str),
-            ('git', '-C', $src-dir.Str, 'remote', 'add', 'origin', $url),
-            ('git', '-C', $src-dir.Str, '-c', 'protocol.version=2',
-                'fetch', '--depth', '1', '--quiet', 'origin', $sha),
-            ('git', '-C', $src-dir.Str, 'checkout', '--quiet',
-                'FETCH_HEAD'),
-        );
-        for @git-steps -> @cmd {
-            my $proc = run |@cmd, :out, :err;
-            my $out = $proc.out.slurp(:close);
-            my $err = $proc.err.slurp(:close);
-            unless $proc.exitcode == 0 {
-                try self!remove-stage-entry($src-dir);
-                die "❌ Failed to fetch notcurses source: "
-                  ~ "{ @cmd.join(' ') }\n"
-                  ~ "stdout: $out\nstderr: $err\n"
-                  ~ "If you're offline or behind a firewall that blocks "
-                  ~ "github.com, set NOTCURSES_NATIVE_VENDOR_DIR=/path/"
-                  ~ "to/local/notcurses/clone to use a pre-staged "
-                  ~ "source tree.";
-            }
-        }
+		my @git-steps = (
+			('git', 'init', '--quiet', $src-dir.Str),
+			('git', '-C', $src-dir.Str, 'remote', 'add', 'origin', $url),
+			('git', '-C', $src-dir.Str, '-c', 'protocol.version=2',
+				'fetch', '--depth', '1', '--quiet', 'origin', $sha),
+			('git', '-C', $src-dir.Str, 'checkout', '--quiet',
+				'FETCH_HEAD'),
+		);
+		for @git-steps -> @cmd {
+			my $proc = run |@cmd, :out, :err;
+			my $out = $proc.out.slurp(:close);
+			my $err = $proc.err.slurp(:close);
+			unless $proc.exitcode == 0 {
+				try self!remove-stage-entry($src-dir);
+				die "❌ Failed to fetch notcurses source: "
+				  ~ "{ @cmd.join(' ') }\n"
+				  ~ "stdout: $out\nstderr: $err\n"
+				  ~ "If you're offline or behind a firewall that blocks "
+				  ~ "github.com, set NOTCURSES_NATIVE_VENDOR_DIR=/path/"
+				  ~ "to/local/notcurses/clone to use a pre-staged "
+				  ~ "source tree.";
+			}
+		}
 
-        # Belt-and-braces: confirm HEAD matches the pinned SHA. Should
-        # be tautological after a fetch-by-SHA + checkout FETCH_HEAD,
-        # but cheap defense against a corrupted clone.
-        my Str $head = self!git-rev-parse-head($src-dir) // '';
-        unless $head eq $sha {
-            die "❌ Source clone HEAD ($head) does not match pinned SHA "
-              ~ "($sha). Refusing to build from unverified source.";
-        }
-        say "✅ Fetched notcurses source → $src-dir.";
-        $src-dir;
-    }
+		# Belt-and-braces: confirm HEAD matches the pinned SHA. Should
+		# be tautological after a fetch-by-SHA + checkout FETCH_HEAD,
+		# but cheap defense against a corrupted clone.
+		my Str $head = self!git-rev-parse-head($src-dir) // '';
+		unless $head eq $sha {
+			die "❌ Source clone HEAD ($head) does not match pinned SHA "
+			  ~ "($sha). Refusing to build from unverified source.";
+		}
+		say "✅ Fetched notcurses source → $src-dir.";
+		$src-dir;
+	}
 
     #| `git rev-parse HEAD` in $dir. Returns the trimmed SHA on success,
     #| `Str` type object on any failure.
-    method !git-rev-parse-head(IO::Path $dir --> Str) {
-        my $proc = run 'git', '-C', $dir.Str, 'rev-parse', 'HEAD',
-                       :out, :err;
-        my Str $out = $proc.out.slurp(:close).trim;
-        $proc.err.slurp(:close);
-        return Str unless $proc.exitcode == 0;
-        $out;
-    }
+	method !git-rev-parse-head(IO::Path $dir --> Str) {
+		my $proc = run 'git', '-C', $dir.Str, 'rev-parse', 'HEAD',
+		               :out, :err;
+		my Str $out = $proc.out.slurp(:close).trim;
+		$proc.err.slurp(:close);
+		return Str unless $proc.exitcode == 0;
+		$out;
+	}
 
-    # --- Source-build environment ---------------------------------------
-    #
-    # The decisions !compile-from-source makes before it runs CMake —
-    # which Homebrew ncurses keg it may use, which run paths the build has
-    # to record, what the configure command line is, and how the build dir
-    # is reset — as public methods with injectable inputs, so
-    # t/44-source-build-environment can drive them against scratch
-    # directories and synthetic binaries instead of a real Homebrew, a
-    # real toolchain or whatever machine the tests happen to run on.
+	# --- Source-build environment ---------------------------------------
+	#
+	# The decisions !compile-from-source makes before it runs CMake —
+	# which Homebrew ncurses keg it may use, which run paths the build has
+	# to record, what the configure command line is, and how the build dir
+	# is reset — as public methods with injectable inputs, so
+	# t/44-source-build-environment can drive them against scratch
+	# directories and synthetic binaries instead of a real Homebrew, a
+	# real toolchain or whatever machine the tests happen to run on.
 
     #|( The CPU architectures a Mach-O file carries, read from its header
         in Raku — no lipo, file(1) or Xcode needed. A thin binary yields
@@ -741,67 +741,67 @@ class Build {
         followed. A file that is missing, unreadable, truncated or not
         Mach-O at all yields the empty list, which callers treat as
         "cannot be shown to match". )
-    method macho-archs(IO::Path $file --> List) {
-        return () unless $file.f;
-        my $fh = try $file.open(:bin);
-        return () without $fh;
-        my Blob $head = $fh.read(4096);
-        $fh.close;
-        self.macho-archs-of-header($head)
-    }
+	method macho-archs(IO::Path $file --> List) {
+		return () unless $file.f;
+		my $fh = try $file.open(:bin);
+		return () without $fh;
+		my Blob $head = $fh.read(4096);
+		$fh.close;
+		self.macho-archs-of-header($head)
+	}
 
     #| The header-parsing half of macho-archs, given a file's first bytes.
-    method macho-archs-of-header(Blob $head --> List) {
-        return () if $head.elems < 8;
-        my UInt $be = $head.read-uint32(0, BigEndian);
-        if $be == 0xCAFEBABE || $be == 0xCAFEBABF {
-            # Universal binary: a big-endian header listing the slices,
-            # 20 bytes each (32 in the 64-bit-offset variant). 0xCAFEBABE
-            # is also the Java class-file magic, where the next four bytes
-            # hold the class-file version (major >= 45) rather than a
-            # slice count; the same < 20 bound file(1) uses tells the two
-            # apart.
-            my Int $count  = $head.read-uint32(4, BigEndian);
-            my Int $stride = $be == 0xCAFEBABF ?? 32 !! 20;
-            return () unless 0 < $count < 20
-                && $head.elems >= 8 + $count * $stride;
-            return (^$count).map(-> Int $i {
-                my Int $at = 8 + $i * $stride;
-                self!macho-arch-name($head.read-uint32($at, BigEndian),
-                                     $head.read-uint32($at + 4, BigEndian))
-            }).List;
-        }
-        # Thin binary: the magic is in the file's own byte order, which is
-        # little-endian for everything Apple has shipped since PowerPC.
-        return () if $head.elems < 12;
-        my UInt $le = $head.read-uint32(0, LittleEndian);
-        if $le == 0xFEEDFACF || $le == 0xFEEDFACE {
-            return (self!macho-arch-name($head.read-uint32(4, LittleEndian),
-                                         $head.read-uint32(8, LittleEndian)),);
-        }
-        if $be == 0xFEEDFACF || $be == 0xFEEDFACE {
-            return (self!macho-arch-name($head.read-uint32(4, BigEndian),
-                                         $head.read-uint32(8, BigEndian)),);
-        }
-        ()
-    }
+	method macho-archs-of-header(Blob $head --> List) {
+		return () if $head.elems < 8;
+		my UInt $be = $head.read-uint32(0, BigEndian);
+		if $be == 0xCAFEBABE || $be == 0xCAFEBABF {
+			# Universal binary: a big-endian header listing the slices,
+			# 20 bytes each (32 in the 64-bit-offset variant). 0xCAFEBABE
+			# is also the Java class-file magic, where the next four bytes
+			# hold the class-file version (major >= 45) rather than a
+			# slice count; the same < 20 bound file(1) uses tells the two
+			# apart.
+			my Int $count  = $head.read-uint32(4, BigEndian);
+			my Int $stride = $be == 0xCAFEBABF ?? 32 !! 20;
+			return () unless 0 < $count < 20
+				&& $head.elems >= 8 + $count * $stride;
+			return (^$count).map(-> Int $i {
+				my Int $at = 8 + $i * $stride;
+				self!macho-arch-name($head.read-uint32($at, BigEndian),
+				                     $head.read-uint32($at + 4, BigEndian))
+			}).List;
+		}
+		# Thin binary: the magic is in the file's own byte order, which is
+		# little-endian for everything Apple has shipped since PowerPC.
+		return () if $head.elems < 12;
+		my UInt $le = $head.read-uint32(0, LittleEndian);
+		if $le == 0xFEEDFACF || $le == 0xFEEDFACE {
+			return (self!macho-arch-name($head.read-uint32(4, LittleEndian),
+			                             $head.read-uint32(8, LittleEndian)),);
+		}
+		if $be == 0xFEEDFACF || $be == 0xFEEDFACE {
+			return (self!macho-arch-name($head.read-uint32(4, BigEndian),
+			                             $head.read-uint32(8, BigEndian)),);
+		}
+		()
+	}
 
-    method !macho-arch-name(Int $cputype, Int $cpusubtype --> Str) {
-        # The top byte of cpusubtype holds capability flags, not the
-        # subtype (arm64e binaries set pointer-authentication ABI bits
-        # there).
-        my Int $subtype = $cpusubtype +& 0x00FFFFFF;
-        given $cputype {
-            when 0x01000007 { $subtype == 8 ?? 'x86_64h' !! 'x86_64' }
-            when 0x0100000C { $subtype == 2 ?? 'arm64e'  !! 'arm64'  }
-            when 0x0200000C { 'arm64_32' }
-            when 7          { 'i386' }
-            when 12         { 'arm' }
-            when 18         { 'ppc' }
-            when 0x01000012 { 'ppc64' }
-            default         { sprintf('cpu-0x%08x', $cputype) }
-        }
-    }
+	method !macho-arch-name(Int $cputype, Int $cpusubtype --> Str) {
+		# The top byte of cpusubtype holds capability flags, not the
+		# subtype (arm64e binaries set pointer-authentication ABI bits
+		# there).
+		my Int $subtype = $cpusubtype +& 0x00FFFFFF;
+		given $cputype {
+			when 0x01000007 { $subtype == 8 ?? 'x86_64h' !! 'x86_64' }
+			when 0x0100000C { $subtype == 2 ?? 'arm64e'  !! 'arm64'  }
+			when 0x0200000C { 'arm64_32' }
+			when 7          { 'i386' }
+			when 12         { 'arm' }
+			when 18         { 'ppc' }
+			when 0x01000012 { 'ppc64' }
+			default         { sprintf('cpu-0x%08x', $cputype) }
+		}
+	}
 
     #|( Homebrew prefixes to look for an ncurses keg in, most likely
         first: C<$HOMEBREW_PREFIX> when the user's shell exports one (as
@@ -823,34 +823,34 @@ class Build {
         style probes of the hardware would answer arm64 there, and a
         C<uname -m> subprocess resolved through PATH could be any build
         of uname at all.) )
-    method homebrew-prefixes(
-        Str :$arch = $*KERNEL.hardware.lc,
-        Str :$homebrew-prefix = %*ENV<HOMEBREW_PREFIX> // Str,
-        --> List
-    ) {
-        my Str @prefixes = $arch eq 'arm64'
-            ?? ('/opt/homebrew', '/usr/local')
-            !! ('/usr/local', '/opt/homebrew');
-        with $homebrew-prefix {
-            # Trailing separators off, so '/opt/homebrew/' dedupes against
-            # '/opt/homebrew'. Only trailing ones, and only by regex: the
-            # result is compared as a string against the literal defaults
-            # above, which canonpath would rewrite on a Windows host.
-            my Str $given = $*SPEC ~~ IO::Spec::Win32
-                ?? .subst(/ <[\\/]>+ $ /, '')
-                !! .subst(/ '/'+ $ /, '');
-            @prefixes.unshift: $given if $given.chars && $given.IO.is-absolute;
-        }
-        @prefixes.unique.List
-    }
+	method homebrew-prefixes(
+		Str :$arch = $*KERNEL.hardware.lc,
+		Str :$homebrew-prefix = %*ENV<HOMEBREW_PREFIX> // Str,
+		--> List
+	) {
+		my Str @prefixes = $arch eq 'arm64'
+			?? ('/opt/homebrew', '/usr/local')
+			!! ('/usr/local', '/opt/homebrew');
+		with $homebrew-prefix {
+			# Trailing separators off, so '/opt/homebrew/' dedupes against
+			# '/opt/homebrew'. Only trailing ones, and only by regex: the
+			# result is compared as a string against the literal defaults
+			# above, which canonpath would rewrite on a Windows host.
+			my Str $given = $*SPEC ~~ IO::Spec::Win32
+				?? .subst(/ <[\\/]>+ $ /, '')
+				!! .subst(/ '/'+ $ /, '');
+			@prefixes.unshift: $given if $given.chars && $given.IO.is-absolute;
+		}
+		@prefixes.unique.List
+	}
 
     #|( The separator of PATH-style lists (PKG_CONFIG_PATH, LIBRARY_PATH)
         on this host: C<:> on POSIX, C<;> on Windows, where C<:> is part of
         every drive-letter path. Taken from C<$*SPEC>, as every IO::Path
         here is, so the two cannot disagree. )
-    method !path-list-sep(--> Str) {
-        $*SPEC ~~ IO::Spec::Win32 ?? ';' !! ':'
-    }
+	method !path-list-sep(--> Str) {
+		$*SPEC ~~ IO::Spec::Win32 ?? ';' !! ':'
+	}
 
     #|( Pick the Homebrew ncurses keg the source build may use: the first
         of @prefixes whose C<opt/ncurses> keg has a C<lib/pkgconfig> dir
@@ -868,26 +868,26 @@ class Build {
         architecture 'x86_64'", then every terminfo symbol undefined —
         which is what the old "use /opt/homebrew whenever it exists" rule
         did to every such install. )
-    method select-homebrew-ncurses(Str :$arch!, :@prefixes! --> Map) {
-        my Str @skipped;
-        for @prefixes -> Str $prefix {
-            # Built with .add throughout, never a '/' join, so the path
-            # comes out in the host's own separators.
-            my IO::Path $lib-dir   = $prefix.IO.add('opt').add('ncurses').add('lib');
-            my IO::Path $pkgconfig = $lib-dir.add('pkgconfig');
-            next unless $pkgconfig.d;
-            my @archs = self.macho-archs($lib-dir.add('libncursesw.dylib'));
-            if @archs.first(* eq $arch).defined {
-                return (:pkgconfig($pkgconfig.Str), :skipped(@skipped.List)).Map;
-            }
-            @skipped.push: @archs
-                ?? "the Homebrew ncurses in $prefix ({@archs.join('/')}): "
-                   ~ "this Raku runs as $arch"
-                !! "the Homebrew ncurses in $prefix: it has no readable "
-                   ~ "lib/libncursesw.dylib to check the architecture of";
-        }
-        (:pkgconfig(Str), :skipped(@skipped.List)).Map
-    }
+	method select-homebrew-ncurses(Str :$arch!, :@prefixes! --> Map) {
+		my Str @skipped;
+		for @prefixes -> Str $prefix {
+			# Built with .add throughout, never a '/' join, so the path
+			# comes out in the host's own separators.
+			my IO::Path $lib-dir   = $prefix.IO.add('opt').add('ncurses').add('lib');
+			my IO::Path $pkgconfig = $lib-dir.add('pkgconfig');
+			next unless $pkgconfig.d;
+			my @archs = self.macho-archs($lib-dir.add('libncursesw.dylib'));
+			if @archs.first(* eq $arch).defined {
+				return (:pkgconfig($pkgconfig.Str), :skipped(@skipped.List)).Map;
+			}
+			@skipped.push: @archs
+				?? "the Homebrew ncurses in $prefix ({@archs.join('/')}): "
+				   ~ "this Raku runs as $arch"
+				!! "the Homebrew ncurses in $prefix: it has no readable "
+				   ~ "lib/libncursesw.dylib to check the architecture of";
+		}
+		(:pkgconfig(Str), :skipped(@skipped.List)).Map
+	}
 
     #|( The environment the source build's CMake configure and build run
         with: %base (normally C<%*ENV>) plus, on macOS, the Homebrew
@@ -908,32 +908,32 @@ class Build {
 
         Refused kegs are reported through C<&notify> (default C<note>).
         %base itself is never modified. )
-    method source-build-env(
-        %base,
-        Str :$os   = $*KERNEL.name.lc,
-        Str :$arch = $*KERNEL.hardware.lc,
-        :@brew-prefixes = self.homebrew-prefixes(
-            :$arch, :homebrew-prefix(%base<HOMEBREW_PREFIX> // Str)),
-        :&notify = &note,
-        --> Hash
-    ) {
-        my %env = %base;
-        return %env unless $os eq 'darwin';
+	method source-build-env(
+		%base,
+		Str :$os   = $*KERNEL.name.lc,
+		Str :$arch = $*KERNEL.hardware.lc,
+		:@brew-prefixes = self.homebrew-prefixes(
+			:$arch, :homebrew-prefix(%base<HOMEBREW_PREFIX> // Str)),
+		:&notify = &note,
+		--> Hash
+	) {
+		my %env = %base;
+		return %env unless $os eq 'darwin';
 
-        my %keg = self.select-homebrew-ncurses(:$arch, :prefixes(@brew-prefixes));
-        notify "⚠️  Source build: not using $_."
-            for %keg<skipped>.list;
+		my %keg = self.select-homebrew-ncurses(:$arch, :prefixes(@brew-prefixes));
+		notify "⚠️  Source build: not using $_."
+			for %keg<skipped>.list;
 
-        my Str $sep  = self!path-list-sep;
-        my Str $path = %env<PKG_CONFIG_PATH> // '';
-        with %keg<pkgconfig> -> Str $dir {
-            unless $path.split($sep).first(* eq $dir).defined {
-                $path = $path.chars ?? "$path$sep$dir" !! $dir;
-            }
-        }
-        %env<PKG_CONFIG_PATH> = $path;
-        %env
-    }
+		my Str $sep  = self!path-list-sep;
+		my Str $path = %env<PKG_CONFIG_PATH> // '';
+		with %keg<pkgconfig> -> Str $dir {
+			unless $path.split($sep).first(* eq $dir).defined {
+				$path = $path.chars ?? "$path$sep$dir" !! $dir;
+			}
+		}
+		%env<PKG_CONFIG_PATH> = $path;
+		%env
+	}
 
     #|( Run-path directories the source build must record explicitly:
         every absolute, existing directory on LIBRARY_PATH (split on the
@@ -960,46 +960,46 @@ class Build {
         libraries' own dependencies, not those dependencies' dependencies
         — those still need the loader's default path, ld.so.conf or
         LD_LIBRARY_PATH, as for any program.) )
-    method build-rpath-dirs(%env, Bool :$windows = $*DISTRO.is-win --> List) {
-        return () if $windows;
-        my Str @dirs;
-        for (%env<LIBRARY_PATH> // '').split(self!path-list-sep) -> Str $entry {
-            # Relative entries are relative to wherever the compiler ran;
-            # there is no meaningful run path to record for them.
-            next unless $entry.chars && $entry.IO.is-absolute;
-            # A CMake list separator inside a path cannot survive the
-            # single `-DCMAKE_BUILD_RPATH=a;b` argument.
-            next if $entry.contains(';');
-            # Repeated and trailing separators collapsed (canonpath leaves
-            # `..` alone, so this never changes which directory is named).
-            my Str $dir = $*SPEC.canonpath($entry);
-            next unless $dir.IO.d;
-            @dirs.push: $dir unless @dirs.first(* eq $dir).defined;
-        }
-        @dirs.List
-    }
+	method build-rpath-dirs(%env, Bool :$windows = $*DISTRO.is-win --> List) {
+		return () if $windows;
+		my Str @dirs;
+		for (%env<LIBRARY_PATH> // '').split(self!path-list-sep) -> Str $entry {
+			# Relative entries are relative to wherever the compiler ran;
+			# there is no meaningful run path to record for them.
+			next unless $entry.chars && $entry.IO.is-absolute;
+			# A CMake list separator inside a path cannot survive the
+			# single `-DCMAKE_BUILD_RPATH=a;b` argument.
+			next if $entry.contains(';');
+			# Repeated and trailing separators collapsed (canonpath leaves
+			# `..` alone, so this never changes which directory is named).
+			my Str $dir = $*SPEC.canonpath($entry);
+			next unless $dir.IO.d;
+			@dirs.push: $dir unless @dirs.first(* eq $dir).defined;
+		}
+		@dirs.List
+	}
 
     #|( The CMake configure command line for the source build: the
         option set the CI release lanes build with, plus
         C<-DCMAKE_BUILD_RPATH=…> (one argument, C<;>-separated as CMake
         lists are) when build-rpath-dirs found directories to pin. )
-    method cmake-configure-args(Str $vendor, Str $build-dir,
-                                :@rpath-dirs --> List) {
-        my @args = (
-            'cmake', '-B', $build-dir, '-S', $vendor,
-            '-DUSE_MULTIMEDIA=ffmpeg',
-            '-DBUILD_FFI_LIBRARY=ON',
-            '-DUSE_CXX=OFF',
-            '-DBUILD_EXECUTABLES=OFF',
-            '-DUSE_PANDOC=OFF',
-            '-DUSE_DOCTEST=OFF',
-            '-DUSE_POC=OFF',
-            '-DUSE_STATIC=OFF',
-            '-DCMAKE_BUILD_TYPE=Release',
-        );
-        @args.push: "-DCMAKE_BUILD_RPATH={@rpath-dirs.join(';')}" if @rpath-dirs;
-        @args.List
-    }
+	method cmake-configure-args(Str $vendor, Str $build-dir,
+								:@rpath-dirs --> List) {
+		my @args = (
+			'cmake', '-B', $build-dir, '-S', $vendor,
+			'-DUSE_MULTIMEDIA=ffmpeg',
+			'-DBUILD_FFI_LIBRARY=ON',
+			'-DUSE_CXX=OFF',
+			'-DBUILD_EXECUTABLES=OFF',
+			'-DUSE_PANDOC=OFF',
+			'-DUSE_DOCTEST=OFF',
+			'-DUSE_POC=OFF',
+			'-DUSE_STATIC=OFF',
+			'-DCMAKE_BUILD_TYPE=Release',
+		);
+		@args.push: "-DCMAKE_BUILD_RPATH={@rpath-dirs.join(';')}" if @rpath-dirs;
+		@args.List
+	}
 
     #|( Make the next configure of $build-dir a fresh one: remove
         C<CMakeCache.txt> and C<CMakeFiles/>, which is exactly what
@@ -1022,12 +1022,12 @@ class Build {
         two; keeping them would mean trusting a cache whose inputs —
         every variable and file pkg-config, the compiler and CMake's
         find_* consult — can't all be fingerprinted. )
-    method fresh-cmake-build-dir(IO::Path $build-dir --> Nil) {
-        for <CMakeCache.txt CMakeFiles> -> Str $name {
-            my IO::Path $entry = $build-dir.add($name);
-            self!remove-stage-entry($entry) if $entry.e || $entry.l;
-        }
-    }
+	method fresh-cmake-build-dir(IO::Path $build-dir --> Nil) {
+		for <CMakeCache.txt CMakeFiles> -> Str $name {
+			my IO::Path $entry = $build-dir.add($name);
+			self!remove-stage-entry($entry) if $entry.e || $entry.l;
+		}
+	}
 
     #| Build notcurses from source via CMake. Matches the
     #| per-platform build recipe used by the CI workflow. Requires
@@ -1036,132 +1036,132 @@ class Build {
     #| for distro-specific install commands). The environment, the
     #| configure command line and the fresh-configure reset come from
     #| the public helpers above.
-    method !compile-from-source($dist-path, IO::Path $stage) {
-        self!check-toolchain;
+	method !compile-from-source($dist-path, IO::Path $stage) {
+		self!check-toolchain;
 
-        my IO::Path $vendor-io = self!ensure-notcurses-source($dist-path);
-        my Str $vendor = $vendor-io.Str;
-        my Str $build-dir = "$vendor/build";
-        my Str $os = $*KERNEL.name.lc;
-        my Str $ext = $os ~~ /darwin/ ?? 'dylib'
-                   !! $*DISTRO.is-win ?? 'dll'
-                   !! 'so';
+		my IO::Path $vendor-io = self!ensure-notcurses-source($dist-path);
+		my Str $vendor = $vendor-io.Str;
+		my Str $build-dir = "$vendor/build";
+		my Str $os = $*KERNEL.name.lc;
+		my Str $ext = $os ~~ /darwin/ ?? 'dylib'
+		           !! $*DISTRO.is-win ?? 'dll'
+		           !! 'so';
 
-        # Both the configure and the build run with this environment: a
-        # build re-runs the configure step on its own whenever CMake's
-        # glob or CMakeLists checks ask it to, and that run must see what
-        # the first one saw.
-        my %env = self.source-build-env(%*ENV);
-        my @cmake-args = self.cmake-configure-args(
-            $vendor, $build-dir, :rpath-dirs(self.build-rpath-dirs(%env)));
+		# Both the configure and the build run with this environment: a
+		# build re-runs the configure step on its own whenever CMake's
+		# glob or CMakeLists checks ask it to, and that run must see what
+		# the first one saw.
+		my %env = self.source-build-env(%*ENV);
+		my @cmake-args = self.cmake-configure-args(
+			$vendor, $build-dir, :rpath-dirs(self.build-rpath-dirs(%env)));
 
-        # Every configure starts fresh — see fresh-cmake-build-dir.
-        self.fresh-cmake-build-dir($build-dir.IO);
-        say "Configuring notcurses via CMake...";
-        my $configure = run |@cmake-args, :out, :err, :%env;
-        my $cfg-out = $configure.out.slurp(:close);
-        my $cfg-err = $configure.err.slurp(:close);
-        unless $configure.exitcode == 0 {
-            say $cfg-out;
-            say $cfg-err;
-            # A core-only build is a silently degraded product: image and
-            # video support vanish, a consumer app's image features stop
-            # working, and nothing downstream can tell the difference until
-            # a user hits it at runtime. Every shipped binary is expected to carry the
-            # multimedia backend, so this is a hard failure by default and
-            # only ever a deliberate, opted-into choice.
-            unless (%*ENV<NOTCURSES_NATIVE_ALLOW_NO_MULTIMEDIA> // '') eq '1' {
-                die join "\n",
-                    'CMake configure failed with -DUSE_MULTIMEDIA=ffmpeg.',
-                    '',
-                    'This usually means the FFmpeg development headers are',
-                    'missing. Install them and retry:',
-                    '',
-                    '  Debian/Ubuntu  apt install libavdevice-dev',
-                    '  Fedora         dnf install ffmpeg-devel',
-                    '  macOS          brew install ffmpeg',
-                    '  MSYS2/UCRT64   pacman -S mingw-w64-ucrt-x86_64-ffmpeg',
-                    '',
-                    'To build without image/video support anyway, set',
-                    'NOTCURSES_NATIVE_ALLOW_NO_MULTIMEDIA=1. The resulting',
-                    'library cannot decode images or video.',
-                    '',
-                    $cfg-err;
-            }
-            note "⚠️  NOTCURSES_NATIVE_ALLOW_NO_MULTIMEDIA=1 — building "
-               ~ "core-only (no image/video support).";
-            @cmake-args = @cmake-args.map({
-                $_ eq '-DUSE_MULTIMEDIA=ffmpeg' ?? '-DUSE_MULTIMEDIA=none' !! $_
-            });
-            # The failed attempt left its find results in the cache; the
-            # retry must not inherit them any more than a fresh install may.
-            self.fresh-cmake-build-dir($build-dir.IO);
-            $configure = run |@cmake-args, :out, :err, :%env;
-            $cfg-out = $configure.out.slurp(:close);
-            $cfg-err = $configure.err.slurp(:close);
-            unless $configure.exitcode == 0 {
-                die "CMake configure failed:\n$cfg-err";
-            }
-        }
+		# Every configure starts fresh — see fresh-cmake-build-dir.
+		self.fresh-cmake-build-dir($build-dir.IO);
+		say "Configuring notcurses via CMake...";
+		my $configure = run |@cmake-args, :out, :err, :%env;
+		my $cfg-out = $configure.out.slurp(:close);
+		my $cfg-err = $configure.err.slurp(:close);
+		unless $configure.exitcode == 0 {
+			say $cfg-out;
+			say $cfg-err;
+			# A core-only build is a silently degraded product: image and
+			# video support vanish, a consumer app's image features stop
+			# working, and nothing downstream can tell the difference until
+			# a user hits it at runtime. Every shipped binary is expected to carry the
+			# multimedia backend, so this is a hard failure by default and
+			# only ever a deliberate, opted-into choice.
+			unless (%*ENV<NOTCURSES_NATIVE_ALLOW_NO_MULTIMEDIA> // '') eq '1' {
+				die join "\n",
+					'CMake configure failed with -DUSE_MULTIMEDIA=ffmpeg.',
+					'',
+					'This usually means the FFmpeg development headers are',
+					'missing. Install them and retry:',
+					'',
+					'  Debian/Ubuntu  apt install libavdevice-dev',
+					'  Fedora         dnf install ffmpeg-devel',
+					'  macOS          brew install ffmpeg',
+					'  MSYS2/UCRT64   pacman -S mingw-w64-ucrt-x86_64-ffmpeg',
+					'',
+					'To build without image/video support anyway, set',
+					'NOTCURSES_NATIVE_ALLOW_NO_MULTIMEDIA=1. The resulting',
+					'library cannot decode images or video.',
+					'',
+					$cfg-err;
+			}
+			note "⚠️  NOTCURSES_NATIVE_ALLOW_NO_MULTIMEDIA=1 — building "
+			   ~ "core-only (no image/video support).";
+			@cmake-args = @cmake-args.map({
+				$_ eq '-DUSE_MULTIMEDIA=ffmpeg' ?? '-DUSE_MULTIMEDIA=none' !! $_
+			});
+			# The failed attempt left its find results in the cache; the
+			# retry must not inherit them any more than a fresh install may.
+			self.fresh-cmake-build-dir($build-dir.IO);
+			$configure = run |@cmake-args, :out, :err, :%env;
+			$cfg-out = $configure.out.slurp(:close);
+			$cfg-err = $configure.err.slurp(:close);
+			unless $configure.exitcode == 0 {
+				die "CMake configure failed:\n$cfg-err";
+			}
+		}
 
-        say "Compiling notcurses...";
-        my Str $ncpu = do given $os {
-            when /darwin/ { qx{sysctl -n hw.ncpu}.trim }
-            default {
-                $*DISTRO.is-win
-                    ?? (%*ENV<NUMBER_OF_PROCESSORS> // '4')
-                    !! (qx{nproc 2>/dev/null}.trim || '4')
-            }
-        };
-        my $build = run 'cmake', '--build', $build-dir, '-j', $ncpu,
-                        :out, :err, :%env;
-        my $build-out = $build.out.slurp(:close);
-        my $build-err = $build.err.slurp(:close);
-        unless $build.exitcode == 0 {
-            say $build-out;
-            die "CMake build failed:\n$build-err";
-        }
+		say "Compiling notcurses...";
+		my Str $ncpu = do given $os {
+			when /darwin/ { qx{sysctl -n hw.ncpu}.trim }
+			default {
+				$*DISTRO.is-win
+					?? (%*ENV<NUMBER_OF_PROCESSORS> // '4')
+					!! (qx{nproc 2>/dev/null}.trim || '4')
+			}
+		};
+		my $build = run 'cmake', '--build', $build-dir, '-j', $ncpu,
+						:out, :err, :%env;
+		my $build-out = $build.out.slurp(:close);
+		my $build-err = $build.err.slurp(:close);
+		unless $build.exitcode == 0 {
+			say $build-out;
+			die "CMake build failed:\n$build-err";
+		}
 
-        # The same BINARY_TAG may already hold a prebuilt install. Clear its
-        # complete sibling closure only after the source build itself has
-        # succeeded, immediately before staging the newly-built libraries.
-        self!reset-stage($stage);
+		# The same BINARY_TAG may already hold a prebuilt install. Clear its
+		# complete sibling closure only after the source build itself has
+		# succeeded, immediately before staging the newly-built libraries.
+		self!reset-stage($stage);
 
-        # Stage the three libs into the XDG-style staged-libs dir.
-        # Upstream naming varies per platform — recursive find-lib
-        # walks the build tree and matches each library's expected
-        # prefix + extension. We stage every version variant
-        # (`libfoo.dylib`, `libfoo.3.dylib`, `libfoo.3.0.17.dylib` on
-        # macOS) because the rewritten install-names below point to
-        # the canonical `.3.dylib` variant — if that file isn't
-        # present at the staged path, dyld errors with "Library not
-        # loaded" at the first NativeCall.
-        for <libnotcurses libnotcurses-core libnotcurses-ffi> -> Str $lib {
-            my IO::Path $target = $stage.add("$lib.$ext");
-            self!find-lib($build-dir.IO, $lib, $ext, $stage);
-            die "❌ Could not stage $lib.$ext from build tree"
-                unless $target.e;
-        }
+		# Stage the three libs into the XDG-style staged-libs dir.
+		# Upstream naming varies per platform — recursive find-lib
+		# walks the build tree and matches each library's expected
+		# prefix + extension. We stage every version variant
+		# (`libfoo.dylib`, `libfoo.3.dylib`, `libfoo.3.0.17.dylib` on
+		# macOS) because the rewritten install-names below point to
+		# the canonical `.3.dylib` variant — if that file isn't
+		# present at the staged path, dyld errors with "Library not
+		# loaded" at the first NativeCall.
+		for <libnotcurses libnotcurses-core libnotcurses-ffi> -> Str $lib {
+			my IO::Path $target = $stage.add("$lib.$ext");
+			self!find-lib($build-dir.IO, $lib, $ext, $stage);
+			die "❌ Could not stage $lib.$ext from build tree"
+				unless $target.e;
+		}
 
-        # On macOS, rewrite each staged dylib's install-name (LC_ID_DYLIB)
-        # and inter-library dependency references to absolute staged
-        # paths. Without this, dyld resolves the `@rpath/libnotcurses*.dylib`
-        # dependencies via the executable's RPATH chain — and on a
-        # Homebrew-Raku setup (`raku` has LC_RPATH = `@executable_path/../lib`
-        # which is `/opt/homebrew/lib`, where Homebrew typically installs
-        # an unpatched notcurses), dyld picks Homebrew's library before
-        # ours and our vendored code (including any local patches) is
-        # silently shadowed. Baking the absolute paths in eliminates
-        # dyld's discretion. Linux/glibc has no equivalent RPATH-vs-path
-        # conflict so this is macOS-only.
-        if $os ~~ /darwin/ {
-            self!rewrite-macos-install-names($stage, $build-dir);
-        }
+		# On macOS, rewrite each staged dylib's install-name (LC_ID_DYLIB)
+		# and inter-library dependency references to absolute staged
+		# paths. Without this, dyld resolves the `@rpath/libnotcurses*.dylib`
+		# dependencies via the executable's RPATH chain — and on a
+		# Homebrew-Raku setup (`raku` has LC_RPATH = `@executable_path/../lib`
+		# which is `/opt/homebrew/lib`, where Homebrew typically installs
+		# an unpatched notcurses), dyld picks Homebrew's library before
+		# ours and our vendored code (including any local patches) is
+		# silently shadowed. Baking the absolute paths in eliminates
+		# dyld's discretion. Linux/glibc has no equivalent RPATH-vs-path
+		# conflict so this is macOS-only.
+		if $os ~~ /darwin/ {
+			self!rewrite-macos-install-names($stage, $build-dir);
+		}
 
-        # Written last: absence means the source install never completed.
-        # Prebuilt extraction starts with !reset-stage, clearing this marker.
-        self!mark-source-build($stage);
-    }
+		# Written last: absence means the source install never completed.
+		# Prebuilt extraction starts with !reset-stage, clearing this marker.
+		self!mark-source-build($stage);
+	}
 
     #| For each staged real dylib (version aliases are symlinks staged by
     #| `!find-lib` and are skipped — rewriting through them would just
@@ -1170,203 +1170,203 @@ class Build {
     #| dependency reference to the matching absolute staged path. Runs
     #| `install_name_tool` once per file — no-ops for entries that don't
     #| match the rewrite pattern. macOS-only.
-    method !rewrite-macos-install-names(IO::Path $stage, Str $build-dir) {
-        # Variant filenames the staging step produced (find-lib copies
-        # each version-suffixed dylib it can locate in the build tree,
-        # so we may have e.g. libnotcurses-core.dylib +
-        # libnotcurses-core.3.dylib + libnotcurses-core.3.0.17.dylib).
-        #
-        # Pick up every notcurses core dylib (`libnotcurses.dylib`,
-        # `libnotcurses-core.3.dylib`, `libnotcurses-ffi.3.0.17.dylib`,
-        # etc.) AND exclude `libnotcurses_native_shim.dylib`.
-        # !try-compile-shim stages the shim with a short
-        # `@loader_path/libnotcurses_native_shim.dylib` install-name;
-        # its only LC_LOAD_DYLIB entries are libSystem and friends —
-        # no `@rpath/libnotcurses*.dylib` references to rewrite,
-        # because the shim is compiled `-undefined dynamic_lookup`
-        # and resolves its notcurses calls at runtime against the
-        # host process. Rewriting its install-name to the absolute
-        # staged path would fail with "larger updated load commands
-        # do not fit" — the shim's Mach-O headerpad is sized for
-        # the short name, not the ~100-char absolute. On a force-
-        # install, the previous run's shim is still on disk; this
-        # pass would loudly refuse it.
-        my @all-files = $stage.dir.grep({
-            .basename ~~ /^ 'libnotcurses' \S* '.dylib' $ /
-            && .basename !~~ /'_shim'/
-            && !.l      # aliases are symlinks; the real file is enough
-        });
+	method !rewrite-macos-install-names(IO::Path $stage, Str $build-dir) {
+		# Variant filenames the staging step produced (find-lib copies
+		# each version-suffixed dylib it can locate in the build tree,
+		# so we may have e.g. libnotcurses-core.dylib +
+		# libnotcurses-core.3.dylib + libnotcurses-core.3.0.17.dylib).
+		#
+		# Pick up every notcurses core dylib (`libnotcurses.dylib`,
+		# `libnotcurses-core.3.dylib`, `libnotcurses-ffi.3.0.17.dylib`,
+		# etc.) AND exclude `libnotcurses_native_shim.dylib`.
+		# !try-compile-shim stages the shim with a short
+		# `@loader_path/libnotcurses_native_shim.dylib` install-name;
+		# its only LC_LOAD_DYLIB entries are libSystem and friends —
+		# no `@rpath/libnotcurses*.dylib` references to rewrite,
+		# because the shim is compiled `-undefined dynamic_lookup`
+		# and resolves its notcurses calls at runtime against the
+		# host process. Rewriting its install-name to the absolute
+		# staged path would fail with "larger updated load commands
+		# do not fit" — the shim's Mach-O headerpad is sized for
+		# the short name, not the ~100-char absolute. On a force-
+		# install, the previous run's shim is still on disk; this
+		# pass would loudly refuse it.
+		my @all-files = $stage.dir.grep({
+			.basename ~~ /^ 'libnotcurses' \S* '.dylib' $ /
+			&& .basename !~~ /'_shim'/
+			&& !.l      # aliases are symlinks; the real file is enough
+		});
 
-        # Make sure files are writable; CMake sometimes installs 0444.
-        for @all-files -> $f {
-            $f.chmod(0o644);
-        }
+		# Make sure files are writable; CMake sometimes installs 0444.
+		for @all-files -> $f {
+			$f.chmod(0o644);
+		}
 
-        # The 3-component install-name is what other libs declare as
-        # their dependency (`@rpath/libnotcurses-core.3.dylib`), so this
-        # is the path we want every staged variant to advertise.
-        my %canonical-id =
-            'libnotcurses'      => $stage.add('libnotcurses.3.dylib').absolute,
-            'libnotcurses-core' => $stage.add('libnotcurses-core.3.dylib').absolute,
-            'libnotcurses-ffi'  => $stage.add('libnotcurses-ffi.3.dylib').absolute,
-        ;
+		# The 3-component install-name is what other libs declare as
+		# their dependency (`@rpath/libnotcurses-core.3.dylib`), so this
+		# is the path we want every staged variant to advertise.
+		my %canonical-id =
+			'libnotcurses'      => $stage.add('libnotcurses.3.dylib').absolute,
+			'libnotcurses-core' => $stage.add('libnotcurses-core.3.dylib').absolute,
+			'libnotcurses-ffi'  => $stage.add('libnotcurses-ffi.3.dylib').absolute,
+		;
 
-        # Map each `@rpath/...` reference to its canonical absolute
-        # staged path.
-        my %dep-rewrite =
-            '@rpath/libnotcurses.3.dylib'      => %canonical-id<libnotcurses>,
-            '@rpath/libnotcurses-core.3.dylib' => %canonical-id<libnotcurses-core>,
-            '@rpath/libnotcurses-ffi.3.dylib'  => %canonical-id<libnotcurses-ffi>,
-        ;
+		# Map each `@rpath/...` reference to its canonical absolute
+		# staged path.
+		my %dep-rewrite =
+			'@rpath/libnotcurses.3.dylib'      => %canonical-id<libnotcurses>,
+			'@rpath/libnotcurses-core.3.dylib' => %canonical-id<libnotcurses-core>,
+			'@rpath/libnotcurses-ffi.3.dylib'  => %canonical-id<libnotcurses-ffi>,
+		;
 
-        for @all-files -> $f {
-            # Set this file's own install-name. Match by basename
-            # prefix so every variant of the same logical library
-            # (`.dylib`, `.3.dylib`, `.3.0.17.dylib`) gets the same
-            # canonical ID.
-            my Str $base = do given $f.basename {
-                when /^ 'libnotcurses-core' / { 'libnotcurses-core' }
-                when /^ 'libnotcurses-ffi'  / { 'libnotcurses-ffi'  }
-                default                       { 'libnotcurses'      }
-            };
-            my Str $new-id = %canonical-id{$base};
-            my $rc = run 'install_name_tool', '-id', $new-id, $f.absolute,
-                         :out, :err;
-            $rc.out.slurp(:close);
-            my $err = $rc.err.slurp(:close);
-            die "install_name_tool -id failed on {$f.basename}:\n$err"
-                unless $rc.exitcode == 0;
+		for @all-files -> $f {
+			# Set this file's own install-name. Match by basename
+			# prefix so every variant of the same logical library
+			# (`.dylib`, `.3.dylib`, `.3.0.17.dylib`) gets the same
+			# canonical ID.
+			my Str $base = do given $f.basename {
+				when /^ 'libnotcurses-core' / { 'libnotcurses-core' }
+				when /^ 'libnotcurses-ffi'  / { 'libnotcurses-ffi'  }
+				default                       { 'libnotcurses'      }
+			};
+			my Str $new-id = %canonical-id{$base};
+			my $rc = run 'install_name_tool', '-id', $new-id, $f.absolute,
+			             :out, :err;
+			$rc.out.slurp(:close);
+			my $err = $rc.err.slurp(:close);
+			die "install_name_tool -id failed on {$f.basename}:\n$err"
+				unless $rc.exitcode == 0;
 
-            # Rewrite every `@rpath/libnotcurses*.dylib` dep to its
-            # absolute staged path. Skip silently when the dep isn't
-            # present (install_name_tool errors loudly on no-match,
-            # which is fine for the libs that *do* declare it).
-            for %dep-rewrite.kv -> $old, $new {
-                my $rc2 = run 'install_name_tool', '-change', $old, $new,
-                              $f.absolute, :out, :err;
-                $rc2.out.slurp(:close);
-                $rc2.err.slurp(:close);
-            }
-        }
+			# Rewrite every `@rpath/libnotcurses*.dylib` dep to its
+			# absolute staged path. Skip silently when the dep isn't
+			# present (install_name_tool errors loudly on no-match,
+			# which is fine for the libs that *do* declare it).
+			for %dep-rewrite.kv -> $old, $new {
+				my $rc2 = run 'install_name_tool', '-change', $old, $new,
+				              $f.absolute, :out, :err;
+				$rc2.out.slurp(:close);
+				$rc2.err.slurp(:close);
+			}
+		}
 
-        say "  Rewrote macOS install-names to absolute staged paths "
-          ~ "({+@all-files} files)";
-    }
+		say "  Rewrote macOS install-names to absolute staged paths "
+		  ~ "({+@all-files} files)";
+	}
 
-    method !find-lib(IO::Path $dir, Str $lib, Str $ext, IO::Path $stage) {
-        # Stage the real file(s), then recreate the version aliases as
-        # RELATIVE SYMLINKS — never as extra copies. A copied-out alias
-        # is a separate inode, and macOS dyld deduplicates loaded
-        # images by real path, not by install-name: NativeCall's
-        # dlopen of `libnotcurses-core.dylib` and the full lib's
-        # LC_LOAD_DYLIB of `libnotcurses-core.3.dylib` then load TWO
-        # images of the core library. Heap state (tinfo) is shared
-        # between them, but per-image globals are not — most fatally
-        # `notcurses_blitters`, whose NCBLIT_PIXEL entry is patched by
-        # set_pixel_blitter() during terminal setup in one image while
-        # the image actually blitting still holds NULL → jump-to-zero
-        # segfault on the first pixel blit. One real file plus
-        # symlinks keeps every path the same image (exactly the layout
-        # the prebuilt archives ship). Linux ld.so dedupes by SONAME
-        # so it never hit this, but gets the same layout for hygiene.
-        my %links;      # alias basename => real-file basename
-        self!find-lib-walk($dir, $lib, $ext, $stage, %links);
-        for %links.kv -> Str $alias, Str $target {
-            my IO::Path $dest = $stage.add($alias);
-            # A real file already staged under this name wins (e.g. a
-            # build tree that produced no symlinks in the first place).
-            next if $dest.e && !$dest.l;
-            next unless $stage.add($target).e;
-            try $dest.unlink;
-            # Raku's &symlink absolutizes its target, but the alias
-            # must stay relative so the staged dir remains relocatable.
-            my $ln = run 'ln', '-sfn', $target, $dest.absolute, :out, :err;
-            $ln.out.slurp(:close);
-            my Str $ln-err = $ln.err.slurp(:close);
-            die "❌ Could not symlink $alias -> $target in $stage:\n$ln-err"
-                unless $ln.exitcode == 0;
-            say "  Staged: $alias -> $target (symlink)";
-        }
-    }
+	method !find-lib(IO::Path $dir, Str $lib, Str $ext, IO::Path $stage) {
+		# Stage the real file(s), then recreate the version aliases as
+		# RELATIVE SYMLINKS — never as extra copies. A copied-out alias
+		# is a separate inode, and macOS dyld deduplicates loaded
+		# images by real path, not by install-name: NativeCall's
+		# dlopen of `libnotcurses-core.dylib` and the full lib's
+		# LC_LOAD_DYLIB of `libnotcurses-core.3.dylib` then load TWO
+		# images of the core library. Heap state (tinfo) is shared
+		# between them, but per-image globals are not — most fatally
+		# `notcurses_blitters`, whose NCBLIT_PIXEL entry is patched by
+		# set_pixel_blitter() during terminal setup in one image while
+		# the image actually blitting still holds NULL → jump-to-zero
+		# segfault on the first pixel blit. One real file plus
+		# symlinks keeps every path the same image (exactly the layout
+		# the prebuilt archives ship). Linux ld.so dedupes by SONAME
+		# so it never hit this, but gets the same layout for hygiene.
+		my %links;      # alias basename => real-file basename
+		self!find-lib-walk($dir, $lib, $ext, $stage, %links);
+		for %links.kv -> Str $alias, Str $target {
+			my IO::Path $dest = $stage.add($alias);
+			# A real file already staged under this name wins (e.g. a
+			# build tree that produced no symlinks in the first place).
+			next if $dest.e && !$dest.l;
+			next unless $stage.add($target).e;
+			try $dest.unlink;
+			# Raku's &symlink absolutizes its target, but the alias
+			# must stay relative so the staged dir remains relocatable.
+			my $ln = run 'ln', '-sfn', $target, $dest.absolute, :out, :err;
+			$ln.out.slurp(:close);
+			my Str $ln-err = $ln.err.slurp(:close);
+			die "❌ Could not symlink $alias -> $target in $stage:\n$ln-err"
+				unless $ln.exitcode == 0;
+			say "  Staged: $alias -> $target (symlink)";
+		}
+	}
 
-    method !find-lib-walk(IO::Path $dir, Str $lib, Str $ext,
-                          IO::Path $stage, %links) {
-        # Each platform names the produced library differently:
-        #   Linux:   libnotcurses-core.so[.3[.0.17]]
-        #   macOS:   libnotcurses-core[.3[.0.17]].dylib
-        #   MinGW:   libnotcurses-core[-3].dll  or notcurses-core.dll
-        #
-        # IMPORTANT: `libnotcurses` is a prefix of `libnotcurses-core`
-        # and `libnotcurses-ffi`. Only match separator `.` after the
-        # name, never `-`, so `libnotcurses` doesn't claim
-        # `libnotcurses-ffi.so`.
-        #
-        # Visits every matching variant rather than stopping at the
-        # first hit. macOS dyld follows version suffixes in
-        # install-names (e.g., `libnotcurses-core.3.dylib`) at load
-        # time, so every name must be present at the staged location —
-        # real files are copied here, symlink aliases are collected
-        # into %links for !find-lib to recreate as symlinks.
-        my Str $nolib = $lib.subst(/^ 'lib'/, '');
-        my @patterns = ($lib, $nolib);
+	method !find-lib-walk(IO::Path $dir, Str $lib, Str $ext,
+	                      IO::Path $stage, %links) {
+		# Each platform names the produced library differently:
+		#   Linux:   libnotcurses-core.so[.3[.0.17]]
+		#   macOS:   libnotcurses-core[.3[.0.17]].dylib
+		#   MinGW:   libnotcurses-core[-3].dll  or notcurses-core.dll
+		#
+		# IMPORTANT: `libnotcurses` is a prefix of `libnotcurses-core`
+		# and `libnotcurses-ffi`. Only match separator `.` after the
+		# name, never `-`, so `libnotcurses` doesn't claim
+		# `libnotcurses-ffi.so`.
+		#
+		# Visits every matching variant rather than stopping at the
+		# first hit. macOS dyld follows version suffixes in
+		# install-names (e.g., `libnotcurses-core.3.dylib`) at load
+		# time, so every name must be present at the staged location —
+		# real files are copied here, symlink aliases are collected
+		# into %links for !find-lib to recreate as symlinks.
+		my Str $nolib = $lib.subst(/^ 'lib'/, '');
+		my @patterns = ($lib, $nolib);
 
-        for $dir.dir -> IO::Path $entry {
-            if $entry.d {
-                self!find-lib-walk($entry, $lib, $ext, $stage, %links);
-                next;
-            }
-            next unless $entry.f;
-            my Str $name = $entry.basename;
-            for @patterns -> Str $pat {
-                # contains(".$ext"), not ends-with: Linux reals carry the
-                # version AFTER the extension (libnotcurses-core.so.3.0.17),
-                # macOS before it (libnotcurses-core.3.dylib). An ends-with
-                # match misses the Linux reals, and with aliases now staged
-                # as symlinks (not dereferencing copies) that would leave a
-                # Linux source-build stage empty: every alias would point at
-                # a target that was never staged, and the target-exists
-                # guard below would silently drop it. Same discipline as the
-                # runtime resolver's _find-in.
-                if $name eq "$pat.$ext"
-                   || ($name.starts-with("$pat.") && $name.contains(".$ext")) {
-                    if $entry.l {
-                        # One-level-flattened: alias points straight at
-                        # the fully-resolved real file's basename, like
-                        # a `make install` tree.
-                        %links{$name} //= $entry.resolve.basename;
-                        last;
-                    }
-                    my IO::Path $dest = $stage.add($name);
-                    # Skip if we already staged a copy this run (the
-                    # build tree may surface the same file at multiple
-                    # paths; first wins).
-                    next if $dest.e && !$dest.l && $dest.s == $entry.s;
-                    try $dest.unlink;
-                    copy $entry, $dest;
-                    say "  Staged: {$dest.basename} (from $name)";
-                    last;
-                }
-            }
-        }
-    }
+		for $dir.dir -> IO::Path $entry {
+			if $entry.d {
+				self!find-lib-walk($entry, $lib, $ext, $stage, %links);
+				next;
+			}
+			next unless $entry.f;
+			my Str $name = $entry.basename;
+			for @patterns -> Str $pat {
+				# contains(".$ext"), not ends-with: Linux reals carry the
+				# version AFTER the extension (libnotcurses-core.so.3.0.17),
+				# macOS before it (libnotcurses-core.3.dylib). An ends-with
+				# match misses the Linux reals, and with aliases now staged
+				# as symlinks (not dereferencing copies) that would leave a
+				# Linux source-build stage empty: every alias would point at
+				# a target that was never staged, and the target-exists
+				# guard below would silently drop it. Same discipline as the
+				# runtime resolver's _find-in.
+				if $name eq "$pat.$ext"
+				   || ($name.starts-with("$pat.") && $name.contains(".$ext")) {
+					if $entry.l {
+						# One-level-flattened: alias points straight at
+						# the fully-resolved real file's basename, like
+						# a `make install` tree.
+						%links{$name} //= $entry.resolve.basename;
+						last;
+					}
+					my IO::Path $dest = $stage.add($name);
+					# Skip if we already staged a copy this run (the
+					# build tree may surface the same file at multiple
+					# paths; first wins).
+					next if $dest.e && !$dest.l && $dest.s == $entry.s;
+					try $dest.unlink;
+					copy $entry, $dest;
+					say "  Staged: {$dest.basename} (from $name)";
+					last;
+				}
+			}
+		}
+	}
 
-    method !check-toolchain() {
-        my $git-rc = run 'git', '--version', :out, :err;
-        $git-rc.out.slurp(:close);
-        $git-rc.err.slurp(:close);
-        unless $git-rc.exitcode == 0 {
-            die "❌ git not found in PATH. The source-build fallback "
-              ~ "fetches notcurses fresh from the pinned fork at build "
-              ~ "time. To skip the fetch (airgapped install or local "
-              ~ "fork iteration), set NOTCURSES_NATIVE_VENDOR_DIR=/path/"
-              ~ "to/notcurses/source.";
-        }
+	method !check-toolchain() {
+		my $git-rc = run 'git', '--version', :out, :err;
+		$git-rc.out.slurp(:close);
+		$git-rc.err.slurp(:close);
+		unless $git-rc.exitcode == 0 {
+			die "❌ git not found in PATH. The source-build fallback "
+			  ~ "fetches notcurses fresh from the pinned fork at build "
+			  ~ "time. To skip the fetch (airgapped install or local "
+			  ~ "fork iteration), set NOTCURSES_NATIVE_VENDOR_DIR=/path/"
+			  ~ "to/notcurses/source.";
+		}
 
-        my $rc = run 'cmake', '--version', :out, :err;
-        $rc.out.slurp(:close);
-        $rc.err.slurp(:close);
-        unless $rc.exitcode == 0 {
-            die q:to/ERR/;
+		my $rc = run 'cmake', '--version', :out, :err;
+		$rc.out.slurp(:close);
+		$rc.err.slurp(:close);
+		unless $rc.exitcode == 0 {
+			die q:to/ERR/;
                 ❌ cmake not found in PATH.
                 Install cmake + notcurses build deps. Per-distro:
                     macOS:         brew install cmake pkg-config ffmpeg ncurses \
@@ -1388,10 +1388,10 @@ class Build {
                     Windows:       MSYS2 UCRT64 + mingw-w64-ucrt-x86_64-cmake / \
                                        ffmpeg / libdeflate / libunistring / ncurses / toolchain
                 ERR
-        }
-    }
+		}
+	}
 
-    # --- Shared helpers -------------------------------------------------
+	# --- Shared helpers -------------------------------------------------
 
     #| Look up the prebuilt-archive slug for the current platform. Returns
     #| the slug string when the key is in %PLATFORM-SLUGS, otherwise an
@@ -1402,14 +1402,14 @@ class Build {
     #| (`$*KERNEL.name.lc`, `$*KERNEL.hardware.lc`, `detect-libc`) so
     #| production callers pass nothing; tests inject pairs directly to
     #| avoid having to override `$*KERNEL` or touch the filesystem.
-    method detect-platform(
-        Str :$os       = $*KERNEL.name.lc,
-        Str :$hardware = $*KERNEL.hardware.lc,
-        Str :$libc     = self.detect-libc(:$os),
-        --> Str
-    ) {
-        %PLATFORM-SLUGS{self.detect-platform-key(:$os, :$hardware, :$libc)} // Str
-    }
+	method detect-platform(
+		Str :$os       = $*KERNEL.name.lc,
+		Str :$hardware = $*KERNEL.hardware.lc,
+		Str :$libc     = self.detect-libc(:$os),
+		--> Str
+	) {
+		%PLATFORM-SLUGS{self.detect-platform-key(:$os, :$hardware, :$libc)} // Str
+	}
 
     #| The exact key `detect-platform` looked up — surfaced so the
     #| unknown-platform diagnostic can quote it verbatim.
@@ -1417,20 +1417,20 @@ class Build {
     #| Linux keys carry a libc suffix (`linux-x86_64-glibc`,
     #| `linux-aarch64-musl`, etc.); non-Linux keys are just
     #| `os-hardware` because there's no libc axis to disambiguate.
-    method detect-platform-key(
-        Str :$os       = $*KERNEL.name.lc,
-        Str :$hardware = $*KERNEL.hardware.lc,
-        Str :$libc     = self.detect-libc(:$os),
-        --> Str
-    ) {
-        $libc ?? "$os-$hardware-$libc" !! "$os-$hardware"
-    }
+	method detect-platform-key(
+		Str :$os       = $*KERNEL.name.lc,
+		Str :$hardware = $*KERNEL.hardware.lc,
+		Str :$libc     = self.detect-libc(:$os),
+		--> Str
+	) {
+		$libc ?? "$os-$hardware-$libc" !! "$os-$hardware"
+	}
 
     #| Sorted list of all keys in %PLATFORM-SLUGS, so the unknown-platform
     #| diagnostic can show the user which platforms ARE supported.
-    method known-platform-keys(--> List) {
-        %PLATFORM-SLUGS.keys.sort.List
-    }
+	method known-platform-keys(--> List) {
+		%PLATFORM-SLUGS.keys.sort.List
+	}
 
     #| Detect the system C library on Linux. Probe order:
     #|   1. musl loader presence — unambiguous if a `ld-musl-*.so.1`
@@ -1442,34 +1442,34 @@ class Build {
     #| Linux systems with neither glibc nor musl loaders visible (e.g.
     #| uclibc, statically-linked busybox systems), which the slug-map
     #| won't have a key for, so they fall through to source build.
-    method detect-libc(Str :$os = $*KERNEL.name.lc --> Str) {
-        return Str unless $os eq 'linux';
-        for </lib /usr/lib> -> Str $d {
-            next unless $d.IO.d;
-            return 'musl' if try {
-                $d.IO.dir.first(*.basename.starts-with('ld-musl-'))
-            };
-        }
-        return 'glibc' if self!detect-glibc-version.defined;
-        Str
-    }
+	method detect-libc(Str :$os = $*KERNEL.name.lc --> Str) {
+		return Str unless $os eq 'linux';
+		for </lib /usr/lib> -> Str $d {
+			next unless $d.IO.d;
+			return 'musl' if try {
+				$d.IO.dir.first(*.basename.starts-with('ld-musl-'))
+			};
+		}
+		return 'glibc' if self!detect-glibc-version.defined;
+		Str
+	}
 
     #| Parse `ldd --version` for the system's glibc version. Returns a
     #| Version on glibc systems, undefined Version on musl (ldd --version
     #| exits non-zero) or when ldd is absent / unparseable. Only
     #| meaningful on Linux — don't call on other OSes.
-    method !detect-glibc-version(--> Version) {
-        my $proc = try { run 'ldd', '--version', :out, :err };
-        return Version without $proc;
-        my $out = $proc.out.slurp(:close);
-        $proc.err.slurp(:close);
-        return Version unless $proc.exitcode == 0;
-        my $first = $out.lines.head // '';
-        if $first ~~ / (\d+ '.' \d+ [ '.' \d+ ]?) \s* $ / {
-            return Version.new(~$0);
-        }
-        Version;
-    }
+	method !detect-glibc-version(--> Version) {
+		my $proc = try { run 'ldd', '--version', :out, :err };
+		return Version without $proc;
+		my $out = $proc.out.slurp(:close);
+		$proc.err.slurp(:close);
+		return Version unless $proc.exitcode == 0;
+		my $first = $out.lines.head // '';
+		if $first ~~ / (\d+ '.' \d+ [ '.' \d+ ]?) \s* $ / {
+			return Version.new(~$0);
+		}
+		Version;
+	}
 
     #|( Compile the perf shim alongside the staged libnotcurses libs.
         See src/notcurses_native_shim.c for what it contains and why
@@ -1528,233 +1528,233 @@ class Build {
         if no C compiler is available — Selkie's bindings fall back
         to a per-cell Raku merge (the pre-shim behaviour). The
         warning explains the perf cost so the user notices. )
-    method !try-compile-shim($dist-path, IO::Path $stage --> Nil) {
-        my Str $os = $*KERNEL.name.lc;
-        my Str $ext = $os ~~ /darwin/ ?? 'dylib'
-                   !! $*DISTRO.is-win ?? 'dll'
-                   !! 'so';
-        my IO::Path $shim = $stage.add("libnotcurses_native_shim.$ext");
-        my IO::Path $sidecar = $stage.add("libnotcurses_native_shim.$ext.srchash");
-        my Str $src = "$dist-path/src/notcurses_native_shim.c";
+	method !try-compile-shim($dist-path, IO::Path $stage --> Nil) {
+		my Str $os = $*KERNEL.name.lc;
+		my Str $ext = $os ~~ /darwin/ ?? 'dylib'
+		           !! $*DISTRO.is-win ?? 'dll'
+		           !! 'so';
+		my IO::Path $shim = $stage.add("libnotcurses_native_shim.$ext");
+		my IO::Path $sidecar = $stage.add("libnotcurses_native_shim.$ext.srchash");
+		my Str $src = "$dist-path/src/notcurses_native_shim.c";
 
-        return unless $src.IO.e;
+		return unless $src.IO.e;
 
-        my Str $src-hash = (try self!sha256($src.IO)) // Str;
+		my Str $src-hash = (try self!sha256($src.IO)) // Str;
 
-        # Skip rebuild when the staged shim was built from the same
-        # shim source this dist ships, per the .srchash sidecar (see
-        # method doc). Mirror Vips-Native's same-named method. The
-        # mtime branch only serves packs that predate the sidecar
-        # (and systems where hashing itself failed).
-        if $shim.e {
-            if $sidecar.e && $src-hash.defined {
-                my Str $packed = (try $sidecar.slurp.trim) // '';
-                return if $packed eq $src-hash;
-                say "🔁 Staged shim was built from different source — refreshing.";
-            }
-            elsif $*DISTRO.is-win {
-                # No mtime guess on Windows: IO::Path.modified there is
-                # not a file time at all (MoarVM builds the nanosecond
-                # stamp by multiplying a 32-bit `long`, putting every
-                # file within seconds of 1970). Refresh from the cache
-                # or the compiler; the old shim stays if neither can.
-                say "🔁 Staged shim has no record of the source it was "
-                  ~ "built from — refreshing.";
-            }
-            else {
-                my $src-mtime  = $src.IO.modified // 0;
-                my $shim-mtime = $shim.modified  // 0;
-                return if $shim-mtime >= $src-mtime;
-                say "🔁 Source newer than staged shim — refreshing.";
-            }
-        }
+		# Skip rebuild when the staged shim was built from the same
+		# shim source this dist ships, per the .srchash sidecar (see
+		# method doc). Mirror Vips-Native's same-named method. The
+		# mtime branch only serves packs that predate the sidecar
+		# (and systems where hashing itself failed).
+		if $shim.e {
+			if $sidecar.e && $src-hash.defined {
+				my Str $packed = (try $sidecar.slurp.trim) // '';
+				return if $packed eq $src-hash;
+				say "🔁 Staged shim was built from different source — refreshing.";
+			}
+			elsif $*DISTRO.is-win {
+				# No mtime guess on Windows: IO::Path.modified there is
+				# not a file time at all (MoarVM builds the nanosecond
+				# stamp by multiplying a 32-bit `long`, putting every
+				# file within seconds of 1970). Refresh from the cache
+				# or the compiler; the old shim stays if neither can.
+				say "🔁 Staged shim has no record of the source it was "
+				  ~ "built from — refreshing.";
+			}
+			else {
+				my $src-mtime  = $src.IO.modified // 0;
+				my $shim-mtime = $shim.modified  // 0;
+				return if $shim-mtime >= $src-mtime;
+				say "🔁 Source newer than staged shim — refreshing.";
+			}
+		}
 
-        $stage.mkdir;
+		$stage.mkdir;
 
-        # Content-addressed local build cache: every successful compile
-        # below also lands in <cache>/shims/<src-sha256>.<ext> (the
-        # cache dir is already keyed by BINARY_TAG). !extract-archive
-        # wipes the stage on every install, so a stamped sidecar alone
-        # cannot survive a reinstall — restoring from here means a
-        # machine that compiled once skips the git header fetch and
-        # the C toolchain requirement on every subsequent install.
-        # Keyed by content, so a shim-source edit can never hit a
-        # stale entry. Safe to relocate: the shim is built with a
-        # relative install-name / $ORIGIN rpath on every platform.
-        my IO::Path $shim-cache =
-            self!cache-dir(self!binary-tag($dist-path)).add('shims');
-        if $src-hash.defined {
-            my IO::Path $cached-shim = $shim-cache.add("$src-hash.$ext");
-            if $cached-shim.e {
-                # Copying over a shim a running process has loaded fails
-                # on Windows; that is a note, not a failed install.
-                try {
-                    $cached-shim.copy($shim);
-                    $shim.chmod(0o755);
-                    $sidecar.spurt("$src-hash\n");
-                    CATCH {
-                        default {
-                            note "⚠️  Could not restore the Notcurses perf shim "
-                               ~ "from the build cache into $shim ({.message}) "
-                               ~ "— is an application that uses it still running?";
-                            return;
-                        }
-                    }
-                }
-                say "✅ Restored Notcurses perf shim from build cache → $shim.";
-                return;
-            }
-        }
+		# Content-addressed local build cache: every successful compile
+		# below also lands in <cache>/shims/<src-sha256>.<ext> (the
+		# cache dir is already keyed by BINARY_TAG). !extract-archive
+		# wipes the stage on every install, so a stamped sidecar alone
+		# cannot survive a reinstall — restoring from here means a
+		# machine that compiled once skips the git header fetch and
+		# the C toolchain requirement on every subsequent install.
+		# Keyed by content, so a shim-source edit can never hit a
+		# stale entry. Safe to relocate: the shim is built with a
+		# relative install-name / $ORIGIN rpath on every platform.
+		my IO::Path $shim-cache =
+			self!cache-dir(self!binary-tag($dist-path)).add('shims');
+		if $src-hash.defined {
+			my IO::Path $cached-shim = $shim-cache.add("$src-hash.$ext");
+			if $cached-shim.e {
+				# Copying over a shim a running process has loaded fails
+				# on Windows; that is a note, not a failed install.
+				try {
+					$cached-shim.copy($shim);
+					$shim.chmod(0o755);
+					$sidecar.spurt("$src-hash\n");
+					CATCH {
+						default {
+							note "⚠️  Could not restore the Notcurses perf shim "
+							   ~ "from the build cache into $shim ({.message}) "
+							   ~ "— is an application that uses it still running?";
+							return;
+						}
+					}
+				}
+				say "✅ Restored Notcurses perf shim from build cache → $shim.";
+				return;
+			}
+		}
 
-        # The notcurses headers + (Windows) import lib live in the
-        # source tree resolved by !ensure-notcurses-source: either
-        # NOTCURSES_NATIVE_VENDOR_DIR, or the per-SHA git-fetch cache
-        # under $NOTCURSES_NATIVE_CACHE_DIR / XDG_CACHE_HOME. Fetch is
-        # lazy — only happens when we actually need to (re)compile,
-        # so prebuilt-with-shim installs (the 99% case) never hit git.
-        # Non-fatal on fetch failure: the perf cost falls back to
-        # Selkie's Raku per-cell merge with a one-shot warning, same
-        # as a missing C toolchain below.
-        my IO::Path $nc-src;
-        my $fetch-error;
-        {
-            CATCH {
-                default {
-                    $fetch-error = .message;
-                }
-            }
-            $nc-src = self!ensure-notcurses-source($dist-path);
-        }
-        if $fetch-error {
-            note "⚠️  Skipping shim compile — couldn't resolve notcurses "
-               ~ "source for include headers: $fetch-error";
-            note "    Set NOTCURSES_NATIVE_VENDOR_DIR=<path> to point at "
-               ~ "a local checkout, or ensure git is available so the "
-               ~ "pinned SHA can be fetched.";
-            return;
-        }
-        my Str $inc = "{$nc-src}/include";
+		# The notcurses headers + (Windows) import lib live in the
+		# source tree resolved by !ensure-notcurses-source: either
+		# NOTCURSES_NATIVE_VENDOR_DIR, or the per-SHA git-fetch cache
+		# under $NOTCURSES_NATIVE_CACHE_DIR / XDG_CACHE_HOME. Fetch is
+		# lazy — only happens when we actually need to (re)compile,
+		# so prebuilt-with-shim installs (the 99% case) never hit git.
+		# Non-fatal on fetch failure: the perf cost falls back to
+		# Selkie's Raku per-cell merge with a one-shot warning, same
+		# as a missing C toolchain below.
+		my IO::Path $nc-src;
+		my $fetch-error;
+		{
+			CATCH {
+				default {
+					$fetch-error = .message;
+				}
+			}
+			$nc-src = self!ensure-notcurses-source($dist-path);
+		}
+		if $fetch-error {
+			note "⚠️  Skipping shim compile — couldn't resolve notcurses "
+			   ~ "source for include headers: $fetch-error";
+			note "    Set NOTCURSES_NATIVE_VENDOR_DIR=<path> to point at "
+			   ~ "a local checkout, or ensure git is available so the "
+			   ~ "pinned SHA can be fetched.";
+			return;
+		}
+		my Str $inc = "{$nc-src}/include";
 
-        # Windows needs an import lib to satisfy link-time symbol
-        # resolution (no equivalent of -undefined dynamic_lookup).
-        # Look for one in the source-build dir — present when the
-        # current install came via compile-from-source (CMake produces
-        # libnotcurses-core.dll.a alongside the DLL). Prebuilt-only
-        # installs don't ship the import lib, so we can't compile
-        # here; the shim has to come from CI via the prebuilt archive.
-        # In that fallback case Selkie's binding fails to load and
-        # !merge-widget-plane uses its Raku-side fallback path.
-        my $import-lib;
-        if $*DISTRO.is-win {
-            my $build-dir = "{$nc-src}/build";
-            with $build-dir.IO.&{ .e ?? .dir(test => /'libnotcurses-core.dll.a'$/) !! () }.first {
-                $import-lib = .Str;
-            }
-            without $import-lib {
-                note "⚠️  Skipping Windows shim compile — no "
-                   ~ "libnotcurses-core.dll.a in $build-dir "
-                   ~ "(only present after a from-source build). The "
-                   ~ "shim normally ships pre-compiled in the prebuilt "
-                   ~ "archive; if the prebuilt didn't include it, "
-                   ~ "Selkie's ViewportedCardList falls back to a "
-                   ~ "Raku per-cell merge (correct, slower).";
-                return;
-            }
-        }
+		# Windows needs an import lib to satisfy link-time symbol
+		# resolution (no equivalent of -undefined dynamic_lookup).
+		# Look for one in the source-build dir — present when the
+		# current install came via compile-from-source (CMake produces
+		# libnotcurses-core.dll.a alongside the DLL). Prebuilt-only
+		# installs don't ship the import lib, so we can't compile
+		# here; the shim has to come from CI via the prebuilt archive.
+		# In that fallback case Selkie's binding fails to load and
+		# !merge-widget-plane uses its Raku-side fallback path.
+		my $import-lib;
+		if $*DISTRO.is-win {
+			my $build-dir = "{$nc-src}/build";
+			with $build-dir.IO.&{ .e ?? .dir(test => /'libnotcurses-core.dll.a'$/) !! () }.first {
+				$import-lib = .Str;
+			}
+			without $import-lib {
+				note "⚠️  Skipping Windows shim compile — no "
+				   ~ "libnotcurses-core.dll.a in $build-dir "
+				   ~ "(only present after a from-source build). The "
+				   ~ "shim normally ships pre-compiled in the prebuilt "
+				   ~ "archive; if the prebuilt didn't include it, "
+				   ~ "Selkie's ViewportedCardList falls back to a "
+				   ~ "Raku per-cell merge (correct, slower).";
+				return;
+			}
+		}
 
-        # Compiled to a temporary name and renamed over the shim only
-        # once the compiler has succeeded, so a failed or interrupted
-        # compile never leaves a truncated shim where a working one was.
-        # The library's own name is set explicitly where a platform
-        # records one (install_name on macOS, soname on Linux), so the
-        # temporary file name does not leak into it.
-        my IO::Path $tmp = $stage.add("libnotcurses_native_shim.$*PID.tmp.$ext");
-        LEAVE { try $tmp.unlink if $tmp.e }
+		# Compiled to a temporary name and renamed over the shim only
+		# once the compiler has succeeded, so a failed or interrupted
+		# compile never leaves a truncated shim where a working one was.
+		# The library's own name is set explicitly where a platform
+		# records one (install_name on macOS, soname on Linux), so the
+		# temporary file name does not leak into it.
+		my IO::Path $tmp = $stage.add("libnotcurses_native_shim.$*PID.tmp.$ext");
+		LEAVE { try $tmp.unlink if $tmp.e }
 
-        my @cmd = do given $os {
-            when /darwin/ {
-                # -headerpad_max_install_names: reserve generous load-
-                # command padding so any future install_name_tool -id
-                # call (e.g. moving the shim to an absolute staged
-                # path) doesn't fail with "larger updated load
-                # commands do not fit". Note: !rewrite-macos-install-
-                # names explicitly skips the shim today — this is
-                # belt-and-braces for future relocators.
-                'cc', '-O2', '-dynamiclib', '-fPIC',
-                '-Wl,-headerpad_max_install_names',
-                '-install_name', "\@loader_path/libnotcurses_native_shim.dylib",
-                '-undefined', 'dynamic_lookup',
-                "-I$inc",
-                '-o', $tmp.Str, $src;
-            }
-            when /win/ {
-                # Link against the import lib found above. Windows DLL
-                # search at runtime finds libnotcurses-core.dll as a
-                # sibling in the same staged dir.
-                'cc', '-O2', '-shared',
-                "-I$inc",
-                '-o', $tmp.Str, $src,
-                $import-lib;
-            }
-            default {
-                # Linux: explicit link against the staged
-                # libnotcurses-core, RPATH '$ORIGIN' so at runtime
-                # the shim resolves its NEEDED entry to its own
-                # sibling (our patched libnotcurses-core.so).
-                # Mirror Vips-Native's shim-build pattern. An
-                # earlier version used `-Wl,--unresolved-symbols=
-                # ignore-in-shared-libs` to defer to runtime; that
-                # flag only suppresses errors from shared-lib deps
-                # we link against, not from our own object file's
-                # undefined references to notcurses symbols — so
-                # ld correctly rejected the link.
-                'cc', '-O2', '-shared', '-fPIC',
-                "-I$inc",
-                "-L$stage", '-lnotcurses-core',
-                '-Wl,-soname,libnotcurses_native_shim.so',
-                "-Wl,-rpath,\$ORIGIN",
-                '-o', $tmp.Str, $src;
-            }
-        };
+		my @cmd = do given $os {
+			when /darwin/ {
+				# -headerpad_max_install_names: reserve generous load-
+				# command padding so any future install_name_tool -id
+				# call (e.g. moving the shim to an absolute staged
+				# path) doesn't fail with "larger updated load
+				# commands do not fit". Note: !rewrite-macos-install-
+				# names explicitly skips the shim today — this is
+				# belt-and-braces for future relocators.
+				'cc', '-O2', '-dynamiclib', '-fPIC',
+				'-Wl,-headerpad_max_install_names',
+				'-install_name', "\@loader_path/libnotcurses_native_shim.dylib",
+				'-undefined', 'dynamic_lookup',
+				"-I$inc",
+				'-o', $tmp.Str, $src;
+			}
+			when /win/ {
+				# Link against the import lib found above. Windows DLL
+				# search at runtime finds libnotcurses-core.dll as a
+				# sibling in the same staged dir.
+				'cc', '-O2', '-shared',
+				"-I$inc",
+				'-o', $tmp.Str, $src,
+				$import-lib;
+			}
+			default {
+				# Linux: explicit link against the staged
+				# libnotcurses-core, RPATH '$ORIGIN' so at runtime
+				# the shim resolves its NEEDED entry to its own
+				# sibling (our patched libnotcurses-core.so).
+				# Mirror Vips-Native's shim-build pattern. An
+				# earlier version used `-Wl,--unresolved-symbols=
+				# ignore-in-shared-libs` to defer to runtime; that
+				# flag only suppresses errors from shared-lib deps
+				# we link against, not from our own object file's
+				# undefined references to notcurses symbols — so
+				# ld correctly rejected the link.
+				'cc', '-O2', '-shared', '-fPIC',
+				"-I$inc",
+				"-L$stage", '-lnotcurses-core',
+				'-Wl,-soname,libnotcurses_native_shim.so',
+				"-Wl,-rpath,\$ORIGIN",
+				'-o', $tmp.Str, $src;
+			}
+		};
 
-        my $rc = run |@cmd, :out, :err;
-        my $err = $rc.err.slurp(:close);
-        $rc.out.slurp(:close);
-        if $rc.exitcode == 0 && $tmp.e {
-            # Renaming over a shim a running process has loaded fails on
-            # Windows. Say so, rather than leave the old one looking fresh.
-            try {
-                rename $tmp, $shim;
-                CATCH {
-                    default {
-                        note "⚠️  Compiled the Notcurses perf shim but could not "
-                           ~ "replace $shim ({.message}) — is an application "
-                           ~ "that uses it still running?";
-                        return;
-                    }
-                }
-            }
-            say "✅ Compiled Notcurses perf shim → $shim.";
-            # Stamp what we compiled (content match beats cross-machine
-            # mtime guesses) and park a copy in the build cache so the
-            # next install's wiped stage can restore instead of
-            # recompiling.
-            if $src-hash.defined {
-                try $sidecar.spurt("$src-hash\n");
-                try {
-                    $shim-cache.mkdir;
-                    $shim.copy($shim-cache.add("$src-hash.$ext"));
-                }
-            }
-        }
-        else {
-            note "⚠️  Could not compile Notcurses perf shim ($shim): $err";
-            note "    Non-fatal — Selkie::Widget::ViewportedCardList "
-               ~ "will fall back to its per-cell Raku merge loop. "
-               ~ "Install a C toolchain (xcode-select --install / "
-               ~ "apt install build-essential) and reinstall to get "
-               ~ "the fast path.";
-        }
-    }
+		my $rc = run |@cmd, :out, :err;
+		my $err = $rc.err.slurp(:close);
+		$rc.out.slurp(:close);
+		if $rc.exitcode == 0 && $tmp.e {
+			# Renaming over a shim a running process has loaded fails on
+			# Windows. Say so, rather than leave the old one looking fresh.
+			try {
+				rename $tmp, $shim;
+				CATCH {
+					default {
+						note "⚠️  Compiled the Notcurses perf shim but could not "
+						   ~ "replace $shim ({.message}) — is an application "
+						   ~ "that uses it still running?";
+						return;
+					}
+				}
+			}
+			say "✅ Compiled Notcurses perf shim → $shim.";
+			# Stamp what we compiled (content match beats cross-machine
+			# mtime guesses) and park a copy in the build cache so the
+			# next install's wiped stage can restore instead of
+			# recompiling.
+			if $src-hash.defined {
+				try $sidecar.spurt("$src-hash\n");
+				try {
+					$shim-cache.mkdir;
+					$shim.copy($shim-cache.add("$src-hash.$ext"));
+				}
+			}
+		}
+		else {
+			note "⚠️  Could not compile Notcurses perf shim ($shim): $err";
+			note "    Non-fatal — Selkie::Widget::ViewportedCardList "
+			   ~ "will fall back to its per-cell Raku merge loop. "
+			   ~ "Install a C toolchain (xcode-select --install / "
+			   ~ "apt install build-essential) and reinstall to get "
+			   ~ "the fast path.";
+		}
+	}
 
 }

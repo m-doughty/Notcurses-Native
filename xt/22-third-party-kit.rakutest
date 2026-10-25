@@ -1,0 +1,469 @@
+use Test;
+
+# End-to-end checks of the licensing-kit scripts the build lanes run
+# over every pack: scripts/ci/emit-third-party-kit.sh writes
+# THIRD-PARTY.md, LICENSES/ and third-party.json into it,
+# audit-third-party.sh gates the result, and assert-third-party-kit.sh
+# checks the kit made it into the archive. Each runs here against mock
+# packs whose file names are exactly those of the published r16
+# archives, one per release lane, and against broken packs that must
+# stop a lane.
+#
+# Why xt/ and not t/: the scripts need bash, jq, tar and zip, which an
+# end user's `zef install` — on Windows in particular, where t/ runs
+# too — does not have, and which no part of the installed module uses.
+# The scripts only ever run in CI; this is the way to exercise them
+# without a CI run. t/17 checks the manifest they read, hermetically,
+# on every install. A missing tool fails this file loudly rather than
+# skipping it.
+#
+# The mock files are empty: the scripts read names, never contents.
+
+my IO::Path $root = $*PROGRAM.parent.parent;
+my IO::Path $ci   = $root.add('scripts').add('ci');
+my IO::Path $manifest-path = $root.add('resources').add('third-party.json');
+my IO::Path $lic-dir = $root.add('resources').add('licenses');
+my %manifest = Rakudo::Internals::JSON.from-json($manifest-path.slurp);
+
+my constant $TAG = 'binaries-notcurses-3.0.17-r99';
+my constant $REPO = 'https://github.com/m-doughty/Notcurses-Native';
+my constant $IJG = 'this software is based in part on the work of the independent jpeg group';
+my constant @KIT = <THIRD-PARTY.md third-party.json>;
+
+# The published r16 archives' files, less the kit the emitter writes.
+# The two packs of each family carry identical names.
+my %FAMILY-FILES =
+	macos => <
+		libavcodec.62.28.102.dylib libavdevice.62.3.102.dylib
+		libavformat.62.12.102.dylib libavutil.60.26.102.dylib
+		libdav1d.7.dylib libdeflate.0.dylib libncursesw.6.dylib
+		libnotcurses-core.3.0.17.dylib libnotcurses-core.3.dylib
+		libnotcurses-core.dylib libnotcurses-ffi.3.0.17.dylib
+		libnotcurses-ffi.3.dylib libnotcurses-ffi.dylib
+		libnotcurses.3.0.17.dylib libnotcurses.3.dylib libnotcurses.dylib
+		libnotcurses_native_shim.dylib libnotcurses_native_shim.dylib.srchash
+		libopus.0.dylib libswresample.6.3.102.dylib libswscale.9.5.102.dylib
+		libunistring.5.dylib libvpx.12.dylib
+	>,
+	glibc => <
+		libavcodec.so.62 libavdevice.so.62 libavformat.so.62 libavutil.so.60
+		libdav1d.so.7 libdeflate.so.0 libnotcurses-core.so
+		libnotcurses-core.so.3 libnotcurses-ffi.so libnotcurses.so
+		libnotcurses_native_shim.so libnotcurses_native_shim.so.srchash
+		libopus.so.0 libswresample.so.6 libswscale.so.9 libtinfo.so.6
+		libunistring.so.5 libvpx.so.12 libz.so.1
+	>,
+	musl => <
+		libavcodec.so.62 libavdevice.so.62 libavformat.so.62 libavutil.so.60
+		libdav1d.so.7 libdeflate.so.0 libncursesw.so.6 libnotcurses-core.so
+		libnotcurses-core.so.3 libnotcurses-ffi.so libnotcurses.so
+		libnotcurses_native_shim.so libnotcurses_native_shim.so.srchash
+		libopus.so.0 libswresample.so.6 libswscale.so.9 libunistring.so.5
+		libvpx.so.12 libz.so.1
+	>,
+	windows => <
+		avcodec-62.dll avdevice-62.dll avformat-62.dll avutil-60.dll
+		libdav1d.dll libdeflate.dll libiconv-2.dll libncursesw6.dll
+		libnotcurses-core.dll libnotcurses-ffi.dll libnotcurses.dll
+		libnotcurses_native_shim.dll libnotcurses_native_shim.dll.srchash
+		libopus-0.dll libunistring-5.dll libwinpthread-1.dll
+		swresample-6.dll swscale-9.dll zlib1.dll
+	>;
+
+# The macOS packs' version aliases are symlinks (bundle-macos makes
+# them); the scripts count symlinks as files, so the mocks use real
+# ones wherever the filesystem allows it.
+my %MACOS-ALIASES =
+	'libnotcurses.dylib'          => 'libnotcurses.3.0.17.dylib',
+	'libnotcurses.3.dylib'        => 'libnotcurses.3.0.17.dylib',
+	'libnotcurses-core.dylib'     => 'libnotcurses-core.3.0.17.dylib',
+	'libnotcurses-core.3.dylib'   => 'libnotcurses-core.3.0.17.dylib',
+	'libnotcurses-ffi.dylib'      => 'libnotcurses-ffi.3.0.17.dylib',
+	'libnotcurses-ffi.3.dylib'    => 'libnotcurses-ffi.3.0.17.dylib';
+
+# One per release lane, named as release.yml names the artefacts.
+my @PACKS =
+	%( name => 'notcurses-macos-arm64',         platform => 'macos',   family => 'macos',   format => 'tar.gz' ),
+	%( name => 'notcurses-macos-x86_64',        platform => 'macos',   family => 'macos',   format => 'tar.gz' ),
+	%( name => 'notcurses-linux-x86_64-glibc',  platform => 'linux',   family => 'glibc',   format => 'tar.gz' ),
+	%( name => 'notcurses-linux-aarch64-glibc', platform => 'linux',   family => 'glibc',   format => 'tar.gz' ),
+	%( name => 'notcurses-linux-x86_64-musl',   platform => 'linux',   family => 'musl',    format => 'tar.gz' ),
+	%( name => 'notcurses-linux-aarch64-musl',  platform => 'linux',   family => 'musl',    format => 'tar.gz' ),
+	%( name => 'notcurses-windows-x86_64',      platform => 'windows', family => 'windows', format => 'zip' ),
+	%( name => 'notcurses-windows-arm64',       platform => 'windows', family => 'windows', format => 'zip' );
+
+# ---------------------------------------------------------------- #
+# Helpers
+# ---------------------------------------------------------------- #
+
+sub scratch-dir(Str:D $tag --> IO::Path) {
+	my $dir = $*TMPDIR.add("nn-kit-$tag-{$*PID}-{(^1_000_000).pick}").cleanup;
+	$dir.mkdir;
+	$dir
+}
+
+sub remove-tree(IO::Path:D $path --> Nil) {
+	return unless $path.e || $path.l;
+	if $path.d && !$path.l {
+		remove-tree($_) for $path.dir;
+		$path.rmdir;
+	}
+	else {
+		$path.unlink;
+	}
+}
+
+# MSYS2's bash takes C:/x but not C:\x.
+sub sh(IO::Path:D $path --> Str) {
+	$*DISTRO.is-win ?? $path.absolute.subst('\\', '/', :g) !! $path.absolute
+}
+
+# Runs bash with a clean licensing environment: the CI variables the
+# emitter honours are removed unless the caller sets them, so a run
+# inside a CI job, or a shell with THIRD_PARTY_* exported, cannot leak
+# into what is being tested.
+sub bash(*@args, :%env = %() --> Hash) {
+	my %e = %*ENV;
+	%e{$_}:delete for <GITHUB_REF THIRD_PARTY_BINARY_TAG THIRD_PARTY_ARCHIVE_NAME
+	                   THIRD_PARTY_MANIFEST THIRD_PARTY_LICENSE_DIR>;
+	%e{.key} = .value for %env.pairs;
+	my $proc = run 'bash', |@args, :out, :err, :env(%e);
+	my Str $out = $proc.out.slurp(:close);
+	my Str $err = $proc.err.slurp(:close);
+	# A signal death reports exitcode 0, so it is folded in here.
+	my Int $exit = $proc.signal ?? 128 + $proc.signal !! $proc.exitcode;
+	%( :$exit, :$out, :$err, all => $out ~ $err )
+}
+
+sub emit(Str:D $platform, IO::Path:D $dir, :%env = %(THIRD_PARTY_BINARY_TAG => $TAG),
+		IO::Path:D :$script = $ci.add('emit-third-party-kit.sh') --> Hash) {
+	bash(sh($script), $platform, sh($dir), :%env)
+}
+
+sub audit(Str:D $platform, IO::Path:D $dir --> Hash) {
+	bash(sh($ci.add('audit-third-party.sh')), $platform, sh($dir))
+}
+
+sub assert-kit(Str:D $platform, IO::Path:D $dir, IO::Path:D $archive --> Hash) {
+	bash(sh($ci.add('assert-third-party-kit.sh')), $platform, sh($dir), sh($archive))
+}
+
+sub pack-archive(IO::Path:D $dir, IO::Path:D $archive, Str:D $format, *@exclude --> Hash) {
+	if $format eq 'zip' {
+		bash('-c', 'cd "$1" && shift && out="$1" && shift && zip -qr "$out" . ${1+-x "$@"}',
+			'_', sh($dir), sh($archive), |@exclude)
+	}
+	else {
+		bash('-c', 'tar -czf "$2" -C "$1" .', '_', sh($dir), sh($archive))
+	}
+}
+
+sub make-pack(IO::Path:D $dir, @files --> IO::Path) {
+	$dir.mkdir;
+	for @files -> Str $f {
+		my $target = %MACOS-ALIASES{$f};
+		if $target.defined && !$*DISTRO.is-win {
+			$target.IO.symlink($dir.add($f), :!absolute);
+		}
+		else {
+			$dir.add($f).spurt('');
+		}
+	}
+	$dir
+}
+
+# The licence texts a platform's packs carry, computed here
+# independently of the emitter: every text of every component with a
+# file pattern on the platform or embedded on it.
+sub expected-texts(Str:D $platform --> List) {
+	%manifest<components>.list.grep(-> %c {
+		my %b = %(%(%c<binaries> // {}){$platform} // {});
+		(%b<patterns> // []).elems > 0 || so %b<embedded>
+	}).map({ |.<license-files> }).unique.sort.List
+}
+
+# The backticked names on every "* <label>: " line of a document.
+sub listed(Str:D $md, Str:D $label --> List) {
+	$md.lines.grep(*.starts-with("* $label: "))
+		.map({ |.comb(/ '`' <( <-[`]>+ )> '`' /) }).List
+}
+
+# The Details section of one component, by heading.
+sub section(Str:D $md, Str:D $name --> Str) {
+	my @lines = $md.lines;
+	my $at = @lines.first(*.starts-with("### $name — "), :k);
+	return '' without $at;
+	my @body;
+	for @lines[$at + 1 .. *] -> $line {
+		last if $line.starts-with('### ') || $line eq '---';
+		@body.push($line);
+	}
+	@body.join("\n")
+}
+
+# ---------------------------------------------------------------- #
+# Tools
+# ---------------------------------------------------------------- #
+
+{
+	my $probe = try bash('-c', 'command -v jq && command -v tar && command -v zip');
+	unless $probe.defined && $probe<exit> == 0 {
+		bail-out 'this test needs bash, jq, tar and zip on PATH '
+			~ '(the tools the build lanes run the kit scripts with)';
+	}
+	pass 'bash, jq, tar and zip are available';
+}
+
+my IO::Path $work = scratch-dir('packs');
+END { remove-tree($work) if $work.defined }
+
+# ---------------------------------------------------------------- #
+# Every release lane's pack
+# ---------------------------------------------------------------- #
+
+for @PACKS -> %p {
+	my Str $name = %p<name>;
+	my Str $plat = %p<platform>;
+	my @files = %FAMILY-FILES{%p<family>}.list;
+	subtest "$name: kit, gate and archive" => {
+		my IO::Path $dir = make-pack($work.add($name), @files);
+		my %r = emit($plat, $dir,
+			env => %( THIRD_PARTY_BINARY_TAG => $TAG, THIRD_PARTY_ARCHIVE_NAME => $name ));
+		is %r<exit>, 0, 'the emitter succeeds' or diag %r<all>;
+		my %a = audit($plat, $dir);
+		is %a<exit>, 0, 'the audit gate passes over the result' or diag %a<all>;
+
+		my IO::Path $archive = $work.add("{$name}.{%p<format>}");
+		my %z = pack-archive($dir, $archive, %p<format>);
+		is %z<exit>, 0, "the pack archives as .{%p<format>}" or diag %z<all>;
+		my %k = assert-kit($plat, $dir, $archive);
+		is %k<exit>, 0, 'the archive carries the whole kit' or diag %k<all>;
+
+		my Str $md = $dir.add('THIRD-PARTY.md').slurp;
+		ok $md.contains("* Platform: `$plat`"), 'names its platform';
+		ok $md.contains("* Archive: `$name`"), 'names its archive';
+		ok $md.contains("[`$TAG`]($REPO/releases/tag/$TAG)"),
+			'links the release it ships in';
+		ok $md.contains("<$REPO/tree/$TAG/scripts/ci>"),
+			'links the build scripts at the release tag';
+		ok $md.contains("<$REPO/tree/$TAG/.github>"),
+			'links the workflows at the release tag';
+		ok $md.lines.first(* eq '| Component | Version | Licence (SPDX) | Source |').defined,
+			'keeps the Summary header App::Ariza parses r11-r16 kits by';
+
+		# #6e: the document lists the files that are in the archive —
+		# all of them, and nothing else.
+		my @named = listed($md, 'Files in this archive');
+		my @have = (|@files, |@KIT, |expected-texts($plat).map({ "LICENSES/$_" })).sort;
+		is @named.sort.List, @have.List,
+			'"Files in this archive" names exactly the files in this archive';
+		is @named.elems, @named.unique.elems, 'and names each one once';
+
+		my Str $lower = $md.lc;
+		ok $lower.contains($IJG), 'states the Independent JPEG Group acknowledgement';
+		is $dir.add('LICENSES').dir.map(*.basename).sort.List, expected-texts($plat),
+			"LICENSES/ holds every text a $plat archive can need";
+		for expected-texts($plat) -> Str $text {
+			is $dir.add('LICENSES').add($text).slurp(:bin), $lic-dir.add($text).slurp(:bin),
+				"LICENSES/$text is byte-identical to resources/licenses/$text";
+		}
+		ok section($md, 'GNU libunistring').contains('`LICENSES/GPL-3.0.txt`'),
+			'libunistring cites GPL-3.0.txt beside LGPL-3.0.txt';
+		ok section($md, 'FFmpeg').contains('`LICENSES/FFmpeg-IJG-notice.txt`'),
+			'FFmpeg cites its IJG notice';
+
+		my %json = Rakudo::Internals::JSON.from-json($dir.add('third-party.json').slurp);
+		my %pack = %(%json<pack>:delete // {});
+		is-deeply %json, %manifest,
+			'third-party.json is the manifest, unchanged apart from the pack block';
+		is %pack<platform>, $plat, 'pack block: platform';
+		is %pack<archive>, $name, 'pack block: archive';
+		is %pack<binary-tag>, $TAG, 'pack block: release tag';
+		is-deeply %pack<build-scripts>.List,
+			("$REPO/tree/$TAG/scripts/ci", "$REPO/tree/$TAG/.github"),
+			'pack block: build-script links';
+		is %pack<components>.map({ |.<files> }).sort.List, @have.List,
+			"pack block: the components' files are exactly the archive's";
+
+		if $plat eq 'windows' {
+			my @dlls = @files.grep(*.ends-with('.dll')).sort;
+			is listed(section($md, 'libvpx'), 'Embedded in').List, ('avcodec-62.dll',),
+				'libvpx is listed, embedded in avcodec-62.dll';
+			is listed(section($md, 'mingw-w64 runtime'), 'Embedded in').sort.List, @dlls.List,
+				"the mingw-w64 runtime is listed, embedded in all {+@dlls} DLLs";
+			is listed(section($md, 'mingw-w64 winpthreads'), 'Files in this archive').List,
+				('libwinpthread-1.dll',), 'winpthreads is listed against libwinpthread-1.dll';
+			ok section($md, 'mingw-w64 winpthreads').contains('`LICENSES/COPYING.MinGW-w64-winpthreads.txt`'),
+				'winpthreads cites its own COPYING, not MIT.txt';
+			nok @named.first({ $_ eq any(<libc++.dll libunwind.dll libomp.dll>) }).defined,
+				'no LLVM runtime DLL is listed, there being none in the archive';
+			ok section($md, 'LLVM runtime libraries') eq '',
+				'the LLVM runtime gets no Details entry';
+			ok $md.contains("## Not in this archive")
+					&& $md.contains('* LLVM runtime libraries'),
+				'and is named under "Not in this archive" instead';
+			is-deeply %pack<absent>.List, ('llvm-runtime',), 'pack block: llvm-runtime absent';
+			my %vpx = %(%pack<components>.first(*.<id> eq 'libvpx') // {});
+			is-deeply (%vpx<embedded-in> // []).List, ('avcodec-62.dll',),
+				'pack block: libvpx embedded in avcodec-62.dll';
+		}
+		else {
+			nok $md.contains('Embedded in:'), "nothing is embedded on $plat";
+			nok $md.contains('### mingw-w64'), "no mingw-w64 component on $plat";
+			nok $md.contains('## Not in this archive'), "no optional component absent on $plat";
+		}
+	}
+}
+
+# ---------------------------------------------------------------- #
+# Packs that must stop a lane
+# ---------------------------------------------------------------- #
+
+my @WINDOWS = %FAMILY-FILES<windows>.list;
+
+subtest 'a required library missing from the pack' => {
+	my IO::Path $dir = make-pack($work.add('no-unistring'), @WINDOWS.grep(* ne 'libunistring-5.dll'));
+	my %r = emit('windows', $dir);
+	isnt %r<exit>, 0, 'the emitter fails';
+	ok %r<all>.contains("'libunistring' is required"), 'and names the component';
+	nok $dir.add($_).e, "and writes no $_" for |@KIT, 'LICENSES';
+}
+
+subtest "an embedded component's host missing from the pack" => {
+	my IO::Path $dir = make-pack($work.add('no-avcodec'), @WINDOWS.grep(* ne 'avcodec-62.dll'));
+	my %r = emit('windows', $dir);
+	isnt %r<exit>, 0, 'the emitter fails';
+	ok %r<all>.contains("'libvpx' is embedded in avcodec-*.dll"), 'and names the component and host';
+	my %a = audit('windows', $dir);
+	isnt %a<exit>, 0, 'the audit gate fails too';
+	ok %a<all>.contains("'libvpx' is embedded"), 'for the same reason';
+}
+
+subtest 'an optional component that is present is listed' => {
+	my IO::Path $dir = make-pack($work.add('with-unwind'), (|@WINDOWS, 'libunwind.dll'));
+	my %r = emit('windows', $dir);
+	is %r<exit>, 0, 'the emitter succeeds' or diag %r<all>;
+	my Str $md = $dir.add('THIRD-PARTY.md').slurp;
+	is listed(section($md, 'LLVM runtime libraries'), 'Files in this archive').List,
+		('libunwind.dll',), 'the LLVM runtime is listed with the one file it has';
+	nok $md.contains('## Not in this archive'), 'and nothing is reported absent';
+}
+
+subtest 'a kit from an earlier run never survives' => {
+	my IO::Path $dir = make-pack($work.add('rerun'), @WINDOWS);
+	is emit('windows', $dir)<exit>, 0, 'first run succeeds';
+	$dir.add('LICENSES').add('Stale.txt').spurt('stale');
+	$dir.add('THIRD-PARTY.md').spurt('stale');
+	is emit('windows', $dir)<exit>, 0, 'second run succeeds';
+	nok $dir.add('LICENSES').add('Stale.txt').e, 'a stray licence text is gone';
+	ok $dir.add('THIRD-PARTY.md').slurp.starts-with('# Third-party components'),
+		'THIRD-PARTY.md is regenerated';
+	$dir.add('libunistring-5.dll').unlink;
+	isnt emit('windows', $dir)<exit>, 0, 'a third run over a now-broken pack fails';
+	nok $dir.add($_).e, "and leaves no stale $_ behind" for |@KIT, 'LICENSES';
+}
+
+subtest 'the release tag' => {
+	# A repository-shaped copy, so the emitter's default — the
+	# BINARY_TAG file at the repository root — can be tested without
+	# depending on, or touching, the real one.
+	my IO::Path $copy = $work.add('repo');
+	$copy.add('scripts').add('ci').mkdir;
+	$copy.add('resources').add('licenses').mkdir;
+	$ci.add('emit-third-party-kit.sh').copy($copy.add('scripts').add('ci').add('emit-third-party-kit.sh'));
+	$manifest-path.copy($copy.add('resources').add('third-party.json'));
+	.copy($copy.add('resources').add('licenses').add(.basename)) for $lic-dir.dir;
+	my IO::Path $script = $copy.add('scripts').add('ci').add('emit-third-party-kit.sh');
+	my IO::Path $dir = make-pack($work.add('tagged'), @WINDOWS);
+
+	my %r = emit('windows', $dir, :$script, env => %());
+	isnt %r<exit>, 0, 'no BINARY_TAG file and no override: fails';
+	ok %r<all>.contains('No release tag'), 'saying there is no release tag';
+
+	$copy.add('BINARY_TAG').spurt("\n");
+	%r = emit('windows', $dir, :$script, env => %());
+	isnt %r<exit>, 0, 'an empty BINARY_TAG file: fails';
+	ok %r<all>.contains('is empty'), 'saying it is empty';
+
+	$copy.add('BINARY_TAG').spurt("binaries-notcurses-3.0.17-r98\n");
+	%r = emit('windows', $dir, :$script, env => %());
+	is %r<exit>, 0, 'a BINARY_TAG file: succeeds' or diag %r<all>;
+	ok $dir.add('THIRD-PARTY.md').slurp.contains("$REPO/tree/binaries-notcurses-3.0.17-r98/scripts/ci"),
+		"and links the scripts at the file's tag";
+
+	for 'r17', 'binaries-', 'binaries-a b', 'binaries-x/y' -> Str $bad {
+		%r = emit('windows', $dir, env => %( THIRD_PARTY_BINARY_TAG => $bad ));
+		isnt %r<exit>, 0, "the tag '$bad' is refused";
+	}
+
+	%r = emit('windows', $dir,
+		env => %( THIRD_PARTY_BINARY_TAG => $TAG, GITHUB_REF => 'refs/tags/binaries-notcurses-3.0.17-r100' ));
+	isnt %r<exit>, 0, 'a tag-push run for a different tag fails';
+	ok %r<all>.contains('binaries-notcurses-3.0.17-r100'), 'naming the pushed tag';
+
+	%r = emit('windows', $dir,
+		env => %( THIRD_PARTY_BINARY_TAG => $TAG, GITHUB_REF => "refs/tags/$TAG" ));
+	is %r<exit>, 0, 'a tag-push run for the same tag succeeds' or diag %r<all>;
+
+	%r = emit('windows', $dir,
+		env => %( THIRD_PARTY_BINARY_TAG => $TAG, GITHUB_REF => 'refs/heads/main' ));
+	is %r<exit>, 0, 'a branch run succeeds' or diag %r<all>;
+
+	%r = emit('windows', $dir,
+		env => %( THIRD_PARTY_BINARY_TAG => $TAG, THIRD_PARTY_ARCHIVE_NAME => '../escape' ));
+	isnt %r<exit>, 0, 'an archive name that is not a bare basename is refused';
+}
+
+subtest 'a malformed embedded entry is refused' => {
+	my %bad = %manifest;
+	%bad<components> = %manifest<components>.map(-> %c {
+		my %copy = %c;
+		if %c<id> eq 'libvpx' {
+			%copy<binaries> = %(%c<binaries>);
+			%copy<binaries><windows> = %( patterns => ['libvpx.dll'], required => False,
+				embedded => True, embedded-in => ['avcodec-*.dll'] );
+		}
+		%copy
+	}).Array;
+	my IO::Path $bad-path = $work.add('bad-manifest.json');
+	$bad-path.spurt(Rakudo::Internals::JSON.to-json(%bad));
+	my IO::Path $dir = make-pack($work.add('malformed'), @WINDOWS);
+	my %r = emit('windows', $dir,
+		env => %( THIRD_PARTY_BINARY_TAG => $TAG, THIRD_PARTY_MANIFEST => sh($bad-path) ));
+	isnt %r<exit>, 0, 'an embedded entry that also claims files fails the emitter';
+	ok %r<all>.contains("'libvpx' is embedded"), 'naming it';
+}
+
+subtest 'an archive missing part of the kit' => {
+	my IO::Path $dir = make-pack($work.add('partial'), @WINDOWS);
+	is emit('windows', $dir)<exit>, 0, 'the kit is written';
+
+	my IO::Path $no-md = $work.add('no-md.zip');
+	pack-archive($dir, $no-md, 'zip', 'THIRD-PARTY.md');
+	my %k = assert-kit('windows', $dir, $no-md);
+	isnt %k<exit>, 0, 'an archive without THIRD-PARTY.md fails';
+	ok %k<all>.contains('has no THIRD-PARTY.md'), 'saying so';
+
+	my IO::Path $no-text = $work.add('no-text.zip');
+	pack-archive($dir, $no-text, 'zip', 'LICENSES/GPL-3.0.txt');
+	%k = assert-kit('windows', $dir, $no-text);
+	isnt %k<exit>, 0, 'an archive missing one licence text fails';
+	ok %k<all>.contains('has no LICENSES/GPL-3.0.txt'), 'naming the text';
+
+	$dir.add('third-party.json').unlink;
+	my IO::Path $no-json = $work.add('no-json.zip');
+	pack-archive($dir, $no-json, 'zip');
+	%k = assert-kit('windows', $dir, $no-json);
+	isnt %k<exit>, 0, 'a pack without third-party.json fails';
+	ok %k<all>.contains('third-party.json'), 'naming the file';
+
+	is emit('windows', $dir)<exit>, 0, 'the kit is rewritten';
+	my IO::Path $whole = $work.add('whole.zip');
+	pack-archive($dir, $whole, 'zip');
+	is assert-kit('windows', $dir, $whole)<exit>, 0, 'and the whole kit passes';
+	%k = assert-kit('linux', $dir, $whole);
+	isnt %k<exit>, 0, 'a manifest copy written for another platform fails';
+	ok %k<all>.contains("pack block for 'linux'"), 'saying which platform it expected';
+}
+
+done-testing;

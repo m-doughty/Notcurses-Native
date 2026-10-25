@@ -575,13 +575,18 @@ platform.
 =head2 Third-party licensing
 
 A prebuilt archive is a binary redistribution, so every archive ships
-its own C<THIRD-PARTY.md> and a C<LICENSES/> directory next to the
-libraries. Between them they name every component in that particular
-archive, its version, its SPDX licence, its copyright notice, the
-exact upstream source it was built from (tarball URL plus SHA-256, or
-a commit SHA), and the full text of every licence involved.
+its own C<THIRD-PARTY.md>, a C<LICENSES/> directory and a
+C<third-party.json> next to the libraries. Between them they name
+every file in that particular archive and the component it belongs
+to (or, for a component statically linked into another library, the
+files that contain it), each component's version, SPDX licence and
+copyright notice, the exact upstream source it was built from
+(tarball URL plus SHA-256, or a commit SHA), the build scripts at the
+release's own tag, and the full text of every licence involved.
+C<third-party.json> is the machine-readable form, for tools that
+bundle an archive into an application.
 
-Both are generated from C<resources/third-party.json> in this
+All three are generated from C<resources/third-party.json> in this
 repository, which doubles as a release gate: every file in an archive
 must match a component listed there, and every component listed for
 that platform must be present, or the build lane fails. A dependency
@@ -590,13 +595,17 @@ licence first.
 
 The bundled ffmpeg is a decoder-only build with neither
 C<--enable-gpl> nor C<--enable-nonfree>, so it is conveyed under the
-LGPL v2.1 or later. It and GNU libunistring are the two copyleft
-libraries in the archives; the exact source tarballs both were built
-from are attached to every binary release alongside the archives, and
-are covered by the same C<checksums.txt>. Everything else is
-permissive (Apache-2.0, BSD-2, BSD-3, MIT, X11-style, Zlib) apart from
-the MSYS2 toolchain runtimes the Windows archives carry, which are
-listed individually in their C<THIRD-PARTY.md>.
+LGPL v2.1 or later. It, GNU libunistring and (in the Windows archives
+only) GNU libiconv are the copyleft libraries in the archives; the
+exact source tarballs they were built from are attached to every
+binary release alongside the archives, and are covered by the same
+C<checksums.txt>. Everything else is permissive (Apache-2.0, BSD-2,
+BSD-3, MIT, X11-style, Zlib). The Windows archives also carry the
+mingw-w64 runtime, which the MSYS2 toolchains link statically into
+every DLL, and winpthreads; their own notice files are in
+C<LICENSES/>. FFmpeg's JPEG decoder uses the Independent JPEG Group's
+inverse DCT, so this software is based in part on the work of the
+Independent JPEG Group; that notice ships in C<LICENSES/> too.
 
 Platform C runtimes — glibc, musl, Apple's C</usr/lib> and frameworks,
 Windows' own DLLs — are dynamically linked against whatever the user's

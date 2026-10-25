@@ -56,15 +56,15 @@ constant $ext is export = $os ~~ /darwin/ ?? 'dylib'
 # the one resource that survives zef's hashing intact since it's a
 # plain text file with no inter-file refs).
 sub _staged-lib-dir(--> IO::Path) {
-    my $res = %?RESOURCES<BINARY_TAG>;
-    my Str $tag = ($res.defined && $res.IO.e) ?? $res.IO.slurp.trim !! '';
-    my Str $base = %*ENV<NOTCURSES_NATIVE_DATA_DIR>
-        // %*ENV<XDG_DATA_HOME>
-        // ($*DISTRO.is-win
-                ?? (%*ENV<LOCALAPPDATA>
-                        // "{%*ENV<USERPROFILE> // '.'}\\AppData\\Local")
-                !! "{%*ENV<HOME> // '.'}/.local/share");
-    "$base/Notcurses-Native/$tag/lib".IO;
+	my $res = %?RESOURCES<BINARY_TAG>;
+	my Str $tag = ($res.defined && $res.IO.e) ?? $res.IO.slurp.trim !! '';
+	my Str $base = %*ENV<NOTCURSES_NATIVE_DATA_DIR>
+		// %*ENV<XDG_DATA_HOME>
+		// ($*DISTRO.is-win
+				?? (%*ENV<LOCALAPPDATA>
+						// "{%*ENV<USERPROFILE> // '.'}\\AppData\\Local")
+				!! "{%*ENV<HOME> // '.'}/.local/share");
+	"$base/Notcurses-Native/$tag/lib".IO;
 }
 
 # Resolve a single lib by basename (without extension) within a given
@@ -72,47 +72,47 @@ sub _staged-lib-dir(--> IO::Path) {
 # (libfoo.3.dylib, libfoo.so.3, libfoo-3.dll, etc) so we accept whatever
 # the prebuilt archive shipped — symlinks, versioned files, both.
 sub _find-in(IO::Path $dir, Str $name --> Str) {
-    return Str unless $dir.d;
-    my $exact = $dir.add("$name.$ext");
-    return $exact.Str if $exact.e;
+	return Str unless $dir.d;
+	my $exact = $dir.add("$name.$ext");
+	return $exact.Str if $exact.e;
 
-    for $dir.dir -> $entry {
-        next unless $entry.e;  # accept symlinks + regular files
-        my $bn = $entry.basename;
-        return $entry.Str if $bn.starts-with("$name.") && $bn.contains(".$ext");
-        return $entry.Str if $bn.starts-with("$name-") && $bn.ends-with(".$ext");
-    }
-    Str;
+	for $dir.dir -> $entry {
+		next unless $entry.e;  # accept symlinks + regular files
+		my $bn = $entry.basename;
+		return $entry.Str if $bn.starts-with("$name.") && $bn.contains(".$ext");
+		return $entry.Str if $bn.starts-with("$name-") && $bn.ends-with(".$ext");
+	}
+	Str;
 }
 
 sub _resolve-lib(Str $name --> Str) {
-    # 1. Env-override wins outright.
-    if (my $override = %*ENV<NOTCURSES_NATIVE_LIB_DIR>) && $override.IO.d {
-        with _find-in($override.IO, $name) { return $_ }
-    }
-    # 2. Staged install dir.
-    with _find-in(_staged-lib-dir(), $name) { return $_ }
+	# 1. Env-override wins outright.
+	if (my $override = %*ENV<NOTCURSES_NATIVE_LIB_DIR>) && $override.IO.d {
+		with _find-in($override.IO, $name) { return $_ }
+	}
+	# 2. Staged install dir.
+	with _find-in(_staged-lib-dir(), $name) { return $_ }
 
-    # Nothing worked. Return the staged path as a hint for the
-    # NativeCall error message — the user will see it in the
-    # "Cannot locate native library 'X'" failure.
-    "{ _staged-lib-dir() }/$name.$ext";
+	# Nothing worked. Return the staged path as a hint for the
+	# NativeCall error message — the user will see it in the
+	# "Cannot locate native library 'X'" failure.
+	"{ _staged-lib-dir() }/$name.$ext";
 }
 
 sub _absolute-io(IO() $path --> IO::Path) is export(:INTERNAL) {
-    $path.IO.absolute.IO;
+	$path.IO.absolute.IO;
 }
 
 # Pick the directory whose libraries the resolver will use. This must
 # stay in lockstep with _resolve-lib: the explicit override wins when it
 # names a real directory, otherwise the BINARY_TAG-keyed staged dir wins.
 sub _resolve-lib-dir(--> IO::Path) {
-    if (my $override = %*ENV<NOTCURSES_NATIVE_LIB_DIR>) && $override.IO.d {
-        return _absolute-io($override);
-    }
-    my $staged = _staged-lib-dir();
-    return _absolute-io($staged) if $staged.d;
-    IO::Path;
+	if (my $override = %*ENV<NOTCURSES_NATIVE_LIB_DIR>) && $override.IO.d {
+		return _absolute-io($override);
+	}
+	my $staged = _staged-lib-dir();
+	return _absolute-io($staged) if $staged.d;
+	IO::Path;
 }
 
 # Windows does not search the directory of a DLL loaded by absolute path
@@ -137,61 +137,61 @@ my constant $LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR = 0x00000100;
 my constant $LOAD_LIBRARY_SEARCH_DEFAULT_DIRS = 0x00001000;
 
 sub _windows-load-flags(IO() $path --> uint32) is export(:INTERNAL) {
-    $path.IO.parent.add($SOURCE_BUILD_MARKER).f
-        ?? $LOAD_WITH_ALTERED_SEARCH_PATH
-        !! $LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
-            +| $LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
+	$path.IO.parent.add($SOURCE_BUILD_MARKER).f
+		?? $LOAD_WITH_ALTERED_SEARCH_PATH
+		!! $LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+			+| $LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
 }
 
 sub _windows-staged-load-mode(--> Str) is export(:INTERNAL) {
-    _staged-lib-dir().add($SOURCE_BUILD_MARKER).f
-        ?? 'source'
-        !! 'prebuilt';
+	_staged-lib-dir().add($SOURCE_BUILD_MARKER).f
+		?? 'source'
+		!! 'prebuilt';
 }
 
 sub _LoadLibraryExW(
-    Str is encoded('utf16'),
-    Pointer,
-    uint32
-    --> Pointer
+	Str is encoded('utf16'),
+	Pointer,
+	uint32
+	--> Pointer
 ) is native('kernel32') is symbol('LoadLibraryExW') { * }
 
 sub _GetLastError(--> uint32)
-    is native('kernel32') is symbol('GetLastError') { * }
+	is native('kernel32') is symbol('GetLastError') { * }
 
 sub _prepare-windows-lib(Str $path --> Str) {
-    return $path unless $*DISTRO.is-win;
+	return $path unless $*DISTRO.is-win;
 
-    my IO::Path $absolute = _absolute-io($path);
-    # Preserve _resolve-lib's actionable missing-path fallback. NativeCall
-    # will report that exact path if installation/staging did not happen.
-    return $path unless $absolute.e;
+	my IO::Path $absolute = _absolute-io($path);
+	# Preserve _resolve-lib's actionable missing-path fallback. NativeCall
+	# will report that exact path if installation/staging did not happen.
+	return $path unless $absolute.e;
 
-    my uint32 $flags = _windows-load-flags($absolute);
-    my Str $load-contract = $flags == $LOAD_WITH_ALTERED_SEARCH_PATH
-        ?? 'source-build directory plus ordinary PATH dependencies'
-        !! 'prebuilt sibling dependency closure';
+	my uint32 $flags = _windows-load-flags($absolute);
+	my Str $load-contract = $flags == $LOAD_WITH_ALTERED_SEARCH_PATH
+		?? 'source-build directory plus ordinary PATH dependencies'
+		!! 'prebuilt sibling dependency closure';
 
-    # Resolve the GetLastError binding before the load attempt. Doing that
-    # for the first time after a failure could itself touch loader state and
-    # obscure the error code set by LoadLibraryExW.
-    _GetLastError();
-    my Pointer $handle = _LoadLibraryExW(
-        $absolute.Str,
-        Pointer,
-        $flags,
-    );
-    unless $handle.defined {
-        my uint32 $error = _GetLastError();
-        die "Notcurses::Native: Windows could not load '{$absolute.Str}' "
-          ~ "using its $load-contract (Win32 error $error).";
-    }
+	# Resolve the GetLastError binding before the load attempt. Doing that
+	# for the first time after a failure could itself touch loader state and
+	# obscure the error code set by LoadLibraryExW.
+	_GetLastError();
+	my Pointer $handle = _LoadLibraryExW(
+		$absolute.Str,
+		Pointer,
+		$flags,
+	);
+	unless $handle.defined {
+		my uint32 $error = _GetLastError();
+		die "Notcurses::Native: Windows could not load '{$absolute.Str}' "
+		  ~ "using its $load-contract (Win32 error $error).";
+	}
 
-    $absolute.Str;
+	$absolute.Str;
 }
 
 sub _resolve-and-prepare-lib(Str $name --> Str) {
-    _prepare-windows-lib(_resolve-lib($name));
+	_prepare-windows-lib(_resolve-lib($name));
 }
 
 # --- Runtime env setup ---
@@ -218,66 +218,66 @@ sub _resolve-and-prepare-lib(Str $name --> Str) {
 # Notcurses::Native::Str so musl Alpine + glibc Linux + macOS all
 # pick the right library without per-call redeclaration.
 sub _setenv_c(Str, Str, int32 --> int32)
-    is native(&libc-name) is symbol('setenv') { * }
+	is native(&libc-name) is symbol('setenv') { * }
 
 sub _setenv-c(Str $name, Str $value) {
-    %*ENV{$name} = $value;
-    return if $*DISTRO.is-win;
-    my $rv = _setenv_c($name, $value, 1);
-    if $rv != 0 {
-        # Stays in stderr — fires before notcurses_init takes the
-        # terminal, so it's visible. Don't throw: missing TERMINFO_DIRS
-        # is recoverable in some configurations (compiled-in default
-        # path may work), and a hard die here masks the surrounding
-        # ncurses error which is more useful.
-        note "Notcurses::Native: setenv($name) returned $rv; "
-           ~ "ncurses may not see the value via getenv(3).";
-    }
+	%*ENV{$name} = $value;
+	return if $*DISTRO.is-win;
+	my $rv = _setenv_c($name, $value, 1);
+	if $rv != 0 {
+		# Stays in stderr — fires before notcurses_init takes the
+		# terminal, so it's visible. Don't throw: missing TERMINFO_DIRS
+		# is recoverable in some configurations (compiled-in default
+		# path may work), and a hard die here masks the surrounding
+		# ncurses error which is more useful.
+		note "Notcurses::Native: setenv($name) returned $rv; "
+		   ~ "ncurses may not see the value via getenv(3).";
+	}
 }
 
 sub _configure-runtime-env() {
-    if $*DISTRO.is-win {
-        # PATH is useful to child processes and to consumers that perform
-        # their own ordinary DLL loads after importing this module. Raku's
-        # runtime PATH mutation is not relied on for our NativeCall loads:
-        # _prepare-windows-lib uses scoped LoadLibraryExW flags because the
-        # Windows loader and the CRT can observe different environment state.
-        my $lib-dir = _resolve-lib-dir();
-        with $lib-dir {
-            my Str $lib-str = .Str;
-            # Windows names this variable 'Path', not 'PATH', and %*ENV is an
-            # ordinary case-sensitive Hash — so reading %*ENV<PATH> answered
-            # Nil and the branch below replaced the entire process PATH with
-            # this single directory instead of prepending to it. Environment
-            # names ARE case-insensitive to the OS, so the freshly created
-            # 'PATH' key won and every other DLL search path vanished: any
-            # library loaded after notcurses stopped resolving its own
-            # dependencies (SQLCipher failing to find libcrypto was how this
-            # surfaced). Update whichever spelling the host actually uses.
-            my Str $key = %*ENV.keys.first({ .lc eq 'path' }) // 'PATH';
-            my Str $current = %*ENV{$key} // '';
-            unless $current eq $lib-str
-                || $current.starts-with("$lib-str;") {
-                %*ENV{$key} = $current.chars
-                    ?? "$lib-str;$current"
-                    !! $lib-str;
-            }
-        }
-    }
+	if $*DISTRO.is-win {
+		# PATH is useful to child processes and to consumers that perform
+		# their own ordinary DLL loads after importing this module. Raku's
+		# runtime PATH mutation is not relied on for our NativeCall loads:
+		# _prepare-windows-lib uses scoped LoadLibraryExW flags because the
+		# Windows loader and the CRT can observe different environment state.
+		my $lib-dir = _resolve-lib-dir();
+		with $lib-dir {
+			my Str $lib-str = .Str;
+			# Windows names this variable 'Path', not 'PATH', and %*ENV is an
+			# ordinary case-sensitive Hash — so reading %*ENV<PATH> answered
+			# Nil and the branch below replaced the entire process PATH with
+			# this single directory instead of prepending to it. Environment
+			# names ARE case-insensitive to the OS, so the freshly created
+			# 'PATH' key won and every other DLL search path vanished: any
+			# library loaded after notcurses stopped resolving its own
+			# dependencies (SQLCipher failing to find libcrypto was how this
+			# surfaced). Update whichever spelling the host actually uses.
+			my Str $key = %*ENV.keys.first({ .lc eq 'path' }) // 'PATH';
+			my Str $current = %*ENV{$key} // '';
+			unless $current eq $lib-str
+				|| $current.starts-with("$lib-str;") {
+				%*ENV{$key} = $current.chars
+					?? "$lib-str;$current"
+					!! $lib-str;
+			}
+		}
+	}
 
-    # A custom build owns its terminfo configuration, but its Windows DLL
-    # dependency closure still needs the loader setup above.
-    return if %*ENV<NOTCURSES_NATIVE_LIB_DIR>;
+	# A custom build owns its terminfo configuration, but its Windows DLL
+	# dependency closure still needs the loader setup above.
+	return if %*ENV<NOTCURSES_NATIVE_LIB_DIR>;
 
-    unless %*ENV<TERMINFO_DIRS> {
-        # Colon-separated list. Include both common system paths so
-        # ncurses finds entries regardless of distro layout. Empty
-        # trailing component means "the compiled-in default" — if
-        # Homebrew IS installed, ncurses still searches its own
-        # cellar path too.
-        my $system-dirs = '/usr/share/terminfo:/usr/lib/terminfo:/lib/terminfo:';
-        _setenv-c('TERMINFO_DIRS', $system-dirs);
-    }
+	unless %*ENV<TERMINFO_DIRS> {
+		# Colon-separated list. Include both common system paths so
+		# ncurses finds entries regardless of distro layout. Empty
+		# trailing component means "the compiled-in default" — if
+		# Homebrew IS installed, ncurses still searches its own
+		# cellar path too.
+		my $system-dirs = '/usr/share/terminfo:/usr/lib/terminfo:/lib/terminfo:';
+		_setenv-c('TERMINFO_DIRS', $system-dirs);
+	}
 }
 _configure-runtime-env();
 
@@ -329,22 +329,22 @@ my %lib-memo;
 #| the memoised result, thread-safely. Keyed on C<:exists> so a
 #| legitimately undefined answer is still only computed once.
 my sub _memoise(Str:D $key, &compute) {
-    ($lib-resolve-lock //= Lock.new).protect: {
-        %lib-memo{$key} = compute() unless %lib-memo{$key}:exists;
-        %lib-memo{$key};
-    }
+	($lib-resolve-lock //= Lock.new).protect: {
+		%lib-memo{$key} = compute() unless %lib-memo{$key}:exists;
+		%lib-memo{$key};
+	}
 }
 
 sub nc-lib(--> Str) is export {
-    _memoise 'libnotcurses', { _resolve-and-prepare-lib('libnotcurses') }
+	_memoise 'libnotcurses', { _resolve-and-prepare-lib('libnotcurses') }
 }
 sub ffi-lib(--> Str) is export {
-    _memoise 'libnotcurses-ffi',
-             { _resolve-and-prepare-lib('libnotcurses-ffi') }
+	_memoise 'libnotcurses-ffi',
+	         { _resolve-and-prepare-lib('libnotcurses-ffi') }
 }
 sub core-lib(--> Str) is export {
-    _memoise 'libnotcurses-core',
-             { _resolve-and-prepare-lib('libnotcurses-core') }
+	_memoise 'libnotcurses-core',
+	         { _resolve-and-prepare-lib('libnotcurses-core') }
 }
 
 #|( Resolved path to the perf shim that lives alongside the staged
@@ -373,8 +373,8 @@ sub core-lib(--> Str) is export {
     reason as nc-lib / ffi-lib / core-lib, and lock-guarded for the
     same thread-safety reason — see those for the full rationale. )
 sub shim-lib(--> Str) is export {
-    _memoise 'libnotcurses_native_shim',
-             { _resolve-and-prepare-lib('libnotcurses_native_shim') }
+	_memoise 'libnotcurses_native_shim',
+	         { _resolve-and-prepare-lib('libnotcurses_native_shim') }
 }
 
 #|( Make the shim loadable, and answer whether it now is. Call this
@@ -401,11 +401,11 @@ sub shim-lib(--> Str) is export {
     C<False> means libnotcurses itself would not load, in which case
     nothing else in this module works either. )
 sub ensure-shim-loadable(--> Bool) is export {
-    _memoise 'shim-prerequisites', {
-        # notcurses_version reads a static string out of the library:
-        # the cheapest call in the ABI that proves it is mapped.
-        ((try { notcurses_version(); True }) // False);
-    }
+	_memoise 'shim-prerequisites', {
+		# notcurses_version reads a static string out of the library:
+		# the cheapest call in the ABI that proves it is mapped.
+		((try { notcurses_version(); True }) // False);
+	}
 }
 
 #| Resolve all four library paths once, here, on whichever thread is
@@ -430,10 +430,10 @@ sub ensure-shim-loadable(--> Bool) is export {
 #| at the first real use, exactly as before — which is what lets a
 #| consumer keep tolerating an unloadable optional shim.
 sub _prime-lib-resolvers() {
-    try nc-lib();
-    try ffi-lib();
-    try core-lib();
-    try shim-lib();
+	try nc-lib();
+	try ffi-lib();
+	try core-lib();
+	try shim-lib();
 }
 _prime-lib-resolvers();
 

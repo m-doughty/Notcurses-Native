@@ -14,7 +14,12 @@
     "generated from it:",
     "",
     "  * THIRD-PARTY.md and LICENSES/, written into every pack by",
-    "    scripts/ci/emit-third-party-kit.sh (see .github/actions/package-and-upload).",
+    "    scripts/ci/emit-third-party-kit.sh (see .github/actions/package-and-upload),",
+    "    together with a copy of this file as third-party.json. The copy",
+    "    gains one key, `pack`, recording what the emitter found in that",
+    "    archive: its platform, the release tag, the files each component",
+    "    matched, the files each embedded component is compiled into, and",
+    "    the optional components that are absent from it.",
     "  * The seven source tarballs attached to each binary release, downloaded",
     "    from the URLs below and verified against the sha256 below by",
     "    .github/workflows/_release-publish.yml.",
@@ -36,6 +41,16 @@
     "API-set forwarders (scripts/ci/win-system-dll.sh). If one of those ever",
     "does land in a pack, `system-libraries` lets the gate pass it — but that",
     "would be a bundling bug worth fixing rather than a licensing question.",
+    "",
+    "The exception is runtime code a toolchain links statically into every",
+    "binary it produces, because that code IS redistributed, inside our",
+    "files. On Windows that is the mingw-w64 C runtime, compiled into every",
+    "DLL in both Windows packs, and it is the mingw-w64-crt component below.",
+    "GCC's libgcc (UCRT64) and LLVM's compiler-rt builtins (CLANGARM64) are",
+    "linked the same way, and so are the C library's own startup objects on",
+    "Linux, but all of those come under licence exceptions that attach no",
+    "condition to the compiled result; gcc-runtime and llvm-runtime record",
+    "the reasoning for the two toolchains.",
     "",
     "SCHEMA. Every component has:",
     "  id                 stable key, used by the tooling and the gate",
@@ -60,14 +75,31 @@
     "                       git             url + ref (a commit SHA)",
     "                       in-tree         this distribution's own source",
     "                       package-manager not built by us; see notes",
-    "  binaries           per-platform { patterns, required }. `patterns` are",
-    "                     fnmatch globs against the pack-relative path (which is",
-    "                     the basename for everything except LICENSES/*). An",
-    "                     empty `patterns` means the component is absent on that",
-    "                     platform. `required` true means the gate fails if",
+    "  binaries           per-platform { patterns, required } and, for a",
+    "                     component compiled into another file rather than",
+    "                     shipped as one, { embedded, embedded-in }.",
+    "                     `patterns` are fnmatch globs against the",
+    "                     pack-relative path (which is the basename for",
+    "                     everything except LICENSES/*). An empty `patterns`",
+    "                     means the component has no file of its own on that",
+    "                     platform: it is absent there unless `embedded` is",
+    "                     true. `required` true means the gate fails if",
     "                     nothing matches — that is what catches a silently",
-    "                     dropped library.",
+    "                     dropped library. `embedded` true means the component",
+    "                     is statically linked into other files in the pack;",
+    "                     `embedded-in` lists globs for those host files, at",
+    "                     least one of which must be in the pack or the",
+    "                     emitter and the gate both fail. An embedded entry",
+    "                     has empty `patterns` and `required` false.",
+    "                     THIRD-PARTY.md lists the files that actually matched",
+    "                     in the archive it describes, never the globs.",
     "  notes              anything a reader would otherwise have to reconstruct",
+    "",
+    "`license-texts` (after the components) records where every licence",
+    "text that is not a stock SPDX text came from: the upstream URL and tag",
+    "it was copied from verbatim (or, for an excerpt, the file and lines it",
+    "was taken from), and the hashes t/17 checks the checked-in copy",
+    "against, so a text that gets reflowed or tidied fails the suite.",
     "",
     "Platform keys are `macos`, `linux` and `windows`. glibc and musl packs",
     "share the `linux` key: neither bundles a libc, so their file inventories",
@@ -92,7 +124,7 @@
       "source": {
         "kind": "git",
         "url": "https://github.com/m-doughty/notcurses.git",
-        "ref": "b2dadeb4e90a1f524565ed6c40c5b1de545fc855",
+        "ref": "7152070f1b6c7cf6acc4e7447e5b6854f9f1e904",
         "attach-to-release": false
       },
       "binaries": {
@@ -140,7 +172,7 @@
           "patterns": [
             "libnotcurses_native_shim.dylib",
             "libnotcurses_native_shim.dylib.srchash",
-            "THIRD-PARTY.md", "LICENSES/*"
+            "THIRD-PARTY.md", "third-party.json", "LICENSES/*"
           ],
           "required": true
         },
@@ -148,7 +180,7 @@
           "patterns": [
             "libnotcurses_native_shim.so",
             "libnotcurses_native_shim.so.srchash",
-            "THIRD-PARTY.md", "LICENSES/*"
+            "THIRD-PARTY.md", "third-party.json", "LICENSES/*"
           ],
           "required": true
         },
@@ -156,12 +188,12 @@
           "patterns": [
             "libnotcurses_native_shim.dll",
             "libnotcurses_native_shim.dll.srchash",
-            "THIRD-PARTY.md", "LICENSES/*"
+            "THIRD-PARTY.md", "third-party.json", "LICENSES/*"
           ],
           "required": true
         }
       },
-      "notes": "Not third-party at all — it is here so the gate can account for every file in a pack from one list. Covers the per-cell performance shim compiled from src/notcurses_native_shim.c, its .srchash freshness sidecar, and the licensing kit (THIRD-PARTY.md + LICENSES/) this manifest generates."
+      "notes": "Not third-party at all — it is here so the gate can account for every file in a pack from one list. Covers the per-cell performance shim compiled from src/notcurses_native_shim.c, its .srchash freshness sidecar, and the licensing kit this manifest generates: THIRD-PARTY.md, LICENSES/, and third-party.json, a copy of this manifest with a `pack` block saying what the archive it sits in actually contains."
     },
 
     {
@@ -169,7 +201,7 @@
       "name": "FFmpeg",
       "version": "8.1.2",
       "spdx-license": "LGPL-2.1-or-later",
-      "license-files": ["LGPL-2.1.txt"],
+      "license-files": ["LGPL-2.1.txt", "FFmpeg-IJG-notice.txt"],
       "copyright": "Copyright (c) 2000-2026 the FFmpeg developers",
       "project-url": "https://ffmpeg.org/",
       "source": {
@@ -202,7 +234,7 @@
           "required": true
         }
       },
-      "notes": "The copyleft library in the pack, and the reason the source tarball is attached to every binary release. Built decoder-only with no --enable-gpl and no --enable-nonfree, so the LGPL-2.1-or-later arm applies and none of the GPL-only parts are compiled in; scripts/ci/build-ffmpeg.sh asserts configure reported 'LGPL version 2.1 or later' and the Windows lane re-reads the licence string baked into the shipped avcodec. Windows uses ffmpeg's mingw32 naming (no lib prefix, SONAME major in the stem). Fetched from FFmpeg's own GitHub mirror rather than ffmpeg.org/releases: the r10 CI dispatch hit repeated connection timeouts/resets against ffmpeg.org from GitHub-hosted runners (reproduced locally too, so not a one-off), and ffmpeg.org has no CDN in front of it, so one flaky upstream host took every lane down at once. The GitHub tag archive is a sound substitute here specifically because ffmpeg checks `configure` into git rather than generating it via `make dist` — most projects' tag archives lack a buildable configure, ffmpeg's doesn't. The URL is a GitHub-generated tag archive, same caveat as libvpx's and dav1d's: see the dav1d note on what a hash mismatch means. filename is explicit for the same reason libvpx's is — `n8.1.2.tar.gz` on its own says nothing about what it is and would collide with the next project pinned at the same tag."
+      "notes": "This software is based in part on the work of the Independent JPEG Group. That sentence is the acknowledgement the IJG licence requires of anyone distributing executables built from its code: libavcodec/jrevdct.c, FFmpeg's inverse DCT, is taken from libjpeg and is compiled into every libavcodec here, because the JPEG (MJPEG) and MPEG-4 decoders depend on it. LICENSES/FFmpeg-IJG-notice.txt repeats the sentence and carries the IJG notice from the top of jrevdct.c. FFmpeg's LICENSE.md names three files under those terms; the other two, jfdctfst.c and jfdctint_template.c, are forward-DCT code only encoders and filters use, and none is built. The IJG notice's source-distribution condition travels with FFmpeg's own unmodified tarball attached to the release, where the notice heads all three files and jrevdct.c's header describes FFmpeg's changes to it. The SPDX expression stays LGPL-2.1-or-later because FFmpeg's LICENSE.md says that in combination the LGPL v2.1 or later applies to FFmpeg; the IJG terms add a notice duty rather than a second licence for the library. The copyleft library in the pack, and the reason the source tarball is attached to every binary release. Built decoder-only with no --enable-gpl and no --enable-nonfree, so the LGPL-2.1-or-later arm applies and none of the GPL-only parts are compiled in; scripts/ci/build-ffmpeg.sh asserts configure reported 'LGPL version 2.1 or later' and the Windows lane re-reads the licence string baked into the shipped avcodec. Windows uses ffmpeg's mingw32 naming (no lib prefix, SONAME major in the stem). Fetched from FFmpeg's own GitHub mirror rather than ffmpeg.org/releases: the r10 CI dispatch hit repeated connection timeouts/resets against ffmpeg.org from GitHub-hosted runners (reproduced locally too, so not a one-off), and ffmpeg.org has no CDN in front of it, so one flaky upstream host took every lane down at once. The GitHub tag archive is a sound substitute here specifically because ffmpeg checks `configure` into git rather than generating it via `make dist` — most projects' tag archives lack a buildable configure, ffmpeg's doesn't. The URL is a GitHub-generated tag archive, same caveat as libvpx's and dav1d's: see the dav1d note on what a hash mismatch means. filename is explicit for the same reason libvpx's is — `n8.1.2.tar.gz` on its own says nothing about what it is and would collide with the next project pinned at the same tag."
     },
 
     {
@@ -246,9 +278,14 @@
       "binaries": {
         "macos":   { "patterns": ["libvpx.*.dylib"], "required": true },
         "linux":   { "patterns": ["libvpx.so.*"],    "required": true },
-        "windows": { "patterns": [],                 "required": false }
+        "windows": {
+          "patterns": [],
+          "required": false,
+          "embedded": true,
+          "embedded-in": ["avcodec-*.dll"]
+        }
       },
-      "notes": "VP8/VP9 decoder, linked into FFmpeg via --enable-libvpx. There is no libvpx binary of its own on Windows: libvpx's configure refuses to emit a shared library anywhere but ELF/OS-2/Darwin, so scripts/ci/build-libvpx.sh builds libvpx.a there and FFmpeg absorbs it into avcodec-<N>.dll. It is still redistributed — as machine code inside that DLL — so it keeps its entry, its notice and its attached source tarball on every platform. BSD-3-Clause inside an LGPL-2.1 shared library raises no licensing question. The URL is a GitHub-generated tag archive; see the dav1d note on what a hash mismatch means."
+      "notes": "VP8/VP9 decoder, linked into FFmpeg via --enable-libvpx. There is no libvpx binary of its own on Windows: libvpx's configure refuses to emit a shared library anywhere but ELF/OS-2/Darwin, so scripts/ci/build-libvpx.sh builds libvpx.a there and FFmpeg absorbs it into avcodec-<N>.dll. It is still redistributed — as machine code inside that DLL — so it keeps its entry, its notice and its attached source tarball on every platform, and its Windows entry is marked embedded in avcodec-*.dll so the Windows THIRD-PARTY.md lists it (r16 and earlier dropped it there, having no file to match). BSD-3-Clause inside an LGPL-2.1 shared library raises no licensing question. The URL is a GitHub-generated tag archive; see the dav1d note on what a hash mismatch means."
     },
 
     {
@@ -303,7 +340,7 @@
       "version": "1.4.2",
       "spdx-license": "LGPL-3.0-or-later OR GPL-2.0-or-later",
       "conveyed-under": "LGPL-3.0-or-later",
-      "license-files": ["LGPL-3.0.txt", "GPL-2.0.txt"],
+      "license-files": ["LGPL-3.0.txt", "GPL-3.0.txt", "GPL-2.0.txt"],
       "copyright": "Copyright (C) 2001-2025 Free Software Foundation, Inc.",
       "project-url": "https://www.gnu.org/software/libunistring/",
       "source": {
@@ -318,7 +355,7 @@
         "linux":   { "patterns": ["libunistring.so.5"],    "required": true },
         "windows": { "patterns": ["libunistring-5.dll"],   "required": true }
       },
-      "notes": "notcurses' Unicode segmentation library — grapheme clusters, word breaks, character properties. Dual-licensed; we convey it under the LGPL, hence the attached source tarball, but GPL-2.0.txt ships too because the recipient's option to take the other arm is part of what they receive. Source-built on all four platforms as of this release; it was the last package-manager-sourced copyleft library in the packs, and a dnf/apk/brew/pacman version that moves under us is not a corresponding source we can still produce a year later. The patterns pin SONAME major 5 deliberately — that is what the whole 1.x series emits (-version-info 7:R:2), so a distro's libunistring.so.2 slipping back in, or an unnoticed jump to a 2.x, fails the gate instead of shipping."
+      "notes": "notcurses' Unicode segmentation library — grapheme clusters, word breaks, character properties. Dual-licensed; we convey it under the LGPL, hence the attached source tarball. GPL-3.0.txt ships with LGPL-3.0.txt because the LGPL v3 is a set of additional permissions on top of the GPL v3 and requires that a copy of the GPL v3 accompany it (r10-r16 packs carried the LGPL text alone). GPL-2.0.txt ships too because the recipient's option to take the other arm is part of what they receive. Source-built on all four platforms as of this release; it was the last package-manager-sourced copyleft library in the packs, and a dnf/apk/brew/pacman version that moves under us is not a corresponding source we can still produce a year later. The patterns pin SONAME major 5 deliberately — that is what the whole 1.x series emits (-version-info 7:R:2), so a distro's libunistring.so.2 slipping back in, or an unnoticed jump to a 2.x, fails the gate instead of shipping."
     },
 
     {
@@ -424,16 +461,41 @@
           "required": false
         }
       },
-      "notes": "The CLANGARM64 lane's counterpart to gcc-runtime — MSYS2's Windows-on-ARM subsystem is clang-based and has no GNU binutils or libstdc++ at all. Required is false for the same reason: presence depends on the subsystem, and the two Windows lanes never both apply. Unlike gcc-runtime, this one keeps its patterns: none of these DLLs has ever actually appeared in a pack, so there is no over-collection to deny, and if clang ever does put libunwind on a real link line it would be a genuine dependency rather than a stale sweep entry. The bundling action's reachability gate is what tells those two cases apart — it fails the lane on any bundled DLL nothing in the pack imports, whichever component would have covered it."
+      "notes": "The CLANGARM64 lane's counterpart to gcc-runtime — MSYS2's Windows-on-ARM subsystem is clang-based and has no GNU binutils or libstdc++ at all. Required is false for the same reason: presence depends on the subsystem, and the two Windows lanes never both apply. Unlike gcc-runtime, this one keeps its patterns: none of these DLLs has ever actually appeared in a pack, so there is no over-collection to deny, and if clang ever does put libunwind on a real link line it would be a genuine dependency rather than a stale sweep entry. The bundling action's reachability gate is what tells those two cases apart — it fails the lane on any bundled DLL nothing in the pack imports, whichever component would have covered it. What this toolchain does put into every CLANGARM64 DLL is compiler-rt's builtins library, linked statically the way libgcc is on UCRT64. That needs no entry of its own: the LLVM exception lets portions of LLVM embedded in object code by compiling be redistributed without Apache-2.0's notice conditions (sections 4(a), 4(b) and 4(d)). Because these files never appear on the x86_64 lane, THIRD-PARTY.md lists this component only in an archive where one of them actually matched; the licence texts stay in every Windows LICENSES/."
     },
 
     {
-      "id": "mingw-w64-runtime",
+      "id": "mingw-w64-crt",
+      "name": "mingw-w64 runtime",
+      "version": "MSYS2 package",
+      "spdx-license": "LicenseRef-MinGW-w64-runtime",
+      "license-files": ["COPYING.MinGW-w64-runtime.txt"],
+      "copyright": "Copyright (c) 2009, 2010, 2011, 2012, 2013 by the mingw-w64 project, and the further holders named in COPYING.MinGW-w64-runtime.txt",
+      "project-url": "https://www.mingw-w64.org/",
+      "source": {
+        "kind": "package-manager",
+        "attach-to-release": false
+      },
+      "binaries": {
+        "macos":   { "patterns": [], "required": false },
+        "linux":   { "patterns": [], "required": false },
+        "windows": {
+          "patterns": [],
+          "required": false,
+          "embedded": true,
+          "embedded-in": ["*.dll"]
+        }
+      },
+      "notes": "The C runtime startup code and support library (dllcrt2.o, libmingw32.a, libmingwex.a and the rest of mingw-w64-crt) that both MSYS2 toolchains link statically into every binary they produce. It has no file of its own: it is inside every DLL in both Windows packs, ncursesw, zlib, the shim and libwinpthread-1.dll included, so it is marked embedded in *.dll whatever DLLs a pack turns out to hold. A string scan of the published r16 packs confirmed it: all 18 DLLs in each carry the runtime's 'Mingw-w64 runtime failure:' message. Its notice file says why it ships: parts of the runtime are under licences that require their copyright and licence notices to accompany the code in binary form. That file is a list of licences rather than one (the project's own Zope-Public-Licence-style terms, ISC and BSD-2-Clause for getopt, the gdtoa and Sun math-library notices, MIT for code taken from musl, LGPL-2.1-or-later for headers imported from Wine), hence a LicenseRef rather than an SPDX expression claiming more precision than upstream gives. r16 and earlier shipped none of it, and this manifest used to say winpthreads was the only mingw-w64 code in the packs, which was wrong. The text is upstream's own, verbatim at tag v14.0.0 (see license-texts). Which mingw-w64 snapshot a CI run links is not pinned: setup-msys2 runs without update: true, so a lane takes whatever mingw-w64-crt its MSYS2 package database offers. On 2026-10-24 that was 14.0.0.r532.gdbbc8e99d for both UCRT64 and CLANGARM64, whose notice is byte-identical to v14.0.0's; v12.0.0 and v13.0.0 carry a strict subset (v14 added the musl section), so the v14 text also covers a lane that links an older snapshot. Re-check it when MSYS2 moves to a mingw-w64 release after 14.x. No source is attached: none of these terms asks for it."
+    },
+
+    {
+      "id": "mingw-w64-winpthreads",
       "name": "mingw-w64 winpthreads",
       "version": "MSYS2 package",
-      "spdx-license": "MIT",
-      "license-files": ["MIT.txt"],
-      "copyright": "Copyright (c) 2011 mingw-w64 project",
+      "spdx-license": "MIT AND BSD-3-Clause",
+      "license-files": ["COPYING.MinGW-w64-winpthreads.txt"],
+      "copyright": "Copyright (c) 2011 mingw-w64 project; (C) 2010 Lockless Inc.",
       "project-url": "https://www.mingw-w64.org/",
       "source": {
         "kind": "package-manager",
@@ -444,9 +506,57 @@
         "linux":   { "patterns": [], "required": false },
         "windows": { "patterns": ["libwinpthread-1.dll"], "required": true }
       },
-      "notes": "The POSIX threads implementation both MSYS2 subsystems link, so unlike the compiler runtimes above it is genuinely always present and required is true. mingw-w64 as a project is a mixture of licences (the import libraries and headers are variously public-domain and Zope-licensed); winpthreads, the part we redistribute, is MIT."
+      "notes": "The POSIX threads implementation both MSYS2 subsystems link, so unlike the compiler runtimes above it is genuinely always present and required is true. Its COPYING holds two licences, not one: MIT for the mingw-w64 project's code, and BSD-3-Clause for the parts derived from Lockless Inc.'s Posix Threads library for Microsoft Windows, whose binary-redistribution condition is why the whole file ships verbatim as COPYING.MinGW-w64-winpthreads.txt. r16 and earlier shipped MIT.txt alone for it, which left the Lockless Inc. notice out. Like every DLL here, libwinpthread-1.dll also contains the statically linked mingw-w64 runtime, which mingw-w64-crt covers. The text is upstream's verbatim at tag v14.0.0, unchanged since at least v12.0.0 and through the 14.0.0.r532.gdbbc8e99d snapshot MSYS2 shipped on 2026-10-24 (see license-texts, and mingw-w64-crt on which snapshot a run links). This entry's id was mingw-w64-runtime up to r16; it was renamed when the runtime proper got an entry of its own."
     }
   ],
+
+  "license-texts": {
+    "_comment": [
+      "Provenance for every licence text in resources/licenses/ that is not",
+      "a stock SPDX licence or exception text named after its identifier.",
+      "A `verbatim` text is byte-identical to the upstream file at `url`:",
+      "`git-blob` is git's object id for it, which is what `git rev-parse",
+      "<tag>:<path>` prints in the upstream repository, and `sha256` is its",
+      "plain hash. An `excerpt` quotes part of an upstream file inside a",
+      "notice of ours and says which lines it took and what it changed;",
+      "its `git-blob` and `sha256` describe our file, and `source-git-blob`",
+      "the upstream file it quotes. t/17 recomputes `git-blob` from the",
+      "checked-in copy of every text listed here."
+    ],
+    "COPYING.MinGW-w64-runtime.txt": {
+      "kind": "verbatim",
+      "url": "https://sourceforge.net/p/mingw-w64/mingw-w64/ci/v14.0.0/tree/COPYING.MinGW-w64-runtime/COPYING.MinGW-w64-runtime.txt",
+      "repository": "https://git.code.sf.net/p/mingw-w64/mingw-w64",
+      "tag": "v14.0.0",
+      "commit": "9b3dd0125792fe94d16cacdc596dbd42fca1b369",
+      "path": "COPYING.MinGW-w64-runtime/COPYING.MinGW-w64-runtime.txt",
+      "git-blob": "776d5f1034240f6dae0ce59d592f9c6f4ad29e7d",
+      "sha256": "1db8da07b436c68833c0673ffee3d9fcb2526047f3820b81661865dfedc79a1f",
+      "notes": "From mingw-w64's official repository on SourceForge; its GitHub mirror, https://github.com/mingw-w64/mingw-w64, serves the same bytes at the same tag. The blob is unchanged at dbbc8e99d9b85408f2c0a5565cb689c44eef0650, the commit MSYS2's 14.0.0.r532.gdbbc8e99d packages were built from. Nine lines end in trailing whitespace upstream, and keep it here."
+    },
+    "COPYING.MinGW-w64-winpthreads.txt": {
+      "kind": "verbatim",
+      "url": "https://sourceforge.net/p/mingw-w64/mingw-w64/ci/v14.0.0/tree/mingw-w64-libraries/winpthreads/COPYING",
+      "repository": "https://git.code.sf.net/p/mingw-w64/mingw-w64",
+      "tag": "v14.0.0",
+      "commit": "9b3dd0125792fe94d16cacdc596dbd42fca1b369",
+      "path": "mingw-w64-libraries/winpthreads/COPYING",
+      "git-blob": "3507701238b798b1ddbf4d5ffe16f285f4458963",
+      "sha256": "63263614cdd29f2f93cba85e992f041b31f9fc7b4033692f31269489a8a1b177",
+      "notes": "Upstream's mingw-w64-libraries/winpthreads/COPYING, renamed so it cannot collide with another project's COPYING in a LICENSES/ directory. Same blob at v12.0.0, v13.0.0, v14.0.0 and dbbc8e99d; the GitHub mirror serves the same bytes."
+    },
+    "FFmpeg-IJG-notice.txt": {
+      "kind": "excerpt",
+      "url": "https://github.com/FFmpeg/FFmpeg/blob/n8.1.2/libavcodec/jrevdct.c",
+      "tag": "n8.1.2",
+      "path": "libavcodec/jrevdct.c",
+      "lines": "2-37",
+      "source-git-blob": "531deee3a99308007b96c9242112dc122dca30b6",
+      "git-blob": "e719c6cb79ff001b21f40ebea65a6b177aeb5d67",
+      "sha256": "b6775bca27a0920e8e09e8e3a5a3aacd6dce087cd128c07e3b52be429b86c5ee",
+      "notes": "Everything above the rule is ours: the acknowledgement condition (2) of the IJG notice asks for, and why it applies. Everything below it is lines 2-37 of jrevdct.c with the leading ' * ' comment markers removed and nothing else changed. jrevdct.c in the ffmpeg-n8.1.2.tar.gz pinned above is the same blob."
+    }
+  },
 
   "system-libraries": {
     "_comment": [

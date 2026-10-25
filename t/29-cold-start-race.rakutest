@@ -49,9 +49,9 @@ for (nc-lib    => &nc-lib,
      shim-lib  => &shim-lib,
      libc-name => &libc-name) -> (:key($name), :value(&resolver))
 {
-    my @seen = await (^32).map: { start resolver() };
-    ok @seen.grep({ $_.defined && $_ eqv @seen[0] }).elems == @seen.elems,
-        "$name returns one identical, defined value to 32 concurrent callers";
+	my @seen = await (^32).map: { start resolver() };
+	ok @seen.grep({ $_.defined && $_ eqv @seen[0] }).elems == @seen.elems,
+		"$name returns one identical, defined value to 32 concurrent callers";
 }
 
 # --- part 2: cold-burst child processes ------------------------------
@@ -71,7 +71,7 @@ my IO::Path $lib = $*PROGRAM.absolute.IO.parent.parent.add('lib');
 # touch to catch. Real OS threads blocked on one Promise all wake
 # together.
 my IO::Path $child =
-    $*TMPDIR.add("notcurses-native-cold-{$*PID}-{now.Int}.raku");
+	$*TMPDIR.add("notcurses-native-cold-{$*PID}-{now.Int}.raku");
 END { $child.unlink if $child.e }
 
 $child.spurt: qq:to/CHILD/;
@@ -136,19 +136,19 @@ $child.spurt: qq:to/CHILD/;
     CHILD
 
 for ^$launches -> $launch {
-    # Proc handling by hand: a *sunk* failing Proc throws when it is
-    # GC'd, outside any `try` meant to contain it. Assign it, drain
-    # both handles (a full pipe buffer would deadlock the child),
-    # then read .exitcode.
-    my $proc = run $*EXECUTABLE, "-I{$lib.absolute}", $child.absolute,
-                   :out, :err;
-    my Str $out = $proc.out.slurp(:close) // '';
-    my Str $err = $proc.err.slurp(:close) // '';
+	# Proc handling by hand: a *sunk* failing Proc throws when it is
+	# GC'd, outside any `try` meant to contain it. Assign it, drain
+	# both handles (a full pipe buffer would deadlock the child),
+	# then read .exitcode.
+	my $proc = run $*EXECUTABLE, "-I{$lib.absolute}", $child.absolute,
+	               :out, :err;
+	my Str $out = $proc.out.slurp(:close) // '';
+	my Str $err = $proc.err.slurp(:close) // '';
 
-    ok $proc.exitcode == 0,
-        "cold launch {$launch + 1}/$launches: $threads threads resolve"
-        ~ " every library on first touch"
-        or diag "exitcode {$proc.exitcode}\nout: $out\nerr: $err";
+	ok $proc.exitcode == 0,
+		"cold launch {$launch + 1}/$launches: $threads threads resolve"
+		~ " every library on first touch"
+		or diag "exitcode {$proc.exitcode}\nout: $out\nerr: $err";
 }
 
 done-testing;

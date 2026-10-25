@@ -35,19 +35,19 @@ use Notcurses::Native::Str;
 unit module Notcurses::Native::Test::Headless;
 
 sub _setsid(--> int32)
-    is native(&libc-name) is symbol('setsid') { * }
+	is native(&libc-name) is symbol('setsid') { * }
 
 sub _fopen(Str, Str --> Pointer)
-    is native(&libc-name) is symbol('fopen') { * }
+	is native(&libc-name) is symbol('fopen') { * }
 
 # The flags every headless child uses. Signal handlers stay off so a
 # crash reaches the parent as the raw signal it is; input is drained so
 # notcurses never competes for the child's (piped) stdin.
 my constant HEADLESS-FLAGS = NCOPTION_SUPPRESS_BANNERS
-    +| NCOPTION_NO_ALTERNATE_SCREEN
-    +| NCOPTION_NO_QUIT_SIGHANDLERS
-    +| NCOPTION_NO_WINCH_SIGHANDLER
-    +| NCOPTION_DRAIN_INPUT;
+	+| NCOPTION_NO_ALTERNATE_SCREEN
+	+| NCOPTION_NO_QUIT_SIGHANDLERS
+	+| NCOPTION_NO_WINCH_SIGHANDLER
+	+| NCOPTION_DRAIN_INPUT;
 
 # Marker that introduces every result a child reports.
 my constant RESULT-TAG = 'NOTCURSES-NATIVE-RESULT';
@@ -61,21 +61,21 @@ my atomicint $script-serial = 0;
 # run-headless-script never does; carrying on attached would risk the
 # interrogation hang described above, so refuse loudly instead.
 my sub detach-from-terminal(Str:D $caller --> Nil) {
-    return if $*DISTRO.is-win;
-    my int32 $sid = _setsid();
-    die "$caller: setsid() failed ($sid); this process leads its process "
-      ~ "group and would keep its controlling terminal. Run it through "
-      ~ "run-headless-script."
-        if $sid < 0;
+	return if $*DISTRO.is-win;
+	my int32 $sid = _setsid();
+	die "$caller: setsid() failed ($sid); this process leads its process "
+	  ~ "group and would keep its controlling terminal. Run it through "
+	  ~ "run-headless-script."
+		if $sid < 0;
 }
 
 # fopen(3) the null device for writing, or die naming the caller.
 my sub open-null-device(Str:D $caller --> Pointer) {
-    my Str $null-device = $*DISTRO.is-win ?? 'NUL' !! '/dev/null';
-    my Pointer $out = _fopen($null-device, 'w');
-    die "$caller: could not open $null-device for writing"
-        unless $out.defined && +$out;
-    $out
+	my Str $null-device = $*DISTRO.is-win ?? 'NUL' !! '/dev/null';
+	my Pointer $out = _fopen($null-device, 'w');
+	die "$caller: could not open $null-device for writing"
+		unless $out.defined && +$out;
+	$out
 }
 
 #|( Child side. Detach from any controlling terminal (POSIX), open the
@@ -86,20 +86,20 @@ my sub open-null-device(Str:D $caller --> Pointer) {
     allows one instance per process. C<:termtype> names the terminfo
     entry notcurses should use instead of C<$TERM>'s. )
 sub headless-notcurses(Str :$termtype --> NotcursesHandle) is export {
-    detach-from-terminal('headless-notcurses');
-    my Pointer $out = open-null-device('headless-notcurses');
-    my $opts = NotcursesOptions.new(
-        :loglevel(NCLOGLEVEL_SILENT),
-        :flags(HEADLESS-FLAGS),
-        :$termtype,
-    );
-    my $nc = notcurses_core_init($opts, $out);
-    die "headless-notcurses: notcurses_core_init failed with no terminal "
-      ~ "(TERM={%*ENV<TERM> // '(unset)'}). run-headless-script sets "
-      ~ "TERM when the environment lacks one; a failure here means "
-      ~ "notcurses found no usable terminfo entry for it."
-        unless $nc.defined;
-    $nc
+	detach-from-terminal('headless-notcurses');
+	my Pointer $out = open-null-device('headless-notcurses');
+	my $opts = NotcursesOptions.new(
+		:loglevel(NCLOGLEVEL_SILENT),
+		:flags(HEADLESS-FLAGS),
+		:$termtype,
+	);
+	my $nc = notcurses_core_init($opts, $out);
+	die "headless-notcurses: notcurses_core_init failed with no terminal "
+	  ~ "(TERM={%*ENV<TERM> // '(unset)'}). run-headless-script sets "
+	  ~ "TERM when the environment lacks one; a failure here means "
+	  ~ "notcurses found no usable terminfo entry for it."
+		unless $nc.defined;
+	$nc
 }
 
 #|( Child side. The direct-mode counterpart of C<headless-notcurses>:
@@ -116,16 +116,16 @@ sub headless-notcurses(Str :$termtype --> NotcursesHandle) is export {
     C<out>. The C runtime buffers that stream, so call C<ncdirect_flush>
     before C<report>ing anything that should follow the output. )
 sub headless-ncdirect(Bool :$on-stdout = False --> NcdirectHandle) is export {
-    detach-from-terminal('headless-ncdirect');
-    my constant FLAGS = NCDIRECT_OPTION_NO_QUIT_SIGHANDLERS
-        +| NCDIRECT_OPTION_DRAIN_INPUT;
-    my $d = $on-stdout
-        ?? ncdirect_core_init(Str, Pointer, FLAGS)
-        !! ncdirect_core_init(Str, open-null-device('headless-ncdirect'), FLAGS);
-    die "headless-ncdirect: ncdirect_core_init failed with no terminal "
-      ~ "(TERM={%*ENV<TERM> // '(unset)'})."
-        unless $d.defined;
-    $d
+	detach-from-terminal('headless-ncdirect');
+	my constant FLAGS = NCDIRECT_OPTION_NO_QUIT_SIGHANDLERS
+		+| NCDIRECT_OPTION_DRAIN_INPUT;
+	my $d = $on-stdout
+		?? ncdirect_core_init(Str, Pointer, FLAGS)
+		!! ncdirect_core_init(Str, open-null-device('headless-ncdirect'), FLAGS);
+	die "headless-ncdirect: ncdirect_core_init failed with no terminal "
+	  ~ "(TERM={%*ENV<TERM> // '(unset)'})."
+		unless $d.defined;
+	$d
 }
 
 #|( Child side. Report one result to the parent as a single tagged line
@@ -133,20 +133,20 @@ sub headless-ncdirect(Bool :$on-stdout = False --> NcdirectHandle) is export {
     tab or a line break (encode binary data first, for example as hex).
     Anything else the child prints is ignored by the parent's parser. )
 sub report(Str:D $key, Str() $value --> Nil) is export {
-    die "report: key '$key' must be a plain identifier"
-        unless $key ~~ /^ <[\w-]>+ $/;
-    die "report: value for '$key' contains a tab or line break"
-        if $value.contains("\t") || $value.contains("\n")
-            || $value.contains("\r");
-    $*OUT.put: RESULT-TAG ~ "\t$key\t$value";
-    $*OUT.flush;
-    Nil
+	die "report: key '$key' must be a plain identifier"
+		unless $key ~~ /^ <[\w-]>+ $/;
+	die "report: value for '$key' contains a tab or line break"
+		if $value.contains("\t") || $value.contains("\n")
+			|| $value.contains("\r");
+	$*OUT.put: RESULT-TAG ~ "\t$key\t$value";
+	$*OUT.flush;
+	Nil
 }
 
 sub _getenv(Str --> Pointer)
-    is native(&libc-name) is symbol('getenv') { * }
+	is native(&libc-name) is symbol('getenv') { * }
 sub _GetEnvironmentVariableA(Str, CArray[uint8], uint32 --> uint32)
-    is native('kernel32') is symbol('GetEnvironmentVariableA') { * }
+	is native('kernel32') is symbol('GetEnvironmentVariableA') { * }
 
 # The largest environment value Windows allows, terminator included.
 my constant WIN-ENV-MAX = 32767;
@@ -158,16 +158,16 @@ my constant WIN-ENV-MAX = 32767;
     notcurses exports a C<termtype> option as C<TERM>, for one. Answers
     C<Str> when the variable is unset. )
 sub native-getenv(Str:D $name --> Str) is export {
-    if $*DISTRO.is-win {
-        my $buffer = CArray[uint8].allocate(WIN-ENV-MAX + 1);
-        my Int $length = _GetEnvironmentVariableA($name, $buffer, WIN-ENV-MAX + 1);
-        return Str if $length == 0;
-        die "native-getenv: $name is longer than Windows allows ($length)"
-            if $length > WIN-ENV-MAX;
-        return Blob.new((^$length).map({ $buffer[$_] })).decode('utf8-c8');
-    }
-    my Pointer $value = _getenv($name);
-    ($value.defined && +$value) ?? nativecast(Str, $value) !! Str
+	if $*DISTRO.is-win {
+		my $buffer = CArray[uint8].allocate(WIN-ENV-MAX + 1);
+		my Int $length = _GetEnvironmentVariableA($name, $buffer, WIN-ENV-MAX + 1);
+		return Str if $length == 0;
+		die "native-getenv: $name is longer than Windows allows ($length)"
+			if $length > WIN-ENV-MAX;
+		return Blob.new((^$length).map({ $buffer[$_] })).decode('utf8-c8');
+	}
+	my Pointer $value = _getenv($name);
+	($value.defined && +$value) ?? nativecast(Str, $value) !! Str
 }
 
 # kernel32's K32GetProcessMemoryInfo (Windows 7 on) fills a
@@ -178,9 +178,9 @@ sub native-getenv(Str:D $name --> Str) is export {
 # kernel directly rather than through PowerShell, whose directory is
 # not on an MSYS2 shell's minimal PATH.
 sub _GetCurrentProcess(--> Pointer)
-    is native('kernel32') is symbol('GetCurrentProcess') { * }
+	is native('kernel32') is symbol('GetCurrentProcess') { * }
 sub _K32GetProcessMemoryInfo(Pointer, CArray[uint64], uint32 --> int32)
-    is native('kernel32') is symbol('K32GetProcessMemoryInfo') { * }
+	is native('kernel32') is symbol('K32GetProcessMemoryInfo') { * }
 
 my constant PMC-BYTES          = 72;
 my constant PMC-WORKING-SET-AT = 2;
@@ -192,31 +192,31 @@ my constant PMC-WORKING-SET-AT = 2;
     cannot be taken — a leak check that silently read zero would pass
     forever. )
 sub current-rss-kib(--> Int) is export {
-    my IO::Path $status = '/proc/self/status'.IO;
-    if $status.e {
-        for $status.slurp.lines -> Str $line {
-            with $line ~~ /^ 'VmRSS:' \s* (\d+) \s* 'kB' / {
-                return +$0;
-            }
-        }
-        die "current-rss-kib: no VmRSS line in /proc/self/status";
-    }
-    if $*DISTRO.is-win {
-        my $counters = CArray[uint64].new(PMC-BYTES, |(0 xx 8));
-        die "current-rss-kib: K32GetProcessMemoryInfo failed"
-            unless _K32GetProcessMemoryInfo(_GetCurrentProcess(),
-                $counters, PMC-BYTES);
-        my Int $working-set = $counters[PMC-WORKING-SET-AT];
-        die "current-rss-kib: K32GetProcessMemoryInfo reported no working set"
-            unless $working-set > 0;
-        return $working-set div 1024;
-    }
-    my $proc = run 'ps', '-o', 'rss=', '-p', ~$*PID, :out, :err;
-    my Str $out = $proc.out.slurp(:close).trim;
-    my Str $err = $proc.err.slurp(:close).trim;
-    die "current-rss-kib: ps -o rss= failed (exit {$proc.exitcode}): $err"
-        unless $proc.exitcode == 0 && $out ~~ /^ \d+ $/;
-    $out.Int
+	my IO::Path $status = '/proc/self/status'.IO;
+	if $status.e {
+		for $status.slurp.lines -> Str $line {
+			with $line ~~ /^ 'VmRSS:' \s* (\d+) \s* 'kB' / {
+				return +$0;
+			}
+		}
+		die "current-rss-kib: no VmRSS line in /proc/self/status";
+	}
+	if $*DISTRO.is-win {
+		my $counters = CArray[uint64].new(PMC-BYTES, |(0 xx 8));
+		die "current-rss-kib: K32GetProcessMemoryInfo failed"
+			unless _K32GetProcessMemoryInfo(_GetCurrentProcess(),
+				$counters, PMC-BYTES);
+		my Int $working-set = $counters[PMC-WORKING-SET-AT];
+		die "current-rss-kib: K32GetProcessMemoryInfo reported no working set"
+			unless $working-set > 0;
+		return $working-set div 1024;
+	}
+	my $proc = run 'ps', '-o', 'rss=', '-p', ~$*PID, :out, :err;
+	my Str $out = $proc.out.slurp(:close).trim;
+	my Str $err = $proc.err.slurp(:close).trim;
+	die "current-rss-kib: ps -o rss= failed (exit {$proc.exitcode}): $err"
+		unless $proc.exitcode == 0 && $out ~~ /^ \d+ $/;
+	$out.Int
 }
 
 #|( Parent side. Run C<$script> (Raku source) in a fresh C<raku> child
@@ -241,81 +241,81 @@ sub current-rss-kib(--> Int) is export {
     C code sees, unlike a C<chdir> inside the script, which only moves
     Raku's C<$*CWD>. )
 sub run-headless-script(
-    Str:D $script,
-    IO() :$lib = $*PROGRAM.parent.parent.add('lib'),
-    :%env,
-    Real :$timeout = 300,
-    IO() :$cwd,
-    --> Map
+	Str:D $script,
+	IO() :$lib = $*PROGRAM.parent.parent.add('lib'),
+	:%env,
+	Real :$timeout = 300,
+	IO() :$cwd,
+	--> Map
 ) is export {
-    my IO::Path $file = $*TMPDIR.add(
-        "notcurses-native-headless-{$*PID}-{(^2**31).pick}-"
-          ~ "{$script-serial⚛++}.raku");
-    $file.spurt($script);
-    LEAVE { try $file.unlink }
+	my IO::Path $file = $*TMPDIR.add(
+		"notcurses-native-headless-{$*PID}-{(^2**31).pick}-"
+		  ~ "{$script-serial⚛++}.raku");
+	$file.spurt($script);
+	LEAVE { try $file.unlink }
 
-    my %child-env = %*ENV;
-    unless $*DISTRO.is-win {
-        %child-env<TERM> //= 'xterm';
-    }
-    %child-env<LANG>:delete
-        if (%child-env<LANG> // '') eq 'C' | 'POSIX';
-    %child-env{.key} = .value for %env;
+	my %child-env = %*ENV;
+	unless $*DISTRO.is-win {
+		%child-env<TERM> //= 'xterm';
+	}
+	%child-env<LANG>:delete
+		if (%child-env<LANG> // '') eq 'C' | 'POSIX';
+	%child-env{.key} = .value for %env;
 
-    my $proc = Proc::Async.new(:w, $*EXECUTABLE.absolute,
-        '-I', $lib.absolute, $file.absolute);
-    my Str $out = '';
-    my Str $err = '';
-    my $lock = Lock.new;
-    $proc.stdout.tap: -> $chunk { $lock.protect: { $out ~= $chunk } },
-        quit => -> $ { };
-    $proc.stderr.tap: -> $chunk { $lock.protect: { $err ~= $chunk } },
-        quit => -> $ { };
+	my $proc = Proc::Async.new(:w, $*EXECUTABLE.absolute,
+		'-I', $lib.absolute, $file.absolute);
+	my Str $out = '';
+	my Str $err = '';
+	my $lock = Lock.new;
+	$proc.stdout.tap: -> $chunk { $lock.protect: { $out ~= $chunk } },
+		quit => -> $ { };
+	$proc.stderr.tap: -> $chunk { $lock.protect: { $err ~= $chunk } },
+		quit => -> $ { };
 
-    my Promise $done = $cwd.defined
-        ?? $proc.start(:ENV(%child-env), :cwd($cwd.absolute))
-        !! $proc.start(:ENV(%child-env));
-    # Close stdin once the child is running, so notcurses (and anything
-    # else) sees end-of-file rather than the parent's terminal.
-    await $proc.ready;
-    $proc.close-stdin;
+	my Promise $done = $cwd.defined
+		?? $proc.start(:ENV(%child-env), :cwd($cwd.absolute))
+		!! $proc.start(:ENV(%child-env));
+	# Close stdin once the child is running, so notcurses (and anything
+	# else) sees end-of-file rather than the parent's terminal.
+	await $proc.ready;
+	$proc.close-stdin;
 
-    my Bool $timed-out = False;
-    await Promise.anyof($done, Promise.in($timeout));
-    unless $done {
-        $timed-out = True;
-        $proc.kill(SIGKILL);
-    }
-    my $result = try await $done;
+	my Bool $timed-out = False;
+	await Promise.anyof($done, Promise.in($timeout));
+	unless $done {
+		$timed-out = True;
+		$proc.kill(SIGKILL);
+	}
+	my $result = try await $done;
 
-    my %results;
-    # The tag is searched for rather than anchored: anything else that
-    # reaches the child's stdout without a newline (a library writing to
-    # the standard handle, say) must not swallow the report behind it.
-    for $lock.protect({ $out }).lines -> Str $line {
-        my Int $at = $line.rindex(RESULT-TAG ~ "\t") // next;
-        my @field = $line.substr($at).split("\t", 3);
-        next unless @field == 3;
-        %results{@field[1]} = @field[2];
-    }
+	my %results;
+	# The tag is searched for rather than anchored: anything else that
+	# reaches the child's stdout without a newline (a library writing to
+	# the standard handle, say) must not swallow the report behind it.
+	for $lock.protect({ $out }).lines -> Str $line {
+		my Int $at = $line.rindex(RESULT-TAG ~ "\t") // next;
+		my @field = $line.substr($at).split("\t", 3);
+		next unless @field == 3;
+		%results{@field[1]} = @field[2];
+	}
 
-    # Test definedness, never truth: a Proc is falsy for any non-zero
-    # exit, which is exactly the case that has to be reported.
-    Map.new(
-        'exitcode'  => ($result.defined ?? $result.exitcode !! -1),
-        'signal'    => ($result.defined ?? $result.signal !! -1),
-        'timed-out' => $timed-out,
-        'out'       => $lock.protect({ $out }),
-        'err'       => $lock.protect({ $err }),
-        'results'   => %results,
-    )
+	# Test definedness, never truth: a Proc is falsy for any non-zero
+	# exit, which is exactly the case that has to be reported.
+	Map.new(
+		'exitcode'  => ($result.defined ?? $result.exitcode !! -1),
+		'signal'    => ($result.defined ?? $result.signal !! -1),
+		'timed-out' => $timed-out,
+		'out'       => $lock.protect({ $out }),
+		'err'       => $lock.protect({ $err }),
+		'results'   => %results,
+	)
 }
 
 #|( Parent side. A one-line description of how a child ended, for test
     descriptions and diagnostics: "exit 0", "exit 3", "killed by signal
     11", or "timed out". )
 sub describe-exit(Map:D $run --> Str) is export {
-    return 'timed out' if $run<timed-out>;
-    return "killed by signal {$run<signal>}" if $run<signal>;
-    "exit {$run<exitcode>}"
+	return 'timed out' if $run<timed-out>;
+	return "killed by signal {$run<signal>}" if $run<signal>;
+	"exit {$run<exitcode>}"
 }

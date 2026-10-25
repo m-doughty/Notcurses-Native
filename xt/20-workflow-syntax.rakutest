@@ -7,28 +7,28 @@ use Test;
 # in t/20-powershell-syntax.rakutest.
 
 my IO::Path $workflow-dir = $*PROGRAM.parent.parent
-    .child('.github').child('workflows');
+	.child('.github').child('workflows');
 
 for <_verify-windows-x86_64.yml _verify-windows-arm64.yml> -> Str $name {
-    my Str $workflow = $workflow-dir.child($name).slurp;
-    is $workflow.match(
-        / 'verify-windows-loader.ps1 -Mode prebuilt' /,
-        :g,
-    ).elems, 1, "$name selects prebuilt mode exactly once";
-    is $workflow.match(
-        / 'verify-windows-loader.ps1 -Mode source' /,
-        :g,
-    ).elems, 1, "$name selects source mode exactly once";
-    is $workflow.match(
-        / 'cygpath -w "$MINGW_PREFIX/bin"' /,
-        :g,
-    ).elems, 1, "$name captures its active MSYS2 runtime directory";
-    is $workflow.match(
-        / 'NOTCURSES_TEST_MSYS2_BIN=' /,
-        :g,
-    ).elems, 1, "$name persists the captured directory for PowerShell";
-    unlike $workflow.lc, / 'c:\\msys' /,
-        "$name does not hardcode an MSYS2 installation path";
+	my Str $workflow = $workflow-dir.child($name).slurp;
+	is $workflow.match(
+		/ 'verify-windows-loader.ps1 -Mode prebuilt' /,
+		:g,
+	).elems, 1, "$name selects prebuilt mode exactly once";
+	is $workflow.match(
+		/ 'verify-windows-loader.ps1 -Mode source' /,
+		:g,
+	).elems, 1, "$name selects source mode exactly once";
+	is $workflow.match(
+		/ 'cygpath -w "$MINGW_PREFIX/bin"' /,
+		:g,
+	).elems, 1, "$name captures its active MSYS2 runtime directory";
+	is $workflow.match(
+		/ 'NOTCURSES_TEST_MSYS2_BIN=' /,
+		:g,
+	).elems, 1, "$name persists the captured directory for PowerShell";
+	unlike $workflow.lc, / 'c:\\msys' /,
+		"$name does not hardcode an MSYS2 installation path";
 }
 
 # The build lanes are the only place a packed shim's own exports are
@@ -36,19 +36,19 @@ for <_verify-windows-x86_64.yml _verify-windows-arm64.yml> -> Str $name {
 # list of symbols to assert must name exactly the functions the shim
 # source exports. t/15 reads the same set from the source.
 {
-    my IO::Path $root = $*PROGRAM.parent.parent;
-    my @exports = $root.add('src/notcurses_native_shim.c').lines.map({
-        ~$0 if / ^ <!before 'static'> [ <[\w]>+ <[\s*]>+ ]+ ('notcurses_native_' \w+) \s* '(' /
-    }).unique.sort;
-    ok @exports >= 10, "the shim source exports {+@exports} functions";
-    for '.github/workflows/_build-macos.yml', '.github/workflows/_build-windows.yml',
-        'scripts/ci/build-linux-glibc.sh', 'scripts/ci/build-linux-musl.sh' -> Str $lane {
-        my Str $text = $root.add($lane).slurp;
-        my $list = $text ~~ / 'for sym in' (<-[;]>+) ';' \s* 'do' /;
-        my @listed = $list ?? $list[0].comb(/ 'notcurses_native_' \w+ /).sort !! ();
-        is @listed.join(' '), @exports.join(' '),
-            "$lane asserts every shim export, and nothing else";
-    }
+	my IO::Path $root = $*PROGRAM.parent.parent;
+	my @exports = $root.add('src/notcurses_native_shim.c').lines.map({
+		~$0 if / ^ <!before 'static'> [ <[\w]>+ <[\s*]>+ ]+ ('notcurses_native_' \w+) \s* '(' /
+	}).unique.sort;
+	ok @exports >= 10, "the shim source exports {+@exports} functions";
+	for '.github/workflows/_build-macos.yml', '.github/workflows/_build-windows.yml',
+		'scripts/ci/build-linux-glibc.sh', 'scripts/ci/build-linux-musl.sh' -> Str $lane {
+		my Str $text = $root.add($lane).slurp;
+		my $list = $text ~~ / 'for sym in' (<-[;]>+) ';' \s* 'do' /;
+		my @listed = $list ?? $list[0].comb(/ 'notcurses_native_' \w+ /).sort !! ();
+		is @listed.join(' '), @exports.join(' '),
+			"$lane asserts every shim export, and nothing else";
+	}
 }
 
 done-testing;

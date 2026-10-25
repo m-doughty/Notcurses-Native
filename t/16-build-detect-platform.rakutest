@@ -29,58 +29,58 @@ my $b = Build.new;
 
 # --- macOS ---------------------------------------------------------
 is $b.detect-platform(:os<darwin>, :hardware<arm64>),
-    'macos-arm64',
-    'darwin/arm64 maps';
+	'macos-arm64',
+	'darwin/arm64 maps';
 is $b.detect-platform(:os<darwin>, :hardware<x86_64>),
-    'macos-x86_64',
-    'darwin/x86_64 maps (Intel Mac / Hackintosh / Rosetta\'d Raku on M1)';
+	'macos-x86_64',
+	'darwin/x86_64 maps (Intel Mac / Hackintosh / Rosetta\'d Raku on M1)';
 
 # --- Linux (libc axis) ---------------------------------------------
 is $b.detect-platform(:os<linux>, :hardware<x86_64>,  :libc<glibc>),
-    'linux-x86_64-glibc',
-    'linux/x86_64/glibc maps';
+	'linux-x86_64-glibc',
+	'linux/x86_64/glibc maps';
 is $b.detect-platform(:os<linux>, :hardware<x86_64>,  :libc<musl>),
-    'linux-x86_64-musl',
-    'linux/x86_64/musl maps (was the silent-bug case in 0.3.3)';
+	'linux-x86_64-musl',
+	'linux/x86_64/musl maps (was the silent-bug case in 0.3.3)';
 is $b.detect-platform(:os<linux>, :hardware<aarch64>, :libc<glibc>),
-    'linux-aarch64-glibc',
-    'linux/aarch64/glibc maps';
+	'linux-aarch64-glibc',
+	'linux/aarch64/glibc maps';
 is $b.detect-platform(:os<linux>, :hardware<aarch64>, :libc<musl>),
-    'linux-aarch64-musl',
-    'linux/aarch64/musl maps';
+	'linux-aarch64-musl',
+	'linux/aarch64/musl maps';
 
 # Linux with neither libc detected (e.g. uclibc, statically-linked
 # busybox systems) → Str:U so build() falls through to source build.
 ok $b.detect-platform(:os<linux>, :hardware<x86_64>, :libc(Str)) ~~ Str:U,
-    'linux/x86_64/no-libc returns Str:U for source-build fallback';
+	'linux/x86_64/no-libc returns Str:U for source-build fallback';
 
 # --- Windows -------------------------------------------------------
 is $b.detect-platform(:os<win32>,   :hardware<x86_64>),
-    'windows-x86_64',  'win32/x86_64 maps';
+	'windows-x86_64',  'win32/x86_64 maps';
 is $b.detect-platform(:os<win32>,   :hardware<aarch64>),
-    'windows-arm64',   'win32/aarch64 maps';
+	'windows-arm64',   'win32/aarch64 maps';
 is $b.detect-platform(:os<mswin32>, :hardware<x86_64>),
-    'windows-x86_64',  'mswin32/x86_64 maps';
+	'windows-x86_64',  'mswin32/x86_64 maps';
 is $b.detect-platform(:os<mswin32>, :hardware<aarch64>),
-    'windows-arm64',   'mswin32/aarch64 maps';
+	'windows-arm64',   'mswin32/aarch64 maps';
 
 # --- Unknown-platform fallback -------------------------------------
 ok $b.detect-platform(:os<freebsd>, :hardware<riscv64>) ~~ Str:U,
-    'fully unknown platform (freebsd/riscv64) returns Str:U';
+	'fully unknown platform (freebsd/riscv64) returns Str:U';
 
 # --- detect-platform-key shape -------------------------------------
 is $b.detect-platform-key(:os<darwin>, :hardware<arm64>),
-    'darwin-arm64',
-    'detect-platform-key omits libc axis for non-Linux';
+	'darwin-arm64',
+	'detect-platform-key omits libc axis for non-Linux';
 is $b.detect-platform-key(:os<darwin>, :hardware<x86_64>),
-    'darwin-x86_64',
-    'detect-platform-key returns the actual lookup string (darwin x86_64)';
+	'darwin-x86_64',
+	'detect-platform-key returns the actual lookup string (darwin x86_64)';
 is $b.detect-platform-key(:os<linux>, :hardware<x86_64>, :libc<musl>),
-    'linux-x86_64-musl',
-    'detect-platform-key includes libc axis for Linux';
+	'linux-x86_64-musl',
+	'detect-platform-key includes libc axis for Linux';
 is $b.detect-platform-key(:os<linux>, :hardware<x86_64>, :libc<glibc>),
-    'linux-x86_64-glibc',
-    'detect-platform-key with glibc';
+	'linux-x86_64-glibc',
+	'detect-platform-key with glibc';
 
 # --- detect-libc on non-Linux always returns Str:U -----------------
 ok $b.detect-libc(:os<darwin>)  ~~ Str:U, 'detect-libc returns Str:U on darwin';
@@ -95,6 +95,6 @@ is-deeply $b.known-platform-keys.Set,
      linux-aarch64-glibc linux-aarch64-musl
      win32-x86_64 win32-aarch64
      mswin32-x86_64 mswin32-aarch64>.Set,
-    'known-platform-keys matches the documented slug map';
+	'known-platform-keys matches the documented slug map';
 
 done-testing;

@@ -8,65 +8,65 @@ plan 7;
 # proving its complete FFmpeg dependency closure before any symbol call.
 my Str $resolved;
 lives-ok { $resolved = nc-lib() },
-    $*DISTRO.is-win
-        ?? 'full library and its FFmpeg dependency closure load on Windows'
-        !! 'full library path resolves on non-Windows';
+	$*DISTRO.is-win
+		?? 'full library and its FFmpeg dependency closure load on Windows'
+		!! 'full library path resolves on non-Windows';
 ok $resolved.defined && $resolved.IO.e,
-    'full notcurses library resolves to an existing file';
+	'full notcurses library resolves to an existing file';
 
 if $*DISTRO.is-win {
-    if $resolved.defined && $resolved.chars {
-        # Windows spells it 'Path'; %*ENV is case-sensitive, so hardcoding
-        # 'PATH' reads an absent key. This assertion used to pass only
-        # because _configure-runtime-env had the same bug and created that
-        # key — look up whichever spelling the host actually uses, exactly as
-        # the module now does.
-        my Str $key = %*ENV.keys.first({ .lc eq 'path' }) // 'PATH';
-        my Str $path-head = (%*ENV{$key} // '').split(';').first(*.chars) // '';
-        ok $path-head.chars,
-            'the environment carries a PATH we can inspect'
-            or diag "no PATH-like key among: {%*ENV.keys.sort}";
-        is $path-head.IO.absolute.Str, $resolved.IO.parent.absolute.Str,
-            'resolved notcurses directory is first on Windows PATH';
-    } else {
-        skip 'full notcurses library did not resolve', 2;
-    }
+	if $resolved.defined && $resolved.chars {
+		# Windows spells it 'Path'; %*ENV is case-sensitive, so hardcoding
+		# 'PATH' reads an absent key. This assertion used to pass only
+		# because _configure-runtime-env had the same bug and created that
+		# key — look up whichever spelling the host actually uses, exactly as
+		# the module now does.
+		my Str $key = %*ENV.keys.first({ .lc eq 'path' }) // 'PATH';
+		my Str $path-head = (%*ENV{$key} // '').split(';').first(*.chars) // '';
+		ok $path-head.chars,
+			'the environment carries a PATH we can inspect'
+			or diag "no PATH-like key among: {%*ENV.keys.sort}";
+		is $path-head.IO.absolute.Str, $resolved.IO.parent.absolute.Str,
+			'resolved notcurses directory is first on Windows PATH';
+	} else {
+		skip 'full notcurses library did not resolve', 2;
+	}
 } else {
-    pass 'PATH inspection is not applicable on this platform';
-    pass 'Windows PATH ordering is not applicable on this platform';
+	pass 'PATH inspection is not applicable on this platform';
+	pass 'Windows PATH ordering is not applicable on this platform';
 }
 
 subtest 'core visual bindings work without a TTY' => {
-    plan 3;
+	plan 3;
 
-    my $pixels = CArray[uint32].allocate(1);
-    $pixels[0] = 0xFF0000FF;  # ABGR: opaque red
-    my $visual;
-    LEAVE { ncvisual_destroy($visual) if $visual.defined }
+	my $pixels = CArray[uint32].allocate(1);
+	$pixels[0] = 0xFF0000FF;  # ABGR: opaque red
+	my $visual;
+	LEAVE { ncvisual_destroy($visual) if $visual.defined }
 
-    lives-ok {
-        $visual = ncvisual_from_rgba(
-            nativecast(Pointer, $pixels), 1, 4, 1
-        );
-    }, 'one-pixel RGBA visual loads through the core library';
-    ok $visual.defined, 'core library returns a defined visual handle';
+	lives-ok {
+		$visual = ncvisual_from_rgba(
+			nativecast(Pointer, $pixels), 1, 4, 1
+		);
+	}, 'one-pixel RGBA visual loads through the core library';
+	ok $visual.defined, 'core library returns a defined visual handle';
 
-    if $visual.defined {
-        my $to-destroy = $visual;
-        $visual = Nil;
-        lives-ok { ncvisual_destroy($to-destroy) },
-            'visual handle is destroyed through the core library';
-    } else {
-        skip 'visual handle was not created', 1;
-    }
+	if $visual.defined {
+		my $to-destroy = $visual;
+		$visual = Nil;
+		lives-ok { ncvisual_destroy($to-destroy) },
+			'visual handle is destroyed through the core library';
+	} else {
+		skip 'visual handle was not created', 1;
+	}
 };
 
 my Str $version;
 lives-ok { $version = notcurses_version() },
-    'core library version binding loads without a TTY';
+	'core library version binding loads without a TTY';
 if $version.defined {
-    like $version, /^ \d+ '.' \d+ '.' \d+ /,
-        'core library reports a semantic notcurses version';
+	like $version, /^ \d+ '.' \d+ '.' \d+ /,
+		'core library reports a semantic notcurses version';
 } else {
-    skip 'core library version did not load', 1;
+	skip 'core library version did not load', 1;
 }

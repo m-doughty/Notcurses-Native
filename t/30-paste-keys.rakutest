@@ -18,5 +18,5 @@ ok nckey_synthesized_p(NCKEY_PASTE_END),   'paste end is a synthesized key';
 nok nckey_mouse_p(NCKEY_PASTE_BEGIN), 'paste begin is not a mouse event';
 
 ok NCKEY_PASTE_BEGIN > NCKEY_BUTTON11 && NCKEY_PASTE_END < NCKEY_SIGNAL,
-    'the pair sits in the gap between the mouse buttons and NCKEY_SIGNAL';
+	'the pair sits in the gap between the mouse buttons and NCKEY_SIGNAL';
 isnt NCKEY_PASTE_BEGIN, NCKEY_PASTE_END, 'begin and end differ';

@@ -83,7 +83,7 @@ ncplane_set_fg_rgb8($std, 180, 180, 180);
 ncplane_putstr_yx($std, 19, 2, 'Styles:');
 my $sx = 2;
 for (NCSTYLE_BOLD, 'Bold'), (NCSTYLE_ITALIC, 'Italic'),
-    (NCSTYLE_UNDERLINE, 'Underline'), (NCSTYLE_STRUCK, 'Struck') -> ($style, $name) {
+	(NCSTYLE_UNDERLINE, 'Underline'), (NCSTYLE_STRUCK, 'Struck') -> ($style, $name) {
 	ncplane_set_fg_rgb8($std, 255, 255, 255);
 	ncplane_on_styles($std, $style);
 	ncplane_putstr_yx($std, 20, $sx, $name);

@@ -40,30 +40,30 @@ my Str $key = %env.keys.first({ .lc eq 'path' }) // 'PATH';
 %env{$key} = $sentinel ~ $sep ~ (%env{$key} // '');
 
 my $proc = run $*EXECUTABLE, '-I', $root.child('lib').Str, $child.Str,
-                :out, :err, :%env;
+				:out, :err, :%env;
 my Str $stdout = $proc.out.slurp(:close);
 my Str $stderr = $proc.err.slurp(:close);
 
 is $proc.exitcode, 0, 'the probe process loaded Notcurses::Native'
-    or diag $stderr;
+	or diag $stderr;
 
 my ($seen-key, $key-count, $path) = $stdout.split("\t", 3);
 
 is $key-count.Int, 1,
-    'exactly one PATH-ish environment key — no second spelling was created';
+	'exactly one PATH-ish environment key — no second spelling was created';
 
 ok ($path // '').contains($sentinel),
-    'a directory that was on PATH before the import is still on it after';
+	'a directory that was on PATH before the import is still on it after';
 
 # The prepend itself only happens on Windows; elsewhere the block is skipped
 # entirely and PATH must come back untouched.
 if $*DISTRO.is-win {
-    ok ($path // '').split($sep).grep(*.chars).elems > 1,
-        'PATH still has more than the one directory this module adds';
+	ok ($path // '').split($sep).grep(*.chars).elems > 1,
+		'PATH still has more than the one directory this module adds';
 } else {
-    is ($path // '').split($sep).grep(*.chars).elems,
-       (%env{$key} // '').split($sep).grep(*.chars).elems,
-       'PATH is left exactly as it was on non-Windows';
+	is ($path // '').split($sep).grep(*.chars).elems,
+	   (%env{$key} // '').split($sep).grep(*.chars).elems,
+	   'PATH is left exactly as it was on non-Windows';
 }
 
 done-testing;

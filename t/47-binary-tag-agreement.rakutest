@@ -1,0 +1,43 @@
+use v6.d;
+use Test;
+
+# The prebuilt binary release this dist pins is named in two files that must say
+# the same thing: BINARY_TAG at the root, which CI and t/22 read, and
+# resources/BINARY_TAG, which Build.rakumod and the runtime read.  Nothing else
+# ties them together, and the bump procedure has to change both, so a bump that
+# changes only one would ship a dist whose CI builds one release and whose
+# installs download another.  This file fails that bump.
+
+plan 7;
+
+# Found from this file, never from the working directory, so it holds wherever
+# the suite is started from.
+my IO::Path $root = $?FILE.IO.parent.parent;
+my IO::Path $top  = $root.add('BINARY_TAG');
+my IO::Path $res  = $root.add('resources').add('BINARY_TAG');
+
+my regex tag-form { ^ 'binaries-notcurses-' \d+ [ '.' \d+ ]+ '-r' \d+ $ }
+
+# The file's non-empty lines; empty when it is missing, which the existence
+# check has already reported.  Read as Latin-1 so that no byte sequence can
+# make the read itself die.
+sub tag-lines(IO::Path $file --> List:D) {
+	return ().List unless $file.e;
+	$file.slurp(:enc<latin1>).lines.grep(*.chars).List
+}
+
+ok $top.e, 'BINARY_TAG exists at the dist root';
+ok $res.e, 'resources/BINARY_TAG exists';
+
+for (
+	'BINARY_TAG',           $top,
+	'resources/BINARY_TAG', $res,
+) -> Str $name, IO::Path $file {
+	my @lines = tag-lines($file);
+	is @lines.elems, 1, "$name holds exactly one non-empty line";
+	ok @lines.elems == 1 && @lines[0] ~~ &tag-form,
+		"the line in $name has the form binaries-notcurses-<version>-r<N>";
+}
+
+ok $top.e && $res.e && $top.slurp(:bin) eqv $res.slurp(:bin),
+	'the two files are byte-identical';

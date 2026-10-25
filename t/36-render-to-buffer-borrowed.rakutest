@@ -37,16 +37,16 @@ my Str $prelude = q:to/RAKU/;
     RAKU
 
 sub clean-exit(Map $run, Str $what) {
-    ok !$run<timed-out> && $run<exitcode> == 0 && $run<signal> == 0,
-        "$what: child exits cleanly ({describe-exit($run)})"
-        or diag "child stderr:\n{$run<err>}";
+	ok !$run<timed-out> && $run<exitcode> == 0 && $run<signal> == 0,
+		"$what: child exits cleanly ({describe-exit($run)})"
+		or diag "child stderr:\n{$run<err>}";
 }
 
 plan 3;
 
 subtest 'the wrappers leave the buffer to notcurses: frames, renders and stop all survive' => {
-    plan 7;
-    my $run = run-headless-script($prelude ~ q:to/RAKU/);
+	plan 7;
+	my $run = run-headless-script($prelude ~ q:to/RAKU/);
         for ^3 -> $i {
             ncplane_putstr_yx($std, $i, 0, "frame $i " ~ ('#' x 40));
             my Str $s = ncpile-render-to-string($std);
@@ -60,21 +60,21 @@ subtest 'the wrappers leave the buffer to notcurses: frames, renders and stop al
         report 'stop', notcurses_stop($nc);
         report 'finished', 'yes';
         RAKU
-    clean-exit($run, 'three wrapper frames, renders between, then stop');
-    my %r = $run<results>;
-    is %r<finished>, 'yes', 'the child ran to its last line';
-    is (^3).map({ %r{"string-$_"} }).List, <defined defined defined>,
-        'every ncpile-render-to-string call answered a frame';
-    is (^3).map({ %r{"render-$_"} }).List, <0 0 0>,
-        'notcurses_render still succeeds after each in-memory frame';
-    is %r<blob>, 'defined', 'ncpile-render-to-blob answered a frame';
-    is %r<render-after-blob>, '0', 'and rendering carries on after it';
-    is %r<stop>, '0', 'notcurses_stop frees the buffer once, cleanly';
+	clean-exit($run, 'three wrapper frames, renders between, then stop');
+	my %r = $run<results>;
+	is %r<finished>, 'yes', 'the child ran to its last line';
+	is (^3).map({ %r{"string-$_"} }).List, <defined defined defined>,
+		'every ncpile-render-to-string call answered a frame';
+	is (^3).map({ %r{"render-$_"} }).List, <0 0 0>,
+		'notcurses_render still succeeds after each in-memory frame';
+	is %r<blob>, 'defined', 'ncpile-render-to-blob answered a frame';
+	is %r<render-after-blob>, '0', 'and rendering carries on after it';
+	is %r<stop>, '0', 'notcurses_stop frees the buffer once, cleanly';
 };
 
 subtest 'the raw binding lends the same buffer on every call' => {
-    plan 5;
-    my $run = run-headless-script($prelude ~ q:to/RAKU/);
+	plan 5;
+	my $run = run-headless-script($prelude ~ q:to/RAKU/);
         my $buf = CArray[Pointer].new(Pointer);
         my $len = CArray[size_t].new(0);
         report 'rv-1', ncpile_render_to_buffer($std, $buf, $len);
@@ -87,18 +87,18 @@ subtest 'the raw binding lends the same buffer on every call' => {
         # Not freed here, and stop must still be clean: the library owns it.
         report 'stop', notcurses_stop($nc);
         RAKU
-    clean-exit($run, 'two raw calls, no free, then stop');
-    my %r = $run<results>;
-    is-deeply (%r<rv-1>, %r<rv-2>), ('0', '0'), 'both raw calls succeed';
-    is %r<non-null>, 'yes', 'the raw call hands out a buffer';
-    is %r<same-buffer>, 'yes',
-        'both calls hand out the SAME buffer — it is notcurses\'s, borrowed';
-    is %r<stop>, '0', 'stop succeeds with the buffer never freed by the caller';
+	clean-exit($run, 'two raw calls, no free, then stop');
+	my %r = $run<results>;
+	is-deeply (%r<rv-1>, %r<rv-2>), ('0', '0'), 'both raw calls succeed';
+	is %r<non-null>, 'yes', 'the raw call hands out a buffer';
+	is %r<same-buffer>, 'yes',
+		'both calls hand out the SAME buffer — it is notcurses\'s, borrowed';
+	is %r<stop>, '0', 'stop succeeds with the buffer never freed by the caller';
 };
 
 subtest 'a short frame after a long one carries no stale tail' => {
-    plan 8;
-    my $run = run-headless-script($prelude ~ q:to/RAKU/);
+	plan 8;
+	my $run = run-headless-script($prelude ~ q:to/RAKU/);
         my $stats = Ncstats.new;
         # notcurses adds every rasterized frame's exact length to
         # raster_bytes — the only independent witness of "buflen" that
@@ -150,23 +150,23 @@ subtest 'a short frame after a long one carries no stale tail' => {
         # freed the buffer they came from.
         report 'blob-after-stop', $blob.bytes;
         RAKU
-    clean-exit($run, 'long frame, in-memory frame, stop');
-    my %r = $run<results>;
+	clean-exit($run, 'long frame, in-memory frame, stop');
+	my %r = $run<results>;
 
-    ok %r<long-1> > 0 && %r<long-2> > 0,
-        "the long frames really went through notcurses's buffer "
-          ~ "({%r<long-1> // '?'} and {%r<long-2> // '?'} bytes)";
-    is %r<blob-bytes>, %r<blob-reported>,
-        'ncpile-render-to-blob answers exactly the bytes notcurses reported';
-    ok %r<blob-reported> < %r<long-1>,
-        'and that frame is shorter than the one before it (the stale-tail case)';
-    is %r<string-bytes>, %r<string-reported>,
-        'ncpile-render-to-string answers exactly the bytes notcurses reported';
-    ok %r<string-reported> < %r<long-2>,
-        'and that frame is shorter than the one before it too';
-    is %r<stop>, '0', 'notcurses_stop succeeds';
-    is %r<blob-after-stop>, %r<blob-bytes>,
-        'the blob is a Raku-owned copy that outlives the library buffer';
+	ok %r<long-1> > 0 && %r<long-2> > 0,
+		"the long frames really went through notcurses's buffer "
+		  ~ "({%r<long-1> // '?'} and {%r<long-2> // '?'} bytes)";
+	is %r<blob-bytes>, %r<blob-reported>,
+		'ncpile-render-to-blob answers exactly the bytes notcurses reported';
+	ok %r<blob-reported> < %r<long-1>,
+		'and that frame is shorter than the one before it (the stale-tail case)';
+	is %r<string-bytes>, %r<string-reported>,
+		'ncpile-render-to-string answers exactly the bytes notcurses reported';
+	ok %r<string-reported> < %r<long-2>,
+		'and that frame is shorter than the one before it too';
+	is %r<stop>, '0', 'notcurses_stop succeeds';
+	is %r<blob-after-stop>, %r<blob-bytes>,
+		'the blob is a Raku-owned copy that outlives the library buffer';
 };
 
 done-testing;

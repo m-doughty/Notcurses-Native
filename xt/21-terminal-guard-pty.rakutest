@@ -4,33 +4,33 @@ use lib 'lib';
 use Notcurses::Native;
 
 if $*DISTRO.is-win {
-    plan 1;
-    skip 'POSIX PTY terminal-guard contract; Windows terminal restoration is not verified by this test', 1;
-    done-testing;
-    exit 0;
+	plan 1;
+	skip 'POSIX PTY terminal-guard contract; Windows terminal restoration is not verified by this test', 1;
+	done-testing;
+	exit 0;
 }
 
 sub fail-requirement(Str:D $message) {
-    plan 1;
-    flunk $message;
-    done-testing;
-    exit 1;
+	plan 1;
+	flunk $message;
+	done-testing;
+	exit 1;
 }
 
 my Str $shim = shim-lib() // '';
 my Str $core = core-lib() // '';
 fail-requirement("POSIX terminal-guard test requires the built native shim; resolved '$shim'")
-    unless $shim.chars && $shim.IO.f;
+	unless $shim.chars && $shim.IO.f;
 fail-requirement("POSIX terminal-guard test requires the matching native core; resolved '$core'")
-    unless $core.chars && $core.IO.f;
+	unless $core.chars && $core.IO.f;
 
 my $tmp = $*TMPDIR.add('notcurses-native-guard-pty-' ~ $*PID ~ '-' ~ now.Int);
 $tmp.mkdir;
 LEAVE {
-    for <child.c child driver.py> -> $name {
-        try $tmp.add($name).unlink;
-    }
-    try $tmp.rmdir;
+	for <child.c child driver.py> -> $name {
+		try $tmp.add($name).unlink;
+	}
+	try $tmp.rmdir;
 }
 
 my $child-c = $tmp.add('child.c');
@@ -641,7 +641,7 @@ PY
 my Str $python = %*ENV<PYTHON> // 'python3';
 my Str $compiler = %*ENV<CC> // 'cc';
 my $process = Proc::Async.new($python, $driver.Str, $child-c.Str,
-    $tmp.add('child').Str, $core, $shim, $compiler);
+	$tmp.add('child').Str, $core, $shim, $compiler);
 my Lock $output-lock .= new;
 my Str $out = '';
 my Str $err = '';
@@ -654,86 +654,86 @@ my Bool $overflow = False;
 # fail-requirement message past the start/await below, so these quit
 # handlers just need to absorb it, not report it.
 my $out-tap = $process.stdout.tap(-> $chunk {
-    $output-lock.protect: {
-        $overflow = True if $out.chars + $chunk.chars > 65536;
-        $out ~= $chunk.substr(0, 65536 - $out.chars);
-    }
+	$output-lock.protect: {
+		$overflow = True if $out.chars + $chunk.chars > 65536;
+		$out ~= $chunk.substr(0, 65536 - $out.chars);
+	}
 }, quit => -> $ { });
 my $err-tap = $process.stderr.tap(-> $chunk {
-    $output-lock.protect: {
-        $overflow = True if $err.chars + $chunk.chars > 8192;
-        $err ~= $chunk.substr(0, 8192 - $err.chars);
-    }
+	$output-lock.protect: {
+		$overflow = True if $err.chars + $chunk.chars > 8192;
+		$err ~= $chunk.substr(0, 8192 - $err.chars);
+	}
 }, quit => -> $ { });
 LEAVE {
-    try $out-tap.close;
-    try $err-tap.close;
+	try $out-tap.close;
+	try $err-tap.close;
 }
 my $completion = try $process.start;
 fail-requirement("POSIX terminal-guard test requires Python 3 with pty and termios: '$python'")
-    unless $completion.defined;
+	unless $completion.defined;
 try await Promise.anyof($completion, Promise.in(135));
 if $completion.status ~~ Planned {
-    try $process.kill(15);
-    try await Promise.anyof($completion, Promise.in(3));
-    if $completion.status ~~ Planned {
-        try $process.kill(9);
-        try await Promise.anyof($completion, Promise.in(2));
-    }
-    fail-requirement('POSIX terminal-guard driver exceeded its 135-second deadline');
+	try $process.kill(15);
+	try await Promise.anyof($completion, Promise.in(3));
+	if $completion.status ~~ Planned {
+		try $process.kill(9);
+		try await Promise.anyof($completion, Promise.in(2));
+	}
+	fail-requirement('POSIX terminal-guard driver exceeded its 135-second deadline');
 }
 my $result = try await $completion;
 fail-requirement("POSIX terminal-guard test requires Python 3 with pty and termios; '$python': "
-    ~ ($completion.status ~~ Broken ?? $completion.cause.message !! $err.trim))
-    unless $result.defined;
+	~ ($completion.status ~~ Broken ?? $completion.cause.message !! $err.trim))
+	unless $result.defined;
 fail-requirement('POSIX terminal-guard driver exceeded its output bound') if $overflow;
 my $report = try Rakudo::Internals::JSON.from-json($out);
 fail-requirement('Python PTY driver did not return a valid report: ' ~ $err.trim)
-    unless $report ~~ Associative;
+	unless $report ~~ Associative;
 fail-requirement($report<error>.Str) if $report<error>:exists;
 fail-requirement('Python PTY driver failed: ' ~ $err.trim) if $result.exitcode != 0;
 fail-requirement('Python PTY driver did not return all six terminal-guard cases')
-    unless $report<cases> ~~ Positional && $report<cases>.elems == 6;
+	unless $report<cases> ~~ Positional && $report<cases>.elems == 6;
 fail-requirement('Python PTY driver did not return the platform control-character count')
-    unless $report<control_char_count> ~~ Int && $report<control_char_count> > 0;
+	unless $report<control_char_count> ~~ Int && $report<control_char_count> > 0;
 
 sub complete-termios($state, Int:D $control-char-count --> Bool) {
-    return False unless $state ~~ Positional && $state.elems == 7;
-    return False unless $state[6] ~~ Positional && $state[6].elems == $control-char-count;
-    so ($state.head(6).all ~~ Int) && ($state[6].all ~~ Int);
+	return False unless $state ~~ Positional && $state.elems == 7;
+	return False unless $state[6] ~~ Positional && $state[6].elems == $control-char-count;
+	so ($state.head(6).all ~~ Int) && ($state[6].all ~~ Int);
 }
 
 plan 6;
 my @names =
-    'C exit restores the original terminal and writes cleanup once',
-    'repeated arm while raw preserves the original snapshot and cleanup',
-    'disarm suppresses cleanup and preserves the exact raw state',
-    'a different owner cannot reserve, arm, disarm, or release the guard',
-    'release permits a fresh owner to capture and restore cooked state',
-    'concurrent arm/disarm completes before a fresh final snapshot';
+	'C exit restores the original terminal and writes cleanup once',
+	'repeated arm while raw preserves the original snapshot and cleanup',
+	'disarm suppresses cleanup and preserves the exact raw state',
+	'a different owner cannot reserve, arm, disarm, or release the guard',
+	'release permits a fresh owner to capture and restore cooked state',
+	'concurrent arm/disarm completes before a fresh final snapshot';
 for $report<cases>.list.kv -> $index, $case {
-    subtest @names[$index] => {
-        plan 5;
-        nok ($case<error>:exists), 'PTY driver completed within its bounds';
-        diag $case<error> if $case<error>:exists;
-        is $case<code>, 0, 'C child accepted every required guard return code';
-        if complete-termios($case<raw_observed>, $report<control_char_count>)
-            && complete-termios($case<raw_expected>, $report<control_char_count>) {
-            is-deeply $case<raw_observed>, $case<raw_expected>,
-                'raw state matches all flags, speeds, and control characters';
-        } else {
-            flunk 'raw comparison requires two complete termios tuples';
-        }
-        my $expected-after = $index == 2 ?? $case<raw_expected> !! $case<before>;
-        if complete-termios($case<after>, $report<control_char_count>)
-            && complete-termios($expected-after, $report<control_char_count>) {
-            is-deeply $case<after>, $expected-after,
-                'exit leaves the exact required termios state';
-        } else {
-            flunk 'exit comparison requires two complete termios tuples';
-        }
-        is $case<cleanup_hex>, $case<expected_hex>, 'exit writes exactly the required cleanup bytes';
-    };
+	subtest @names[$index] => {
+		plan 5;
+		nok ($case<error>:exists), 'PTY driver completed within its bounds';
+		diag $case<error> if $case<error>:exists;
+		is $case<code>, 0, 'C child accepted every required guard return code';
+		if complete-termios($case<raw_observed>, $report<control_char_count>)
+			&& complete-termios($case<raw_expected>, $report<control_char_count>) {
+			is-deeply $case<raw_observed>, $case<raw_expected>,
+				'raw state matches all flags, speeds, and control characters';
+		} else {
+			flunk 'raw comparison requires two complete termios tuples';
+		}
+		my $expected-after = $index == 2 ?? $case<raw_expected> !! $case<before>;
+		if complete-termios($case<after>, $report<control_char_count>)
+			&& complete-termios($expected-after, $report<control_char_count>) {
+			is-deeply $case<after>, $expected-after,
+				'exit leaves the exact required termios state';
+		} else {
+			flunk 'exit comparison requires two complete termios tuples';
+		}
+		is $case<cleanup_hex>, $case<expected_hex>, 'exit writes exactly the required cleanup bytes';
+	};
 }
 
 done-testing;

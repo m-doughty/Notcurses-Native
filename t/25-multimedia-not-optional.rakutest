@@ -25,10 +25,10 @@ plan 7;
 ok $build.e, 'Build.rakumod exists';
 
 ok $src.contains('-DUSE_MULTIMEDIA=ffmpeg'),
-    'the configure step asks for the ffmpeg multimedia backend';
+	'the configure step asks for the ffmpeg multimedia backend';
 
 ok $src.contains('NOTCURSES_NATIVE_ALLOW_NO_MULTIMEDIA'),
-    'the core-only fallback is gated behind an explicit opt-in env var';
+	'the core-only fallback is gated behind an explicit opt-in env var';
 
 # The downgrade assignment must be dominated by the opt-in check. Compare
 # source offsets: if the guard does not appear before the assignment, the
@@ -38,31 +38,31 @@ my Int $downgrade-at = $src.index("'-DUSE_MULTIMEDIA=none'");
 
 ok $downgrade-at.defined, 'the core-only downgrade is still implemented';
 ok $guard-at.defined && $guard-at < $downgrade-at,
-    'the opt-in check precedes the downgrade, so it cannot be bypassed';
+	'the opt-in check precedes the downgrade, so it cannot be bypassed';
 
 subtest 'a failed configure dies by default rather than degrading' => {
-    plan 2;
-    # The `unless <opt-in> { die ... }` shape is what makes the default path
-    # fatal: the opt-in is a negated guard, and the branch it guards dies.
-    my Str $guard-line =
-        $src.lines.first(*.contains('NOTCURSES_NATIVE_ALLOW_NO_MULTIMEDIA'));
-    ok $guard-line.defined && $guard-line.contains('unless'),
-        'the opt-in is a negated guard, so the unset default takes the branch';
-    my Str $between = $src.substr($guard-at, $downgrade-at - $guard-at);
-    ok $between.contains('die'),
-        'and that branch dies rather than falling through to the downgrade';
+	plan 2;
+	# The `unless <opt-in> { die ... }` shape is what makes the default path
+	# fatal: the opt-in is a negated guard, and the branch it guards dies.
+	my Str $guard-line =
+		$src.lines.first(*.contains('NOTCURSES_NATIVE_ALLOW_NO_MULTIMEDIA'));
+	ok $guard-line.defined && $guard-line.contains('unless'),
+		'the opt-in is a negated guard, so the unset default takes the branch';
+	my Str $between = $src.substr($guard-at, $downgrade-at - $guard-at);
+	ok $between.contains('die'),
+		'and that branch dies rather than falling through to the downgrade';
 };
 
 subtest 'the failure message tells the user how to fix it' => {
-    plan 4;
-    # A bare "configure failed" leaves the user guessing; the whole point of
-    # failing loudly is that the next step is obvious. One hint per platform
-    # this distribution supports building on.
-    ok $src.contains('libavdevice-dev'), 'Debian/Ubuntu remedy is named';
-    ok $src.contains('ffmpeg-devel'),    'Fedora remedy is named';
-    ok $src.contains('brew install ffmpeg'), 'macOS remedy is named';
-    ok $src.contains('mingw-w64-ucrt-x86_64-ffmpeg'),
-        'MSYS2/UCRT64 remedy is named';
+	plan 4;
+	# A bare "configure failed" leaves the user guessing; the whole point of
+	# failing loudly is that the next step is obvious. One hint per platform
+	# this distribution supports building on.
+	ok $src.contains('libavdevice-dev'), 'Debian/Ubuntu remedy is named';
+	ok $src.contains('ffmpeg-devel'),    'Fedora remedy is named';
+	ok $src.contains('brew install ffmpeg'), 'macOS remedy is named';
+	ok $src.contains('mingw-w64-ucrt-x86_64-ffmpeg'),
+		'MSYS2/UCRT64 remedy is named';
 };
 
 done-testing;

@@ -27,25 +27,25 @@ use Notcurses::Native;
 # Linux run.
 
 if $*DISTRO.is-win {
-    plan 1;
-    # Windows DLLs use one flat name per library — no version-alias chain
-    # exists to collapse, and NTFS symlinks need elevation we can't assume.
-    pass 'single-image invariant not applicable to Windows DLL naming';
-    exit;
+	plan 1;
+	# Windows DLLs use one flat name per library — no version-alias chain
+	# exists to collapse, and NTFS symlinks need elevation we can't assume.
+	pass 'single-image invariant not applicable to Windows DLL naming';
+	exit;
 }
 
 my IO::Path $lib-dir = do {
-    # Same resolution the runtime uses: env override, then the staged dir.
-    my $override = %*ENV<NOTCURSES_NATIVE_LIB_DIR>;
-    ($override && $override.IO.d)
-        ?? $override.IO
-        !! core-lib().IO.parent;   # exported by Notcurses::Native
+	# Same resolution the runtime uses: env override, then the staged dir.
+	my $override = %*ENV<NOTCURSES_NATIVE_LIB_DIR>;
+	($override && $override.IO.d)
+		?? $override.IO
+		!! core-lib().IO.parent;   # exported by Notcurses::Native
 };
 
 unless $lib-dir.d {
-    plan 1;
-    flunk "staged lib dir not found: $lib-dir";
-    exit;
+	plan 1;
+	flunk "staged lib dir not found: $lib-dir";
+	exit;
 }
 
 # $ext is exported by Notcurses::Native (dylib / dll / so).
@@ -53,36 +53,36 @@ my @libs = <libnotcurses libnotcurses-core libnotcurses-ffi>;
 plan +@libs;
 
 for @libs -> Str $lib {
-    subtest $lib => {
-        # All staged name variants of this logical library. Same
-        # separator discipline as the resolver: only '.' after the name,
-        # so 'libnotcurses' never claims 'libnotcurses-core.*'.
-        my @variants = $lib-dir.dir.grep({
-            my $bn = .basename;
-            $bn eq "$lib.$ext"
-                || ($bn.starts-with("$lib.") && $bn.contains(".$ext"))
-        });
-        ok @variants >= 1, "at least one staged variant of $lib";
+	subtest $lib => {
+		# All staged name variants of this logical library. Same
+		# separator discipline as the resolver: only '.' after the name,
+		# so 'libnotcurses' never claims 'libnotcurses-core.*'.
+		my @variants = $lib-dir.dir.grep({
+			my $bn = .basename;
+			$bn eq "$lib.$ext"
+				|| ($bn.starts-with("$lib.") && $bn.contains(".$ext"))
+		});
+		ok @variants >= 1, "at least one staged variant of $lib";
 
-        my @real = @variants.grep({ !.l });
-        is +@real, 1,
-            "exactly one real file among {+@variants} variants "
-            ~ "({@variants».basename.sort.join(', ')})";
+		my @real = @variants.grep({ !.l });
+		is +@real, 1,
+			"exactly one real file among {+@variants} variants "
+			~ "({@variants».basename.sort.join(', ')})";
 
-        # Every variant — symlink or not — must land on that one inode.
-        my @targets = @variants.map({ .resolve.absolute }).unique;
-        is +@targets, 1,
-            "all variants resolve to a single real path ({@targets[0] // '?'})";
+		# Every variant — symlink or not — must land on that one inode.
+		my @targets = @variants.map({ .resolve.absolute }).unique;
+		is +@targets, 1,
+			"all variants resolve to a single real path ({@targets[0] // '?'})";
 
-        # Symlink aliases must be relative, so the staged dir stays
-        # relocatable (NOTCURSES_NATIVE_DATA_DIR can move between runs).
-        for @variants.grep(*.l) -> $alias {
-            my $shown = run(:out, 'readlink', $alias.absolute)
-                .out.slurp(:close).trim;
-            nok $shown.starts-with('/'),
-                "{$alias.basename} is a relative symlink ($shown)";
-        }
-    };
+		# Symlink aliases must be relative, so the staged dir stays
+		# relocatable (NOTCURSES_NATIVE_DATA_DIR can move between runs).
+		for @variants.grep(*.l) -> $alias {
+			my $shown = run(:out, 'readlink', $alias.absolute)
+				.out.slurp(:close).trim;
+			nok $shown.starts-with('/'),
+				"{$alias.basename} is a relative symlink ($shown)";
+		}
+	};
 }
 
 done-testing;

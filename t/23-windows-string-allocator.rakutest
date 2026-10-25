@@ -4,11 +4,11 @@ use lib $*PROGRAM.parent.parent.child('lib').Str;
 use Notcurses::Native::Str;
 
 if $*DISTRO.is-win {
-    is libc-name(), 'ucrtbase.dll',
-        'caller-owned notcurses strings are freed through the Universal CRT';
+	is libc-name(), 'ucrtbase.dll',
+		'caller-owned notcurses strings are freed through the Universal CRT';
 } else {
-    isnt libc-name(), 'ucrtbase.dll',
-        'non-Windows platforms retain their native libc resolver';
+	isnt libc-name(), 'ucrtbase.dll',
+		'non-Windows platforms retain their native libc resolver';
 }
 
 done-testing;

@@ -22,14 +22,14 @@ use Notcurses::Native::Test::Headless;
 plan 4;
 
 sub clean-exit(Map $run, Str $what) {
-    ok !$run<timed-out> && $run<exitcode> == 0 && $run<signal> == 0,
-        "$what: child exits cleanly ({describe-exit($run)})"
-        or diag "child stderr:\n{$run<err>}";
+	ok !$run<timed-out> && $run<exitcode> == 0 && $run<signal> == 0,
+		"$what: child exits cleanly ({describe-exit($run)})"
+		or diag "child stderr:\n{$run<err>}";
 }
 
 subtest 'Str helpers: an undefined pointer first, then real ones' => {
-    plan 9;
-    my $run = run-headless-script(q:to/RAKU/);
+	plan 9;
+	my $run = run-headless-script(q:to/RAKU/);
         use NativeCall;
         use Notcurses::Native::Str :DEFAULT, :INTERNAL;
         use Notcurses::Native::Test::Headless;
@@ -85,24 +85,24 @@ subtest 'Str helpers: an undefined pointer first, then real ones' => {
         full-gc();
         report 'growth-kib', current-rss-kib() - $before;
         RAKU
-    clean-exit($run, 'Str helpers');
-    my %r = $run<results>;
-    is %r<strdup-none>, 'Str', 'strdup-copy-and-free of an undefined pointer answers Str';
-    is %r<borrowed-none> ~ '/' ~ %r<buf-none>, 'Str/0',
-        'the borrowed readers answer Str and an empty buf for it';
-    is %r<strdup-real>, "r\x[E9]el", 'then decodes a real heap string';
-    is %r<borrowed-real>, 'borrowed text', 'borrowed-str-from-pointer reads a real one';
-    is %r<buf-real>, 'borrowed', 'borrowed-buf-from-pointer copies exactly the bytes asked for';
-    is %r<into-blob>, 'borr', 'copy-native-into-blob copies after a zero-byte undefined call';
-    is %r<from-blob>, 'xyz', 'copy-blob-into-native likewise';
-    ok %r<growth-kib>.defined && %r<growth-kib> < 24 * 1024,
-        "20,000 strdup-copy-and-free calls after the undefined one leave RSS flat "
-          ~ "(grew {%r<growth-kib> // '?'} KiB; a pinned free grows ~80 MiB)";
+	clean-exit($run, 'Str helpers');
+	my %r = $run<results>;
+	is %r<strdup-none>, 'Str', 'strdup-copy-and-free of an undefined pointer answers Str';
+	is %r<borrowed-none> ~ '/' ~ %r<buf-none>, 'Str/0',
+		'the borrowed readers answer Str and an empty buf for it';
+	is %r<strdup-real>, "r\x[E9]el", 'then decodes a real heap string';
+	is %r<borrowed-real>, 'borrowed text', 'borrowed-str-from-pointer reads a real one';
+	is %r<buf-real>, 'borrowed', 'borrowed-buf-from-pointer copies exactly the bytes asked for';
+	is %r<into-blob>, 'borr', 'copy-native-into-blob copies after a zero-byte undefined call';
+	is %r<from-blob>, 'xyz', 'copy-blob-into-native likewise';
+	ok %r<growth-kib>.defined && %r<growth-kib> < 24 * 1024,
+		"20,000 strdup-copy-and-free calls after the undefined one leave RSS flat "
+		  ~ "(grew {%r<growth-kib> // '?'} KiB; a pinned free grows ~80 MiB)";
 };
 
 subtest 'destroy wrappers: an undefined handle first, then real widgets' => {
-    plan 6;
-    my $run = run-headless-script(q:to/RAKU/);
+	plan 6;
+	my $run = run-headless-script(q:to/RAKU/);
         use NativeCall;
         use Notcurses::Native;
         use Notcurses::Native::Types;
@@ -133,20 +133,20 @@ subtest 'destroy wrappers: an undefined handle first, then real widgets' => {
         notcurses-stats-free($stats);
         report 'stop', notcurses_stop($nc);
         RAKU
-    clean-exit($run, 'destroy wrappers');
-    my %r = $run<results>;
-    is %r<selector-none> ~ '/' ~ %r<reader-none>, 'Str/Str',
-        'undefined selector and reader handles answer Str, touching nothing';
-    is %r<selector-real>, 'beta', 'then a real selector hands back its selection';
-    is %r<reader-real>, 'ok', 'and a real reader its text';
-    ok %r<stats-real>.defined && %r<stats-real> > 0,
-        'notcurses-stats-free of a type object, then a real struct freed after use';
-    is %r<stop>, '0', 'notcurses_stop succeeds';
+	clean-exit($run, 'destroy wrappers');
+	my %r = $run<results>;
+	is %r<selector-none> ~ '/' ~ %r<reader-none>, 'Str/Str',
+		'undefined selector and reader handles answer Str, touching nothing';
+	is %r<selector-real>, 'beta', 'then a real selector hands back its selection';
+	is %r<reader-real>, 'ok', 'and a real reader its text';
+	ok %r<stats-real>.defined && %r<stats-real> > 0,
+		'notcurses-stats-free of a type object, then a real struct freed after use';
+	is %r<stop>, '0', 'notcurses_stop succeeds';
 };
 
 subtest 'printf and the other Raku-side wrappers: undefined first, then real' => {
-    plan 6;
-    my $run = run-headless-script(q:to/RAKU/);
+	plan 6;
+	my $run = run-headless-script(q:to/RAKU/);
         use NativeCall;
         use Notcurses::Native;
         use Notcurses::Native::Types;
@@ -166,29 +166,29 @@ subtest 'printf and the other Raku-side wrappers: undefined first, then real' =>
         report 'rgba-real', ncplane-as-rgba($p, NCBLIT_1x1, 0, 0, 1, 1, $y, $x)[0].fmt('%08X');
         report 'stop', notcurses_stop($nc);
         RAKU
-    clean-exit($run, 'Raku-side wrappers');
-    my %r = $run<results>;
-    is %r<printf-none>, 'died', 'ncplane_printf refuses an undefined plane';
-    is %r<rgba-none>, 'buf32 0x0', 'ncplane-as-rgba answers buf32 and 0x0 for one, calling nothing';
-    is %r<printf-real>, '4', 'then prints on a real one';
-    ok %r<rgba-real>.defined && %r<rgba-real> eq 'FF302010',
-        "ncplane-as-rgba reads a real plane after an undefined one ({%r<rgba-real> // '?'})";
-    is %r<stop>, '0', 'notcurses_stop succeeds';
+	clean-exit($run, 'Raku-side wrappers');
+	my %r = $run<results>;
+	is %r<printf-none>, 'died', 'ncplane_printf refuses an undefined plane';
+	is %r<rgba-none>, 'buf32 0x0', 'ncplane-as-rgba answers buf32 and 0x0 for one, calling nothing';
+	is %r<printf-real>, '4', 'then prints on a real one';
+	ok %r<rgba-real>.defined && %r<rgba-real> eq 'FF302010',
+		"ncplane-as-rgba reads a real plane after an undefined one ({%r<rgba-real> // '?'})";
+	is %r<stop>, '0', 'notcurses_stop succeeds';
 };
 
 subtest 'test support: the null device opens, and is never a file called NUL' => {
-    plan 4;
-    # Notcurses::Native::Test::Helper picked the null device with a /win/
-    # match on the kernel name — which "darwin" satisfies — so on macOS it
-    # redirected the process's stdout into, and handed notcurses, a file
-    # literally named NUL in the working directory. Run it with an empty
-    # working directory (a real one: C's open(2) never sees a Raku chdir)
-    # and list what appears. (Listing, not .e: on Windows NUL names the
-    # null device in every directory without ever being an entry.)
-    my IO::Path $dir = $*TMPDIR.add("notcurses-native-nul-{$*PID}-{(^2**31).pick}");
-    $dir.mkdir;
-    LEAVE { .unlink for $dir.dir; $dir.rmdir }
-    my $run = run-headless-script(q:to/RAKU/, :cwd($dir));
+	plan 4;
+	# Notcurses::Native::Test::Helper picked the null device with a /win/
+	# match on the kernel name — which "darwin" satisfies — so on macOS it
+	# redirected the process's stdout into, and handed notcurses, a file
+	# literally named NUL in the working directory. Run it with an empty
+	# working directory (a real one: C's open(2) never sees a Raku chdir)
+	# and list what appears. (Listing, not .e: on Windows NUL names the
+	# null device in every directory without ever being an entry.)
+	my IO::Path $dir = $*TMPDIR.add("notcurses-native-nul-{$*PID}-{(^2**31).pick}");
+	$dir.mkdir;
+	LEAVE { .unlink for $dir.dir; $dir.rmdir }
+	my $run = run-headless-script(q:to/RAKU/, :cwd($dir));
         use NativeCall;
         use Notcurses::Native::Str;
         use Notcurses::Native::Direct;
@@ -203,10 +203,10 @@ subtest 'test support: the null device opens, and is never a file called NUL' =>
         report 'fp', $devnull.defined ?? 'open' !! 'null';
         ncdirect_stop($ncd) if $ncd;
         RAKU
-    ok $run<exitcode> == 0 && $run<signal> == 0, "the child exits cleanly ({describe-exit($run)})"
-        or diag $run<err>;
-    is $run<results><fp>, 'open', 'test-init-direct opened the null device';
-    is $run<results><direct>, 'started', 'and direct mode started on it';
-    is $dir.dir.map(*.basename).sort.join(', '), '',
-        'nothing, NUL included, appeared in the working directory';
+	ok $run<exitcode> == 0 && $run<signal> == 0, "the child exits cleanly ({describe-exit($run)})"
+		or diag $run<err>;
+	is $run<results><fp>, 'open', 'test-init-direct opened the null device';
+	is $run<results><direct>, 'started', 'and direct mode started on it';
+	is $dir.dir.map(*.basename).sort.join(', '), '',
+		'nothing, NUL included, appeared in the working directory';
 };
