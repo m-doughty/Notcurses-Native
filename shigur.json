@@ -1,0 +1,147 @@
+{
+  "name": "Notcurses::Native",
+  "auto-scan-packages": false,
+  "readme-from-pod": {
+    "filename": "docs/Readme.rakudoc"
+  },
+  "ci": {
+    "required-workflows": [
+      {
+        "workflow": "ci.yml",
+        "jobs": []
+      }
+    ]
+  },
+  "pipeline": {
+    "prepare": [
+      {
+        "id": "source-build",
+        "type": "command",
+        "argv": [
+          "zef",
+          "install",
+          "--/test",
+          "--force-install",
+          "."
+        ],
+        "env": {
+          "NOTCURSES_NATIVE_BUILD_FROM_SOURCE": "1"
+        },
+        "outputs": [
+          "resources/BINARY_TAG"
+        ]
+      },
+      {
+        "id": "source-tests",
+        "type": "command",
+        "argv": [
+          "prove6",
+          "-j1",
+          "-Ilib",
+          "t/"
+        ]
+      },
+      {
+        "id": "recipe-commit",
+        "type": "commit",
+        "paths": [
+          "resources/BINARY_TAG"
+        ],
+        "message": "Synchronize binary tag before building release assets"
+      },
+      {
+        "id": "binary-tag",
+        "type": "tag",
+        "file": "BINARY_TAG",
+        "inputs": [
+          "NOTCURSES_FORK",
+          "Build.rakumod",
+          "scripts/ci",
+          "resources/third-party.json",
+          "resources/licenses",
+          ".github/workflows"
+        ]
+      },
+      {
+        "id": "binary-build",
+        "type": "workflow",
+        "workflow": "release.yml",
+        "ref-file": "BINARY_TAG",
+        "event": "push",
+        "jobs": [],
+        "timeout": 21600,
+        "poll": 30
+      },
+      {
+        "id": "binary-checksums",
+        "type": "assets",
+        "ref-file": "BINARY_TAG",
+        "manifest": "checksums.txt",
+        "files": [
+          "dav1d-1.5.4.tar.bz2",
+          "ffmpeg-n8.1.2.tar.gz",
+          "libdeflate-1.25.tar.gz",
+          "libiconv-1.19.tar.gz",
+          "libunistring-1.4.2.tar.gz",
+          "libvpx-1.16.0.tar.gz",
+          "notcurses-linux-aarch64-glibc.tar.gz",
+          "notcurses-linux-aarch64-musl.tar.gz",
+          "notcurses-linux-x86_64-glibc.tar.gz",
+          "notcurses-linux-x86_64-musl.tar.gz",
+          "notcurses-macos-arm64.tar.gz",
+          "notcurses-macos-x86_64.tar.gz",
+          "notcurses-windows-arm64.zip",
+          "notcurses-windows-x86_64.zip",
+          "opus-1.6.1.tar.gz"
+        ],
+        "destination": "resources/checksums.txt",
+        "mode": "replace",
+        "tag-destination": "resources/BINARY_TAG"
+      },
+      {
+        "id": "prebuilt-install",
+        "type": "command",
+        "argv": [
+          "zef",
+          "install",
+          "--/test",
+          "--force-install",
+          "."
+        ],
+        "env": {
+          "NOTCURSES_NATIVE_BINARY_ONLY": "1",
+          "NOTCURSES_NATIVE_BUILD_FROM_SOURCE": ""
+        },
+        "outputs": [
+          "resources/BINARY_TAG"
+        ]
+      }
+    ],
+    "verify": [],
+    "after-tag": []
+  },
+  "tests": {
+    "commands": [
+      {
+        "argv": [
+          "prove6",
+          "-j1",
+          "-Ilib",
+          "t/"
+        ]
+      },
+      {
+        "argv": [
+          "prove",
+          "--norc",
+          "-j1",
+          "--ext=.rakutest",
+          "-r",
+          "-e",
+          "raku -Ilib -It/lib",
+          "xt/"
+        ]
+      }
+    ]
+  }
+}

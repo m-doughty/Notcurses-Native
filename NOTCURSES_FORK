@@ -14,4 +14,4 @@
 # Lines starting with `#` and blank lines are ignored. Keys are
 # case-sensitive; `url=` and `sha=` are required.
 url=https://github.com/m-doughty/notcurses.git
-sha=7152070f1b6c7cf6acc4e7447e5b6854f9f1e904
+sha=cd27fd8578cd990cf0bd44a9332e5d2891122a35
