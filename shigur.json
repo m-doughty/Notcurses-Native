@@ -15,6 +15,19 @@
   "pipeline": {
     "prepare": [
       {
+        "id": "release-version",
+        "type": "command",
+        "argv": [
+          "%x",
+          "scripts/release/sync-version.raku",
+          "%version"
+        ],
+        "outputs": [
+          "META6.json",
+          "resources/third-party.json"
+        ]
+      },
+      {
         "id": "source-build",
         "type": "command",
         "argv": [
@@ -45,9 +58,11 @@
         "id": "recipe-commit",
         "type": "commit",
         "paths": [
+          "META6.json",
+          "resources/third-party.json",
           "resources/BINARY_TAG"
         ],
-        "message": "Synchronize binary tag before building release assets"
+        "message": "Synchronize release version and binary tag before building assets"
       },
       {
         "id": "binary-tag",
@@ -59,7 +74,8 @@
           "scripts/ci",
           "resources/third-party.json",
           "resources/licenses",
-          ".github/workflows"
+          ".github/workflows",
+          "scripts/release"
         ]
       },
       {

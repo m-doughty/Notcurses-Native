@@ -1,0 +1,87 @@
+use Test;
+
+my $source = $*PROGRAM.absolute.IO.parent.parent.add('scripts/release/sync-version.raku');
+my $root = $*TMPDIR.add("notcurses-version-sync-{$*PID}-{(^1_000_000).pick}");
+$root.mkdir;
+sub remove-tree(IO::Path $path) {
+	if $path.d && !$path.l { remove-tree($_) for $path.dir; $path.rmdir }
+	else { $path.unlink }
+}
+END { remove-tree($root) if $root.e }
+my $count = 0;
+sub fixture(Str $meta, Str $manifest --> IO::Path) {
+	my $dir = $root.add('case-' ~ $count++); $dir.mkdir;
+	$dir.add('scripts').mkdir; $dir.add('scripts/release').mkdir; $dir.add('resources').mkdir;
+	$source.copy($dir.add('scripts/release/sync-version.raku'));
+	$dir.add('META6.json').spurt($meta);
+	$dir.add('resources/third-party.json').spurt($manifest);
+	$dir;
+}
+sub invoke(IO::Path $dir, Str $version --> Int) {
+	my $p = run $*EXECUTABLE.absolute.Str, $dir.add('scripts/release/sync-version.raku').Str,
+		$version, :cwd($root), :out, :err;
+	$p.out.slurp(:close); $p.err.slurp(:close);
+	$p.exitcode;
+}
+my $meta = q:to/JSON/;
+{
+  "name": "Notcurses::Native",
+  "version": "0.8.0",
+  "other": {"version": "leave-alone"}
+}
+JSON
+my $manifest = q:to/JSON/;
+{
+  "components": [
+    { "id": "notcurses", "version": "3.0.17" },
+    { "version": "0.8.0", "id": "notcurses-native", "source": {"version": "unrelated"} }
+  ],
+  "notes": ["keep formatting and trailing newline"]
+}
+JSON
+
+subtest 'sync updates only the two version values and is idempotent' => {
+	my $dir = fixture($meta, $manifest);
+	is invoke($dir, '0.8.1'), 0, 'helper succeeds from a different cwd';
+	my $new-meta = $dir.add('META6.json').slurp;
+	my $new-manifest = $dir.add('resources/third-party.json').slurp;
+	is $new-meta, $meta.subst('0.8.0', '0.8.1'), 'only distribution version changed';
+	is $new-manifest, $manifest.subst('0.8.0', '0.8.1'), 'only own component version changed';
+	is invoke($dir, '0.8.1'), 0, 'repeat succeeds';
+	is $dir.add('META6.json').slurp, $new-meta, 'repeat leaves metadata bytes unchanged';
+	is $dir.add('resources/third-party.json').slurp, $new-manifest, 'repeat leaves manifest bytes unchanged';
+	is $dir.add('resources').dir.elems, 1, 'no temporary files remain';
+};
+
+subtest 'invalid input leaves both files unchanged' => {
+	my @invalid =
+		[$meta, $manifest, '1..2'],
+		[$meta, '{invalid', '0.8.1'],
+		['[]', $manifest, '0.8.1'],
+		[$meta.subst('Notcurses::Native', 'Other'), $manifest, '0.8.1'],
+		[$meta, '{"components": []}', '0.8.1'],
+		[$meta, '{"components": [{"id":"notcurses-native","version":"1"},{"id":"notcurses-native","version":"1"}]}', '0.8.1'],
+		[$meta, '{"components": [{"id":"notcurses-native"}]}', '0.8.1'],
+		[$meta, '{"components": [{"id":"notcurses-native","version":1}]}', '0.8.1'];
+	for @invalid -> @case {
+		my $dir = fixture(@case[0], @case[1]);
+		isnt invoke($dir, @case[2]), 0, 'invalid input rejected';
+		is $dir.add('META6.json').slurp, @case[0], 'metadata unchanged on failure';
+		is $dir.add('resources/third-party.json').slurp, @case[1], 'manifest unchanged on failure';
+	}
+	my $dir = fixture($meta, $manifest);
+	$dir.add('resources/third-party.json').unlink;
+	isnt invoke($dir, '0.8.1'), 0, 'missing manifest rejected';
+	is $dir.add('META6.json').slurp, $meta, 'metadata unchanged when manifest missing';
+};
+
+subtest 'escaped property names retain their original spelling' => {
+	my $escaped-meta = $meta.subst('"version"', '"ver\u0073ion"');
+	my $escaped-manifest = $manifest.subst('"version": "0.8.0"', '"ver\u0073ion": "0.8.0"');
+	my $dir = fixture($escaped-meta, $escaped-manifest);
+	is invoke($dir, '0.8.1'), 0, 'escaped keys supported';
+	is $dir.add('META6.json').slurp, $escaped-meta.subst('0.8.0', '0.8.1'), 'metadata spelling and other fields retained';
+	is $dir.add('resources/third-party.json').slurp, $escaped-manifest.subst('0.8.0', '0.8.1'), 'component spelling and other fields retained';
+};
+
+done-testing;
