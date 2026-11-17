@@ -30,6 +30,10 @@ inputs:
   format:
     description: '`tar.gz` (Unix) or `zip` (Windows).'
     required: true
+  macos-arch:
+    description: Target architecture for the macOS archive load check.
+    required: false
+    default: ''
   shell:
     description: >-
       Shell to use for the packaging script. Defaults to `bash`. The
@@ -113,6 +117,14 @@ runs:
         bash scripts/ci/assert-third-party-kit.sh
         '${{ inputs.platform }}' bundle
         'artefacts/${{ inputs.artifact-name }}.${{ inputs.format }}'
+
+    - name: Load the relocated macOS archive (release gate)
+      if: inputs.platform == 'macos'
+      shell: bash
+      env:
+        MACOS_ARCH: ${{ inputs.macos-arch }}
+        ARCHIVE_NAME: ${{ inputs.artifact-name }}
+      run: bash scripts/ci/verify-macos-archive.sh "$MACOS_ARCH" "artefacts/$ARCHIVE_NAME.tar.gz"
 
     - uses: actions/upload-artifact@v6
       with:

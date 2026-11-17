@@ -615,3 +615,4 @@ jobs:
           artifact-name: ${{ inputs.artifact-name }}
           format: tar.gz
           platform: macos
+          macos-arch: ${{ inputs.arch }}

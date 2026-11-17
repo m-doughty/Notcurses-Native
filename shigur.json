@@ -75,6 +75,7 @@
           "resources/third-party.json",
           "resources/licenses",
           ".github/workflows",
+          ".github/actions",
           "scripts/release"
         ]
       },
