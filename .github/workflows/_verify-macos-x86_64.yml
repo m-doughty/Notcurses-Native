@@ -1,6 +1,6 @@
 # Reusable workflow: verify the macos-x86_64 prebuilt installs +
 # loads on a Rosetta'd x86_64 Rakudo, then that Build.rakumod's
-# source-build fallback works for an Intel-Mac user. The macos-14
+# source-build fallback works for an Intel-Mac user. The macos-15
 # runner is arm64; we install Rosetta + source-build x86_64 Rakudo
 # under it (no Raku/setup-raku@v1 prebuilt for x86_64 macOS).
 #
@@ -50,7 +50,7 @@ env:
 
 jobs:
   verify:
-    runs-on: macos-14
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:

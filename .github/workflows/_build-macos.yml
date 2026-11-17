@@ -1,5 +1,5 @@
 # Reusable workflow: build the macos-{arm64,x86_64} prebuilt
-# notcurses archive on a `macos-14` arm64 GHA runner.
+# notcurses archive on a `macos-15` arm64 GHA runner.
 #
 # BOTH lanes source-build the ffmpeg chain (libdav1d, libvpx,
 # libopus, ffmpeg) into a workspace cache dir. They differ only in
@@ -114,7 +114,7 @@ env:
 jobs:
   build:
     name: build-macos-${{ inputs.arch }}
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v6
         with:
@@ -426,7 +426,7 @@ jobs:
       # destination directory, and every library here has an
       # identically-named twin somewhere under brew on this runner
       # (libunistring in particular arrives as a transitive dependency
-      # of several formulae the macos-14 image ships with). One
+      # of several formulae the runner image ships with). One
       # reordered search path and the pack ships a bottle while
       # THIRD-PARTY.md and the attached libunistring-1.4.2.tar.gz say
       # we compiled it — which, for the LGPL library in this pack, is

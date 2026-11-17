@@ -2,7 +2,7 @@
 # loads + decodes. Runs unconditionally — no `if:` gating, so every
 # invocation produces exactly one job in the GHA UI.
 #
-# setup-raku@v1 ships native arm64 Rakudo for macos-14, so the
+# setup-raku@v1 ships native arm64 Rakudo for macos-15, so the
 # Rakudo install is one action call. No source-build needed.
 
 name: _verify-macos-arm64
@@ -19,7 +19,7 @@ env:
 
 jobs:
   verify:
-    runs-on: macos-14
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:

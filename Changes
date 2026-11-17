@@ -2,7 +2,8 @@ Revision history for Notcurses::Native
 
 {{$NEXT}}
     - Update the patched notcurses fork with memory-safety, allocation,
-      bounds and scrolling fixes; prepare r18 binaries.
+      bounds and scrolling fixes; prepare r19 binaries.
+    - Move macOS CI builds and verification to supported macOS 15 runners.
 
 0.8.0  2026-10-25T15:11:01Z
     - BUGFIX: [2026-10-25] restore ComSpec from COMSPEC at module load
